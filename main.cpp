@@ -1,5 +1,6 @@
 #include <QtCore>
 #include <QGuiApplication>
+#include <QClipboard>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQmlNetworkAccessManagerFactory>
@@ -23,9 +24,11 @@ class Chat : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool ready MEMBER ready NOTIFY changed)
     Q_PROPERTY(bool loggedIn MEMBER loggedIn NOTIFY changed)
+    Q_PROPERTY(bool loggingOut READ loggingOut NOTIFY changed)
     Q_PROPERTY(bool verified MEMBER verified NOTIFY changed)
     Q_PROPERTY(QString status MEMBER status NOTIFY changed)
     Q_PROPERTY(QString profile MEMBER profile NOTIFY changed)
+    Q_PROPERTY(QString deviceId MEMBER deviceId NOTIFY changed)
     Q_PROPERTY(QString profileName READ profileName NOTIFY changed)
     Q_PROPERTY(QUrl profileAvatar READ profileAvatar NOTIFY changed)
     Q_PROPERTY(QString selected MEMBER selected NOTIFY changed)
@@ -59,6 +62,7 @@ public:
             ping.stop();
             ready = false;
             pending.clear();
+            logoutRequest = 0;
             setStatus("Disconnected. Reconnecting…");
             QTimer::singleShot(1200, this, [this] {
                 if (process.state() == QProcess::Running) authenticate();
@@ -114,6 +118,14 @@ public:
         }
         rpc("login", {{"homeserver_url", url.toString()}, {"username", user.trimmed()}, {"password", password}});
     }
+    bool loggingOut() const { return logoutRequest != 0; }
+
+    Q_INVOKABLE void logout() {
+        if (!ready || !loggedIn || loggingOut()) return;
+        logoutRequest = transmit("logout", {});
+        setStatus("Signing out…");
+    }
+
     Q_INVOKABLE void verify(QString key) {
         if (!key.trimmed().isEmpty()) rpc("verify", {{"recovery_key", key.trimmed()}});
     }
@@ -140,10 +152,19 @@ public:
             if (room == selected) emit timelineChanged();
         });
     }
-    Q_INVOKABLE bool send(QString text) {
-        if (!ready || selected.isEmpty() || text.trimmed().isEmpty()) return false;
+    Q_INVOKABLE void copyText(const QString &text) {
+        QGuiApplication::clipboard()->setText(text);
+    }
+    Q_INVOKABLE bool send(QString text, QString replyTo) {
+        if (!ready || loggingOut() || selected.isEmpty() || text.trimmed().isEmpty()) return false;
         const auto room = selected;
-        rpc("send_message", {{"room_id", room}, {"text", text}}, [this, room](QJsonValue reply) {
+        QJsonObject params{{"room_id", room}, {"text", text}};
+        if (!replyTo.isEmpty()) {
+            if (!replyTo.startsWith('$')) return false;
+            const QJsonObject target{{"event_id", replyTo}};
+            params.insert("relates_to", QJsonObject{{"m.in_reply_to", target}});
+        }
+        rpc("send_message", params, [this, room](QJsonValue reply) {
             insert(room, reply.toObject());
             if (room == selected) emit timelineChanged();
         });
@@ -189,14 +210,30 @@ public:
         const QLocale locale;
         for (const auto &event : list) {
             const auto type = event["type"].toString();
-            const auto body = (type == "m.room.encrypted" ? event["decrypted"] : event["content"]).toObject();
+            const auto content = event["content"].toObject();
+            const auto body = type == "m.room.encrypted" ? event["decrypted"].toObject() : content;
             const auto stamp = QDateTime::fromMSecsSinceEpoch(qint64(event["timestamp"].toDouble()));
             QString text = body["body"].toString(type == "m.room.encrypted" ? "Waiting for encryption keys…" : "[Attachment or non-text message]");
-            if (!event["redacted_by"].toString().isEmpty()) text = "Message removed";
+            const auto eventId = event["event_id"].toString();
+            const bool redacted = !event["redacted_by"].toString().isEmpty();
+            QString replyTo;
+            if (!redacted) {
+                const auto replyEventId = [](const QJsonObject &message) {
+                    return message["m.relates_to"].toObject()["m.in_reply_to"].toObject()["event_id"].toString();
+                };
+                replyTo = replyEventId(body);
+                if (replyTo.isEmpty() && type == "m.room.encrypted")
+                    replyTo = replyEventId(content);
+            }
+            if (!replyTo.isEmpty()) {
+                static const QRegularExpression fallback(R"(\A> (?:\* )?<@[^>\r\n]+>[^\r\n]*\r?\n(?:>[^\r\n]*\r?\n)*\r?\n)");
+                text.remove(fallback);
+            }
+            if (redacted) text = "Message removed";
             else if (!event["send_error"].toString().isEmpty()) text += "  ·  Failed to send";
             const auto sender = event["sender"].toString();
             const bool startsDay = !previousStamp.isValid() || stamp.date() != previousStamp.date();
-            const bool startsGroup = startsDay || sender != previousSender
+            const bool startsGroup = startsDay || !replyTo.isEmpty() || sender != previousSender
                 || previousStamp.secsTo(stamp) > messageGroupSeconds;
             const auto localpart = sender.startsWith('@') ? sender.sliced(1).section(':', 0, 0) : sender;
             const auto member = profiles.value(sender);
@@ -209,6 +246,8 @@ public:
             if (name.isEmpty()) name = localpart.isEmpty() ? tr("Unknown sender") : localpart;
             const auto encryptedAvatar = member["avatar_file"].toObject()["url"].toString();
             result.append(QVariantMap{{"id", QString::number(event["rowid"].toInteger())},
+                                      {"eventId", eventId}, {"replyTo", replyTo},
+                                      {"canReply", !redacted && eventId.startsWith('$')},
                                       {"sender", sender}, {"name", name},
                                       {"avatar", encryptedAvatar.isEmpty() ? avatarUrl(avatar) : avatarUrl(encryptedAvatar, true)},
                                       {"startsGroup", startsGroup},
@@ -321,7 +360,7 @@ private:
         return id;
     }
     void rpc(const QString &command, QJsonObject data, std::function<void(QJsonValue)> handler = {}) {
-        if (ready) pending.insert(transmit(command, std::move(data)), std::move(handler));
+        if (ready && !loggingOut()) pending.insert(transmit(command, std::move(data)), std::move(handler));
     }
     void insert(const QString &room, const QJsonObject &event) {
         const auto type = event["type"].toString();
@@ -337,6 +376,14 @@ private:
         emit changed();
         emit timelineChanged();
     }
+    void clearRoomData() {
+        rooms.clear();
+        history.clear();
+        roomProfiles.clear();
+        loadedRoomProfiles.clear();
+        spaces = {};
+    }
+
     void receive(const QString &message) {
         const auto frame = QJsonDocument::fromJson(message.toUtf8()).object();
         const auto name = frame["command"].toString();
@@ -345,6 +392,14 @@ private:
         if (id < 0) lastEvent = id;
         if (name == "pong") { misses = 0; return; }
         if (name == "response" || name == "error") {
+            if (loggingOut() && id == logoutRequest) {
+                if (name == "error") {
+                    logoutRequest = 0;
+                    setStatus("Could not sign out. Restart untethered and check your connection before trying again.");
+                }
+                // A successful logout sends a signed-out client state.
+                return;
+            }
             if (!pending.contains(int(id))) return;
             auto callback = pending.take(int(id));
             if (name == "error") setStatus("Matrix request failed. Check your homeserver, credentials or room access.");
@@ -357,25 +412,29 @@ private:
             loggedIn = data["is_logged_in"].toBool();
             verified = data["is_verified"].toBool();
             profile = data["user_id"].toString();
+            deviceId = data["device_id"].toString();
             accountName = data["displayname"].toString();
             accountAvatar = data["avatar_url"].toString();
-            // A signed-out backend sends client_state without an initial room sync.
-            if (!loggedIn) ready = true;
-            if (ready) setStatus(loggedIn ? "" : "Sign in to Matrix");
-            else emit changed();
-            emit timelineChanged();
+            if (!loggedIn) {
+                logoutRequest = 0;
+                pending.clear();
+                clearRoomData();
+                selected.clear();
+                status = "Sign in to Matrix";
+                ready = true;
+                selectionChanged();
+            } else {
+                if (ready && !loggingOut()) setStatus("");
+                else emit changed();
+                emit timelineChanged();
+            }
         } else if (name == "init_complete") {
             ready = true;
             setStatus(loggedIn ? "" : "Sign in to Matrix");
             loadRoomProfiles();
         } else if (name == "sync_complete") {
-            if (data["clear_state"].toBool()) {
-                rooms.clear();
-                history.clear();
-                roomProfiles.clear();
-                loadedRoomProfiles.clear();
-                spaces = {};
-            }
+            if (!loggedIn) return;
+            if (data["clear_state"].toBool()) clearRoomData();
             const auto roomUpdates = data["rooms"].toObject();
             for (auto it = roomUpdates.begin(); it != roomUpdates.end(); ++it) {
                 const auto delta = it.value().toObject();
@@ -404,6 +463,7 @@ private:
             }
             selectionChanged();
         } else if (name == "events_decrypted" || name == "send_complete") {
+            if (!loggedIn) return;
             auto events = data["events"].toArray();
             if (name == "send_complete") {
                 events.append(data["event"]);
@@ -431,9 +491,9 @@ private:
     QSet<QString> loadedRoomProfiles;
     QString accountName, accountAvatar, imageToken;
     bool ready = false, loggedIn = false, verified = false, encrypted = false;
-    int sequence = 0, misses = 0;
+    int sequence = 0, misses = 0, logoutRequest = 0;
     qint64 lastEvent = 0;
-    QString status = "Starting local gomuks…", profile, selected, roomName;
+    QString status = "Starting local gomuks…", profile, deviceId, selected, roomName;
 };
 
 static bool migrateLegacyProfile(const QString &root) {

@@ -1,6 +1,6 @@
 pkgname=untethered
 pkgver=0.1.0
-pkgrel=1
+pkgrel=3
 pkgdesc='Qt Quick desktop prototype for Matrix using a bundled gomuks backend'
 arch=('x86_64')
 conflicts=('gomuks-native' 'unteathered')
@@ -18,8 +18,8 @@ noextract=("$_deb")
 options=('!strip' '!debug')
 sha256sums=(
     '6f3ced8bbd8c5f5e93abab6719ed64fab8f765d00bb46a8be323ba50fb433fca'
-    'c514f66af77bf495edb89af2936a0c7cf3c503174ec97ff96979cf676d982062'
-    '59d44beecee591f92bbae7119e586f614ce0de7f6bc92da79e83de06238da8c6'
+    'b33691816f71e015a79be098bcfde48eda7263ae93f42ace8871e4982da65e06'
+    '7891233791caaf3eb3056b991f1ec486fa02b3156d694d9dc0db5cc734ac6d6b'
     '288315478e8401b8efe16eefa0568e2be0c199bb4f9876f01d3eb7a12c77f5dd'
     '636e7f40fa3f8031264be7c0ea51d265cd13f6c48a829f09f1ae006161c8ca3b'
     '0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0'

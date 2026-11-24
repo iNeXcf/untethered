@@ -38,6 +38,14 @@ ApplicationWindow {
     property var lastRooms: ({})
     property var drafts: ({})
     property string draftRoom: ""
+    property bool hadSession: false
+    property var replyDrafts: ({})
+    property var replyTarget: null
+
+    function startReply(message) {
+        replyTarget = message
+        composer.forceActiveFocus()
+    }
 
     function roomsFor(context) {
         return roomIndex.filter(room => !room.space && (context === ""
@@ -72,11 +80,33 @@ ApplicationWindow {
     Connections {
         target: chat
         function onChanged() {
+            if (!chat.loggedIn) {
+                if (!window.hadSession)
+                    return
+                window.hadSession = false
+                logoutConfirmation.close()
+                settings.close()
+                switcher.close()
+                window.contextId = ""
+                window.lastRooms = ({})
+                window.drafts = ({})
+                window.draftRoom = ""
+                window.replyDrafts = ({})
+                window.replyTarget = null
+                composer.clear()
+                recovery.clear()
+                password.clear()
+                return
+            }
+            window.hadSession = true
             if (window.draftRoom !== chat.selected) {
-                if (window.draftRoom !== "")
+                if (window.draftRoom !== "") {
                     window.drafts[window.draftRoom] = composer.text
+                    window.replyDrafts[window.draftRoom] = window.replyTarget
+                }
                 window.draftRoom = chat.selected
                 composer.text = window.drafts[chat.selected] ?? ""
+                window.replyTarget = window.replyDrafts[chat.selected] ?? null
             }
             Qt.callLater(window.reconcileNavigation)
         }
@@ -161,8 +191,151 @@ ApplicationWindow {
 
     Shortcut {
         sequence: "Ctrl+K"
-        enabled: chat.loggedIn
+        enabled: chat.loggedIn && !settings.opened
         onActivated: switcher.open()
+    }
+
+    Shortcut {
+        sequence: "Ctrl+,"
+        enabled: chat.loggedIn && !switcher.opened && !settings.opened
+        onActivated: settings.open()
+    }
+
+    Dialog {
+        id: settings
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(window.width - 48, 500)
+        padding: 20
+        title: "User settings"
+        modal: true
+        standardButtons: Dialog.Close
+        onClosed: recovery.clear()
+
+        contentItem: ColumnLayout {
+            spacing: 14
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 12
+                Avatar {
+                    source: chat.profileAvatar
+                    name: chat.profileName.startsWith("@") ? chat.profileName.slice(1) : chat.profileName
+                    Layout.preferredWidth: 48
+                    Layout.preferredHeight: 48
+                }
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 4
+                    Label {
+                        text: chat.profileName
+                        textFormat: Text.PlainText
+                        font.pixelSize: 18
+                        font.weight: Font.DemiBold
+                        Layout.fillWidth: true
+                        elide: Text.ElideRight
+                    }
+                    TextEdit {
+                        text: chat.profile
+                        textFormat: TextEdit.PlainText
+                        readOnly: true
+                        selectByMouse: true
+                        wrapMode: TextEdit.Wrap
+                        color: window.muted
+                        selectionColor: window.palette.highlight
+                        selectedTextColor: window.palette.highlightedText
+                        Layout.fillWidth: true
+                        Accessible.name: "Matrix account ID"
+                    }
+                }
+            }
+            Rectangle { Layout.fillWidth: true; height: 1; color: window.divider }
+            Label {
+                text: "Device verification"
+                font.weight: Font.DemiBold
+            }
+            Label {
+                text: chat.verified ? "This device is verified" : "This device is not verified"
+                color: chat.verified ? window.accent : window.muted
+            }
+            Label {
+                visible: chat.deviceId !== ""
+                text: "Device ID: " + chat.deviceId
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                color: window.muted
+                Layout.fillWidth: true
+            }
+            Label {
+                visible: !chat.verified
+                text: "Use your Matrix recovery key to verify this device."
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+            }
+            RowLayout {
+                visible: !chat.verified
+                Layout.fillWidth: true
+                TextField {
+                    id: recovery
+                    placeholderText: "Matrix recovery key"
+                    Accessible.name: placeholderText
+                    echoMode: TextInput.Password
+                    enabled: chat.ready
+                    Layout.fillWidth: true
+                    onAccepted: if (verifyDevice.enabled) verifyDevice.clicked()
+                }
+                Button {
+                    id: verifyDevice
+                    text: "Verify device"
+                    enabled: chat.ready && recovery.text.trim().length > 0
+                    onClicked: {
+                        chat.verify(recovery.text)
+                        recovery.clear()
+                    }
+                }
+            }
+            Rectangle { Layout.fillWidth: true; height: 1; color: window.divider }
+            Button {
+                text: chat.loggingOut ? "Signing out…" : "Sign out"
+                enabled: chat.ready && !chat.loggingOut
+                onClicked: logoutConfirmation.open()
+            }
+            Label {
+                visible: text.length > 0
+                text: chat.status
+                textFormat: Text.PlainText
+                wrapMode: Text.WordWrap
+                color: window.muted
+                Layout.fillWidth: true
+            }
+        }
+    }
+
+    Dialog {
+        id: logoutConfirmation
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(window.width - 48, 440)
+        padding: 20
+        title: "Sign out of Matrix?"
+        modal: true
+        onAccepted: chat.logout()
+
+        contentItem: Label {
+            text: "Signing out removes this device’s local encryption keys and cached messages. Keep your Matrix recovery key so you can recover backed-up keys after signing in again."
+            wrapMode: Text.WordWrap
+        }
+
+        footer: DialogButtonBox {
+            Button {
+                text: "Cancel"
+                DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
+            }
+            Button {
+                text: "Sign out"
+                enabled: chat.ready && !chat.loggingOut
+                DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
+            }
+        }
     }
 
     Dialog {
@@ -389,6 +562,13 @@ ApplicationWindow {
                         ToolTip.visible: profileHover.hovered
                         HoverHandler { id: profileHover }
                     }
+                    ToolButton {
+                        text: "⚙"
+                        Accessible.name: "User settings"
+                        ToolTip.text: "User settings · Ctrl+,"
+                        ToolTip.visible: hovered
+                        onClicked: settings.open()
+                    }
                 }
             }
         }
@@ -422,22 +602,12 @@ ApplicationWindow {
                     Button { text: "Older messages"; visible: chat.selected !== ""; enabled: chat.ready; onClicked: chat.paginate(true) }
                 }
             }
-            RowLayout {
+            Button {
                 visible: !chat.verified
-                Layout.fillWidth: true
+                text: "Verify this device in User settings"
                 Layout.leftMargin: 20
-                Layout.rightMargin: 20
-                TextField {
-                    id: recovery
-                    placeholderText: "Matrix recovery key"
-                    echoMode: TextInput.Password
-                    Layout.fillWidth: true
-                }
-                Button {
-                    text: "Verify device"
-                    enabled: chat.ready && recovery.text.length > 0
-                    onClicked: { chat.verify(recovery.text); recovery.clear() }
-                }
+                Layout.topMargin: 8
+                onClicked: settings.open()
             }
             Label {
                 visible: text.length > 0
@@ -455,6 +625,23 @@ ApplicationWindow {
                 spacing: 4
                 property string displayedRoom: ""
                 property string historyAnchor: ""
+                property var eventIndices: ({})
+                property string highlightedEvent: ""
+
+                function jumpToEvent(eventId) {
+                    const index = eventIndices[eventId]
+                    if (index === undefined)
+                        return
+                    positionViewAtIndex(index, ListView.Center)
+                    highlightedEvent = eventId
+                    replyHighlight.restart()
+                }
+
+                Timer {
+                    id: replyHighlight
+                    interval: 1600
+                    onTriggered: timeline.highlightedEvent = ""
+                }
 
                 function refreshMessages() {
                     const messages = chat.messages
@@ -464,7 +651,15 @@ ApplicationWindow {
                     if (sameRoom && JSON.stringify(model) === JSON.stringify(messages))
                         return
 
+                    if (!sameRoom)
+                        highlightedEvent = ""
                     displayedRoom = chat.selected
+                    const indices = Object.create(null)
+                    messages.forEach((message, index) => {
+                        if (message.eventId)
+                            indices[message.eventId] = index
+                    })
+                    eventIndices = indices
                     model = messages
                     forceLayout()
                     const anchorIndex = sameRoom && anchor !== ""
@@ -491,6 +686,15 @@ ApplicationWindow {
                     required property var modelData
                     width: timeline.width
                     height: messageColumn.implicitHeight + (modelData.startsGroup ? 10 : 0)
+                    readonly property var original: modelData.replyTo
+                        ? timeline.model?.[timeline.eventIndices[modelData.replyTo]] : null
+
+                    HoverHandler { id: messageHover }
+                    Rectangle {
+                        anchors.fill: parent
+                        color: window.activeSurface
+                        visible: timeline.highlightedEvent !== "" && timeline.highlightedEvent === modelData.eventId
+                    }
 
                     ColumnLayout {
                         id: messageColumn
@@ -549,19 +753,96 @@ ApplicationWindow {
                                     Label { text: modelData.time; color: window.muted; font.pixelSize: 12 }
                                     Item { Layout.fillWidth: true }
                                 }
-                                Label {
-                                    text: modelData.body
-                                    textFormat: Text.PlainText
-                                    wrapMode: Text.Wrap
+                                NavigationButton {
+                                    visible: !!modelData.replyTo
+                                    enabled: !!message.original
                                     Layout.fillWidth: true
-                                    font.pixelSize: 15
-                                    Accessible.name: modelData.name + ", " + modelData.time + ": " + text
+                                    text: message.original
+                                        ? message.original.name + " · " + message.original.body.replace(/\s+/g, " ")
+                                        : "Original message not loaded"
+                                    Accessible.name: "In reply to " + text
+                                    onClicked: timeline.jumpToEvent(modelData.replyTo)
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Label {
+                                        text: modelData.body
+                                        textFormat: Text.PlainText
+                                        wrapMode: Text.Wrap
+                                        Layout.fillWidth: true
+                                        Layout.alignment: Qt.AlignTop
+                                        font.pixelSize: 15
+                                        Accessible.name: modelData.name + ", " + modelData.time + ": " + text
+                                    }
+                                    Rectangle {
+                                        id: messageActions
+                                        Layout.preferredWidth: actionButtons.implicitWidth + 8
+                                        Layout.preferredHeight: actionButtons.implicitHeight + 4
+                                        Layout.alignment: Qt.AlignTop
+                                        radius: 7
+                                        color: window.fieldSurface
+                                        border.color: window.divider
+                                        opacity: messageHover.hovered || replyAction.activeFocus
+                                            || copyAction.activeFocus ? 1 : 0
+
+                                        RowLayout {
+                                            id: actionButtons
+                                            anchors.centerIn: parent
+                                            spacing: 2
+
+                                            ToolButton {
+                                                id: replyAction
+                                                visible: !!modelData.canReply
+                                                enabled: chat.ready && !chat.loggingOut
+                                                text: "↩"
+                                                Accessible.name: "Reply to " + modelData.name
+                                                ToolTip.text: "Reply"
+                                                ToolTip.visible: messageActions.opacity > 0 && hovered
+                                                Layout.preferredWidth: 30
+                                                Layout.preferredHeight: 24
+                                                onClicked: window.startReply(modelData)
+                                            }
+                                            ToolButton {
+                                                id: copyAction
+                                                text: "Copy"
+                                                Accessible.name: "Copy message text"
+                                                Layout.preferredHeight: 24
+                                                onClicked: chat.copyText(modelData.body)
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
                 }
                 ScrollBar.vertical: ScrollBar {}
+            }
+            RowLayout {
+                visible: window.replyTarget !== null
+                Layout.fillWidth: true
+                Layout.leftMargin: 16
+                Layout.rightMargin: 16
+                Layout.topMargin: 8
+                Label {
+                    text: window.replyTarget
+                        ? "Replying to " + window.replyTarget.name + " · " + window.replyTarget.body.replace(/\s+/g, " ")
+                        : ""
+                    textFormat: Text.PlainText
+                    elide: Text.ElideRight
+                    color: window.muted
+                    Layout.fillWidth: true
+                }
+                ToolButton {
+                    text: "×"
+                    Accessible.name: "Cancel reply"
+                    onClicked: window.replyTarget = null
+                }
+            }
+            Shortcut {
+                sequence: "Escape"
+                enabled: window.replyTarget !== null && !settings.opened && !switcher.opened
+                onActivated: window.replyTarget = null
             }
             RowLayout {
                 visible: chat.selected !== ""
@@ -607,7 +888,12 @@ ApplicationWindow {
                     id: sendButton
                     text: "Send"
                     enabled: chat.ready && composer.text.trim().length > 0
-                    onClicked: if (chat.send(composer.text)) composer.clear()
+                    onClicked: {
+                        if (chat.send(composer.text, window.replyTarget?.eventId ?? "")) {
+                            composer.clear()
+                            window.replyTarget = null
+                        }
+                    }
                 }
             }
         }
