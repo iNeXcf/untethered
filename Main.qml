@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Dialogs
 import QtQuick.Layouts
 
 ApplicationWindow {
@@ -41,6 +42,11 @@ ApplicationWindow {
     property bool hadSession: false
     property var replyDrafts: ({})
     property var replyTarget: null
+    property var imageDrafts: ({})
+    property url imageAttachment: ""
+    readonly property bool sendingImage: chat.selected !== "" && chat.imageUploadRoom === chat.selected
+    readonly property bool canAttachImage: chat.ready && !chat.loggingOut
+        && chat.selected !== "" && !sendingImage
 
     function startReply(message) {
         replyTarget = message
@@ -85,6 +91,7 @@ ApplicationWindow {
                     return
                 window.hadSession = false
                 imageViewer.close()
+                attachmentPicker.close()
                 logoutConfirmation.close()
                 settings.close()
                 switcher.close()
@@ -94,6 +101,8 @@ ApplicationWindow {
                 window.draftRoom = ""
                 window.replyDrafts = ({})
                 window.replyTarget = null
+                window.imageDrafts = ({})
+                window.imageAttachment = ""
                 composer.clear()
                 recovery.clear()
                 password.clear()
@@ -105,12 +114,25 @@ ApplicationWindow {
                 if (window.draftRoom !== "") {
                     window.drafts[window.draftRoom] = composer.text
                     window.replyDrafts[window.draftRoom] = window.replyTarget
+                    window.imageDrafts[window.draftRoom] = window.imageAttachment
                 }
                 window.draftRoom = chat.selected
                 composer.text = window.drafts[chat.selected] ?? ""
                 window.replyTarget = window.replyDrafts[chat.selected] ?? null
+                window.imageAttachment = window.imageDrafts[chat.selected] ?? ""
             }
             Qt.callLater(window.reconcileNavigation)
+        }
+
+        function onImageSent(room) {
+            delete window.drafts[room]
+            delete window.replyDrafts[room]
+            delete window.imageDrafts[room]
+            if (room === chat.selected) {
+                composer.clear()
+                window.replyTarget = null
+                window.imageAttachment = ""
+            }
         }
     }
 
@@ -310,6 +332,34 @@ ApplicationWindow {
                 Layout.fillWidth: true
             }
         }
+    }
+
+    FileDialog {
+        id: attachmentPicker
+        title: "Attach an image"
+        fileMode: FileDialog.OpenFile
+        nameFilters: ["Images (*.png *.jpg *.jpeg *.webp *.gif *.bmp *.avif *.heic *.tif *.tiff)", "All files (*)"]
+        property string room
+        onAccepted: {
+            if (room === chat.selected && window.canAttachImage) {
+                if (chat.canAttachImage(selectedFile)) {
+                    window.imageAttachment = selectedFile
+                    composer.forceActiveFocus()
+                } else {
+                    invalidImage.open()
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: invalidImage
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        title: "Image unavailable"
+        modal: true
+        standardButtons: Dialog.Ok
+        contentItem: Label { text: "The selected file could not be opened as an image." }
     }
 
     Dialog {
@@ -875,7 +925,7 @@ ApplicationWindow {
                                             ToolButton {
                                                 id: replyAction
                                                 visible: !!modelData.canReply
-                                                enabled: chat.ready && !chat.loggingOut
+                                                enabled: chat.ready && !chat.loggingOut && !window.sendingImage
                                                 text: "↩"
                                                 Accessible.name: "Reply to " + modelData.name
                                                 ToolTip.text: "Reply"
@@ -918,18 +968,58 @@ ApplicationWindow {
                 ToolButton {
                     text: "×"
                     Accessible.name: "Cancel reply"
+                    enabled: !window.sendingImage
                     onClicked: window.replyTarget = null
                 }
             }
             Shortcut {
                 sequence: "Escape"
-                enabled: window.replyTarget !== null && !settings.opened && !switcher.opened && !imageViewer.opened
+                enabled: window.replyTarget !== null && !window.sendingImage && !settings.opened && !switcher.opened && !imageViewer.opened
                 onActivated: window.replyTarget = null
+            }
+            RowLayout {
+                visible: window.imageAttachment.toString() !== ""
+                Layout.fillWidth: true
+                Layout.leftMargin: 16
+                Layout.rightMargin: 16
+                Layout.topMargin: 8
+                spacing: 10
+                Image {
+                    source: visible ? window.imageAttachment : ""
+                    asynchronous: true
+                    fillMode: Image.PreserveAspectFit
+                    sourceSize.width: 160
+                    sourceSize.height: 120
+                    Layout.preferredWidth: 80
+                    Layout.preferredHeight: 60
+                }
+                Label {
+                    text: window.sendingImage ? "Sending image…" : "Image attached"
+                    Layout.fillWidth: true
+                    color: window.muted
+                }
+                ToolButton {
+                    text: "×"
+                    Accessible.name: "Remove attached image"
+                    enabled: !window.sendingImage
+                    onClicked: window.imageAttachment = ""
+                }
             }
             RowLayout {
                 visible: chat.selected !== ""
                 Layout.fillWidth: true
                 Layout.margins: 16
+                ToolButton {
+                    text: "+"
+                    Accessible.name: "Attach an image"
+                    ToolTip.text: Accessible.name
+                    ToolTip.visible: hovered
+                    enabled: window.canAttachImage
+                    onClicked: {
+                        attachmentPicker.room = chat.selected
+                        attachmentPicker.open()
+                    }
+                }
                 ScrollView {
                     Layout.fillWidth: true
                     Layout.preferredHeight: Math.max(44, Math.min(168, composer.implicitHeight))
@@ -950,11 +1040,37 @@ ApplicationWindow {
                             color: window.fieldSurface
                             border.color: composer.activeFocus ? window.accent : window.divider
                         }
-                        placeholderText: chat.roomName ? "Message " + chat.roomName : "Write a message"
+                        placeholderText: window.imageAttachment.toString() !== "" ? "Add a caption"
+                            : chat.roomName ? "Message " + chat.roomName : "Write a message"
                         Accessible.name: placeholderText
-                        enabled: chat.ready
+                        enabled: chat.ready && !chat.loggingOut && !window.sendingImage
+
+                        DropArea {
+                            anchors.fill: parent
+                            enabled: window.canAttachImage
+                            onEntered: drag => {
+                                drag.accepted = drag.hasUrls && drag.urls.some(url => chat.canAttachImage(url))
+                            }
+                            onDropped: drop => {
+                                const image = drop.urls.find(url => chat.canAttachImage(url))
+                                if (image) {
+                                    window.imageAttachment = image
+                                    drop.acceptProposedAction()
+                                    composer.forceActiveFocus()
+                                }
+                            }
+                        }
 
                         Keys.onPressed: event => {
+                            if (!composer.inputMethodComposing && window.canAttachImage
+                                    && event.matches(StandardKey.Paste)) {
+                                const image = chat.clipboardImage()
+                                if (image.toString() !== "") {
+                                    window.imageAttachment = image
+                                    event.accepted = true
+                                    return
+                                }
+                            }
                             const enter = event.key === Qt.Key_Return || event.key === Qt.Key_Enter
                             if (!enter || composer.inputMethodComposing
                                     || (event.modifiers & ~Qt.KeypadModifier) !== Qt.NoModifier)
@@ -968,10 +1084,15 @@ ApplicationWindow {
                 }
                 Button {
                     id: sendButton
-                    text: "Send"
-                    enabled: chat.ready && composer.text.trim().length > 0
+                    text: window.sendingImage ? "Sending…" : "Send"
+                    enabled: chat.ready && !chat.loggingOut && !window.sendingImage
+                        && (window.imageAttachment.toString() !== "" ? chat.imageUploadRoom === ""
+                            : composer.text.trim().length > 0)
                     onClicked: {
-                        if (chat.send(composer.text, window.replyTarget?.eventId ?? "")) {
+                        const replyTo = window.replyTarget?.eventId ?? ""
+                        if (window.imageAttachment.toString() !== "") {
+                            chat.sendImage(window.imageAttachment, composer.text, replyTo)
+                        } else if (chat.send(composer.text, replyTo)) {
                             composer.clear()
                             window.replyTarget = null
                         }

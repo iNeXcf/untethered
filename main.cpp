@@ -1,12 +1,15 @@
 #include <QtCore>
 #include <QGuiApplication>
 #include <QClipboard>
+#include <QImageReader>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQmlNetworkAccessManagerFactory>
 #include <QtNetwork>
 #include <QWebSocket>
 #include <functional>
+#include <memory>
+#include <utility>
 #include <algorithm>
 
 class MediaNetworkFactory : public QQmlNetworkAccessManagerFactory {
@@ -25,6 +28,7 @@ class Chat : public QObject {
     Q_PROPERTY(bool ready MEMBER ready NOTIFY changed)
     Q_PROPERTY(bool loggedIn MEMBER loggedIn NOTIFY changed)
     Q_PROPERTY(bool loggingOut READ loggingOut NOTIFY changed)
+    Q_PROPERTY(QString imageUploadRoom MEMBER imageUploadRoom NOTIFY changed)
     Q_PROPERTY(bool verified MEMBER verified NOTIFY changed)
     Q_PROPERTY(QString status MEMBER status NOTIFY changed)
     Q_PROPERTY(QString profile MEMBER profile NOTIFY changed)
@@ -63,6 +67,7 @@ public:
             ready = false;
             pending.clear();
             logoutRequest = 0;
+            cancelImageUpload();
             setStatus("Disconnected. Reconnecting…");
             QTimer::singleShot(1200, this, [this] {
                 if (process.state() == QProcess::Running) authenticate();
@@ -100,6 +105,7 @@ public:
         socket.blockSignals(true);
         process.blockSignals(true);
         socket.abort();
+        cancelImageUpload();
         if (process.state() != QProcess::NotRunning) {
             process.terminate();
             if (!process.waitForFinished(3500)) {
@@ -122,6 +128,7 @@ public:
 
     Q_INVOKABLE void logout() {
         if (!ready || !loggedIn || loggingOut()) return;
+        cancelImageUpload();
         logoutRequest = transmit("logout", {});
         setStatus("Signing out…");
     }
@@ -155,21 +162,101 @@ public:
     Q_INVOKABLE void copyText(const QString &text) {
         QGuiApplication::clipboard()->setText(text);
     }
+    Q_INVOKABLE bool canAttachImage(const QUrl &url) const {
+        return url.isLocalFile() && QImageReader(url.toLocalFile()).canRead();
+    }
+
+    Q_INVOKABLE QUrl clipboardImage() const {
+        const auto image = QGuiApplication::clipboard()->image();
+        if (image.isNull()) return {};
+        QByteArray bytes;
+        QBuffer buffer(&bytes);
+        if (!buffer.open(QIODevice::WriteOnly) || !image.save(&buffer, "PNG")) return {};
+        return QUrl("data:image/png;base64," + QString::fromLatin1(bytes.toBase64()));
+    }
+
     Q_INVOKABLE bool send(QString text, QString replyTo) {
         if (!ready || loggingOut() || selected.isEmpty() || text.trimmed().isEmpty()) return false;
+        if (!replyTo.isEmpty() && !replyTo.startsWith('$')) return false;
         const auto room = selected;
-        QJsonObject params{{"room_id", room}, {"text", text}};
-        if (!replyTo.isEmpty()) {
-            if (!replyTo.startsWith('$')) return false;
-            const QJsonObject target{{"event_id", replyTo}};
-            params.insert("relates_to", QJsonObject{{"m.in_reply_to", target}});
-        }
-        rpc("send_message", params, [this, room](QJsonValue reply) {
+        rpc("send_message", messageParams(room, text, replyTo), [this, room](QJsonValue reply) {
             insert(room, reply.toObject());
             if (room == selected) emit timelineChanged();
         });
         return true;
     }
+
+    Q_INVOKABLE void sendImage(const QUrl &source, const QString &caption, const QString &replyTo) {
+        if (!ready || !loggedIn || loggingOut() || selected.isEmpty() || !imageUploadRoom.isEmpty()) return;
+        if (!replyTo.isEmpty() && !replyTo.startsWith('$')) return;
+
+        std::unique_ptr<QIODevice> input;
+        QString filename;
+        if (source.isLocalFile()) {
+            const QString path = source.toLocalFile();
+            auto file = std::make_unique<QFile>(path);
+            filename = QFileInfo(path).fileName();
+            input = std::move(file);
+        } else {
+            const QString prefix = "data:image/png;base64,";
+            const QString data = source.toString(QUrl::FullyEncoded);
+            if (data.startsWith(prefix)) {
+                auto buffer = std::make_unique<QBuffer>();
+                buffer->setData(QByteArray::fromBase64(data.sliced(prefix.size()).toLatin1()));
+                filename = "clipboard.png";
+                input = std::move(buffer);
+            }
+        }
+        if (!input || !input->open(QIODevice::ReadOnly) || QImageReader::imageFormat(input.get()).isEmpty()) {
+            setStatus("Could not read the selected image.");
+            return;
+        }
+        input->seek(0);
+
+        const auto room = selected;
+        const bool encrypt = encrypted;
+        QUrl url = base;
+        url.setPath("/_gomuks/upload");
+        url.setQuery(QString("encrypt=%1&filename=%2").arg(encrypt ? "true" : "false",
+                         QString::fromLatin1(QUrl::toPercentEncoding(filename))));
+        QNetworkRequest request(url);
+        request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
+        request.setTransferTimeout(120000);
+        request.setHeader(QNetworkRequest::ContentTypeHeader, "application/octet-stream");
+        request.setHeader(QNetworkRequest::ContentLengthHeader, input->size());
+        auto *reply = http.post(request, input.get());
+        input.release()->setParent(reply);
+        imageUpload = reply;
+        imageUploadRoom = room;
+        setStatus("");
+
+        connect(reply, &QNetworkReply::finished, this, [this, reply, room, encrypt, caption, replyTo] {
+            reply->deleteLater();
+            if (imageUpload != reply) return;
+            imageUpload = nullptr;
+            const int code = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            auto content = QJsonDocument::fromJson(reply->readAll()).object();
+            const auto mxc = encrypt ? content["file"].toObject()["url"].toString() : content["url"].toString();
+            if (reply->error() != QNetworkReply::NoError || code < 200 || code >= 300
+                || content["msgtype"].toString() != "m.image" || !mxc.startsWith("mxc://")) {
+                cancelImageUpload();
+                setStatus("Could not upload the image. You can try again.");
+                return;
+            }
+            if (!ready || !rooms.contains(room) || rooms.value(room)["encryption_event"].isObject() != encrypt) {
+                cancelImageUpload();
+                setStatus("The room changed during upload. The image was not sent.");
+                return;
+            }
+
+            // Keep captions literal so a leading slash cannot turn an image into a command.
+            if (!caption.trimmed().isEmpty()) content.insert("body", caption);
+            auto params = messageParams(room, "", replyTo);
+            params.insert("base_content", content);
+            imageSendRequest = transmit("send_message", params);
+        });
+    }
+
     QString profileName() const { return accountName.isEmpty() ? profile : accountName; }
     QUrl profileAvatar() const { return avatarUrl(accountAvatar); }
 
@@ -271,8 +358,25 @@ signals:
     void changed();
     void timelineChanged();
     void olderMessagesLoading();
+    void imageSent(const QString &room);
 
 private:
+    static QJsonObject messageParams(const QString &room, const QString &text, const QString &replyTo) {
+        QJsonObject params{{"room_id", room}, {"text", text}};
+        if (!replyTo.isEmpty()) {
+            const QJsonObject target{{"event_id", replyTo}};
+            params.insert("relates_to", QJsonObject{{"m.in_reply_to", target}});
+        }
+        return params;
+    }
+
+    void cancelImageUpload() {
+        imageUploadRoom.clear();
+        imageSendRequest = 0;
+        if (auto *reply = std::exchange(imageUpload, nullptr))
+            reply->abort();
+    }
+
     QUrl avatarUrl(const QString &mxc, bool encrypted = false) const {
         return mediaUrl(mxc, encrypted, true);
     }
@@ -418,6 +522,20 @@ private:
                 // A successful logout sends a signed-out client state.
                 return;
             }
+            if (imageSendRequest != 0 && id == imageSendRequest) {
+                const auto room = imageUploadRoom;
+                cancelImageUpload();
+                const auto event = frame["data"].toObject();
+                if (name == "error" || event["event_id"].toString().isEmpty()) {
+                    setStatus("Could not send the image. You can try again.");
+                } else {
+                    insert(room, event);
+                    emit imageSent(room);
+                    setStatus("");
+                    if (room == selected) emit timelineChanged();
+                }
+                return;
+            }
             if (!pending.contains(int(id))) return;
             auto callback = pending.take(int(id));
             if (name == "error") setStatus("Matrix request failed. Check your homeserver, credentials or room access.");
@@ -436,6 +554,7 @@ private:
             if (!loggedIn) {
                 logoutRequest = 0;
                 pending.clear();
+                cancelImageUpload();
                 clearRoomData();
                 selected.clear();
                 status = "Sign in to Matrix";
@@ -497,6 +616,9 @@ private:
 
     QProcess process;
     QNetworkAccessManager http;
+    QNetworkReply *imageUpload = nullptr;
+    QString imageUploadRoom;
+    int imageSendRequest = 0;
     QWebSocket socket;
     QTimer startup, ping;
     QUrl base;
