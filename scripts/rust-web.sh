@@ -5,12 +5,12 @@ cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 root="$PWD"
 src="$root/.dev/gomuks-src"
 stage="$root/.dev/wasm-worker"
-commit=5d21e2c7b31aabbba30efdd33f5882d99972e00e
+source scripts/gomuks.env
 mkdir -p "$stage"
 if [[ ! -d "$src" ]]; then
-    git clone --depth=1 --branch v0.2611.1 https://github.com/gomuks/gomuks.git "$src"
+    git clone --depth=1 --branch "v$GOMUKS_VERSION" https://github.com/gomuks/gomuks.git "$src"
 fi
-[[ $(git -C "$src" rev-parse HEAD) == "$commit" ]] || { echo 'Unexpected gomuks checkout' >&2; exit 1; }
+[[ $(git -C "$src" rev-parse HEAD) == "$GOMUKS_COMMIT" ]] || { echo 'Unexpected gomuks checkout' >&2; exit 1; }
 (
     cd "$src/web"
     GOMAXPROCS=3 GOFLAGS=-p=3 sh build-wasm.sh

@@ -1,6 +1,9 @@
-# untethered 
+# Untethered
 
-## Rust / Iced branch
+Untethered’s frontend is written in Rust using Iced. The Matrix engine is the
+upstream [gomuks](https://github.com/gomuks/gomuks) project, written in Go.
+
+## Desktop
 
 Try the native Discord-style frontend from the checkout:
 
@@ -10,8 +13,18 @@ bash scripts/rust-client.sh       # Linux x86-64, current Rust toolchain and sys
 
 On x64 Windows with Rust and the MSVC build tools: `.\scripts\rust-client.ps1`.
 Both launchers use gomuks **v0.2611.1** for Matrix and store this client's session in
-`.dev/rust-profile`. The Rust and Qt sessions are independent. Set `UNTETHERED_BACKEND`
+`.dev/rust-profile`. Set `UNTETHERED_BACKEND`
 and `UNTETHERED_PROFILE` to use another compatible binary and dedicated profile.
+
+**How startup works:** The dev launcher fetches the pinned gomuks executable
+on first use, verifies its SHA-256 and caches it in `.dev/backends/`. On every
+launch, the Rust app locks the profile, starts `gomuks --desktop` as a child,
+and reads its loopback address from stdout. It authenticates with a fresh
+per-launch secret and opens a local WebSocket for Matrix commands and events.
+Closing the app shuts down the child. There’s no separate service to start.
+
+In Code OSS, **Ctrl+Shift+B** builds the Rust binary; **Terminal → Run Task →
+untethered: Run** launches the desktop app.
 
 The first launch opens a **local preview**: try the space rail, direct messages,
 channel switching, People, Copy chat, or the composer (Enter sends, Shift+Enter adds
@@ -27,7 +40,7 @@ gomuks engine. The UI currently renders plain text and initial-based avatars.
 
 ![Untethered room preview in the Rust frontend](rust-client/docs/preview.png)
 
-### Browser build
+## Browser
 
 The browser runs the same Rust view and an embedded gomuks WebAssembly worker.
 No desktop gomuks process or proxy is needed. Its Matrix device lives in the
@@ -52,32 +65,10 @@ are in `rust-client/src`. `cargo test --manifest-path rust-client/Cargo.toml`
 runs the model regression test; the ignored live test requires a disposable
 loopback homeserver, an encrypted room and an isolated profile.
 
-## Original Qt client
+## Arch Linux package (x86-64)
 
-An independent Matrix desktop prototype with a Qt Quick interface and a local gomuks backend. It opens as a normal Linux app and stores the Matrix session under the current user's local application data directory.
-
-## Build
-
-Run `makepkg -s` in this directory. The recipe downloads the official x86-64 gomuks desktop release, checks its SHA-256 hash and packages only its gomuks backend alongside the Qt application.
-
-The backend is [gomuks v0.2611.1](https://github.com/gomuks/gomuks/releases/tag/v0.2611.1), with [source at commit 5d21e2c](https://github.com/gomuks/gomuks/tree/5d21e2c7b31aabbba30efdd33f5882d99972e00e). Qt comes from system packages. The package is for local prototype testing.
-
-## Develop in Code OSS
-
-Open this project folder in Code OSS. Use **Terminal → Run Task → untethered: Run**
-to build and launch the app. **Ctrl+Shift+B** builds it without launching.
-The first run downloads and verifies the pinned gomuks backend. Later runs reuse it
-and build the frontend incrementally. No package installation is required.
-
-From a shell the equivalent is `bash scripts/dev.sh run`. The development
-profile lives under `.dev/profile/untethered` and has a separate Matrix session.
-The installed package and its profile can be used independently.
-
-To uninstall the package, run `sudo pacman -R untethered`. Pacman removes
-the installed app and backend but keeps your Matrix session and encryption keys
-under `~/.local/share/untethered` (or your configured `XDG_DATA_HOME`).
-
-
-## Local startup test
-
-Run `untethered --smoke-test` to test Qt startup and the backend handshake. Set `XDG_DATA_HOME` to a fresh directory for an isolated profile. Developers can pass `--backend /absolute/path/to/gomuks` when running an unpackaged build.
+Run `makepkg -s` in the checkout to build the **current local Git commit**.
+The package installs `/usr/bin/untethered` and `/usr/lib/untethered/gomuks`.
+Launching `untethered` uses that bundled backend without a runtime download.
+The packaged app keeps its Matrix device in `$XDG_DATA_HOME/untethered-iced`
+(default `~/.local/share/untethered-iced`), separate from the development profile.

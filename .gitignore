@@ -1,7 +1,8 @@
 /src/
 /pkg/
 *.pkg.tar.*
-*.deb
+/untethered-src/
+/gomuks-*-linux-amd64
 *.log
 
 /.dev/

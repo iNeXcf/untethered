@@ -9,12 +9,39 @@ use tokio::{
 };
 use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
 
+// The Arch package ships gomuks next to the frontend's installation prefix,
+// at ../lib/untethered/gomuks relative to bin/. Dev launchers supply both paths.
+#[cfg(target_os = "linux")]
+fn bundled_backend() -> Option<PathBuf> {
+    let exe = env::current_exe().ok()?;
+    let path = exe.parent()?.parent()?.join("lib/untethered/gomuks");
+    path.is_file().then_some(path)
+}
+#[cfg(target_os = "linux")]
+fn default_profile() -> Option<PathBuf> {
+    env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| env::var_os("HOME").map(|p| PathBuf::from(p).join(".local/share")))
+        .map(|p| p.join("untethered-iced"))
+}
+#[cfg(not(target_os = "linux"))]
+fn bundled_backend() -> Option<PathBuf> {
+    None
+}
+#[cfg(not(target_os = "linux"))]
+fn default_profile() -> Option<PathBuf> {
+    None
+}
+
 pub async fn run(commands: Commands, events: Events) -> Result<(), String> {
     let exe = env::var_os("UNTETHERED_BACKEND")
         .map(PathBuf::from)
-        .ok_or("Set UNTETHERED_BACKEND to the pinned gomuks executable.")?;
+        .or_else(bundled_backend)
+        .ok_or("Use the Rust client launcher or set UNTETHERED_BACKEND to the pinned gomuks executable.")?;
     let root = env::var_os("UNTETHERED_PROFILE")
         .map(PathBuf::from)
+        .or_else(default_profile)
         .ok_or("Set UNTETHERED_PROFILE to a separate Rust client profile directory.")?;
     let mut dir = fs::DirBuilder::new();
     dir.recursive(true);
