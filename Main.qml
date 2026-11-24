@@ -1175,33 +1175,66 @@ ApplicationWindow {
                             }
                         }
 
+                        Label {
+                            text: "Participants (" + callMembers.count + ")"
+                            Layout.leftMargin: 12
+                            Layout.bottomMargin: 4
+                            color: window.muted
+                            font.pixelSize: 12
+                        }
+
                         ListView {
                             id: callMembers
                             visible: count > 0
                             Layout.fillWidth: true
-                            Layout.preferredHeight: 34
-                            Layout.leftMargin: 10
-                            Layout.rightMargin: 10
+                            Layout.preferredHeight: 60
+                            Layout.leftMargin: 12
+                            Layout.rightMargin: 12
+                            Layout.bottomMargin: 6
                             clip: true
                             orientation: ListView.Horizontal
-                            spacing: 6
+                            spacing: 8
                             model: chat.callParticipants
                             Accessible.name: "Call participants"
                             delegate: Rectangle {
-                                required property string modelData
-                                width: Math.min(220, participantName.implicitWidth + 18)
-                                height: 27
-                                radius: 7
-                                color: window.activeSurface
-                                Label {
-                                    id: participantName
+                                id: participant
+                                required property var modelData
+                                width: 164
+                                height: 49
+                                radius: 9
+                                color: window.fieldSurface
+                                border.color: modelData.local ? window.activeSurface : window.divider
+                                Accessible.role: Accessible.StaticText
+                                Accessible.name: modelData.name + (modelData.local ? ", you" : "")
+                                ToolTip.text: modelData.userId
+                                ToolTip.visible: participantHover.hovered
+                                HoverHandler { id: participantHover }
+
+                                RowLayout {
                                     anchors.fill: parent
-                                    anchors.leftMargin: 9
-                                    anchors.rightMargin: 9
-                                    text: parent.modelData
-                                    textFormat: Text.PlainText
-                                    elide: Text.ElideRight
-                                    verticalAlignment: Text.AlignVCenter
+                                    anchors.margins: 8
+                                    Avatar {
+                                        name: participant.modelData.name.replace(/^@/, "")
+                                        source: participant.modelData.avatar
+                                        Layout.preferredWidth: 32
+                                        Layout.preferredHeight: 32
+                                    }
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 0
+                                        Label {
+                                            Layout.fillWidth: true
+                                            text: participant.modelData.name
+                                            textFormat: Text.PlainText
+                                            elide: Text.ElideRight
+                                        }
+                                        Label {
+                                            visible: participant.modelData.local
+                                            text: "You"
+                                            color: window.muted
+                                            font.pixelSize: 11
+                                        }
+                                    }
                                 }
                             }
                             ScrollBar.horizontal: ScrollBar {}

@@ -32,7 +32,7 @@ class Chat : public QObject {
     Q_PROPERTY(QUrl callUrl MEMBER callUrl NOTIFY callControlsChanged)
     Q_PROPERTY(QString callRoomName MEMBER callRoomName NOTIFY callControlsChanged)
     Q_PROPERTY(QString callTransportStatus MEMBER callTransportStatus NOTIFY callControlsChanged)
-    Q_PROPERTY(QStringList callParticipants MEMBER callParticipants NOTIFY callParticipantsChanged)
+    Q_PROPERTY(QVariantList callParticipants MEMBER callParticipants NOTIFY callParticipantsChanged)
     Q_PROPERTY(QString imageUploadRoom MEMBER imageUploadRoom NOTIFY changed)
     Q_PROPERTY(bool verified MEMBER verified NOTIFY changed)
     Q_PROPERTY(QString status MEMBER status NOTIFY changed)
@@ -486,18 +486,30 @@ private:
                 participants.insert(sender);
         }
 
-        QStringList names;
+        QVariantList tiles;
         const auto profiles = roomProfiles.value(callRoomId);
         for (const auto &user : participants) {
             const auto member = profiles.value(user);
             const auto membership = member["membership"].toString();
             if (!membership.isEmpty() && membership != "join") continue;
-            const auto name = member["displayname"].toString();
-            names.append(name.isEmpty() ? user : name);
+            const bool local = user == profile;
+            const auto name = member["displayname"].toString(local ? accountName : QString());
+            const auto encryptedAvatar = member["avatar_file"].toObject()["url"].toString();
+            const auto avatar = encryptedAvatar.isEmpty()
+                ? avatarUrl(member["avatar_url"].toString(local ? accountAvatar : QString()))
+                : avatarUrl(encryptedAvatar, true);
+            tiles.append(QVariantMap{{"userId", user}, {"name", name.isEmpty() ? user : name},
+                                     {"avatar", avatar}, {"local", local}});
         }
-        names.sort(Qt::CaseInsensitive);
-        if (names != callParticipants) {
-            callParticipants = names;
+        std::sort(tiles.begin(), tiles.end(), [](const QVariant &a, const QVariant &b) {
+            const auto left = a.toMap();
+            const auto right = b.toMap();
+            if (left["local"].toBool() != right["local"].toBool()) return left["local"].toBool();
+            const int compare = left["name"].toString().compare(right["name"].toString(), Qt::CaseInsensitive);
+            return compare != 0 ? compare < 0 : left["userId"].toString() < right["userId"].toString();
+        });
+        if (tiles != callParticipants) {
+            callParticipants = tiles;
             emit callParticipantsChanged();
         }
     }
@@ -828,7 +840,7 @@ private:
     int callMemberRequest = 0;
     bool waitingForCallState = false;
     QJsonArray callStickyMembers;
-    QStringList callParticipants;
+    QVariantList callParticipants;
     QList<QUrl> callTransports;
     int callTransportRequest = 0;
     QTimer startup, ping;
