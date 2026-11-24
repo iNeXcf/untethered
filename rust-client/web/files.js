@@ -30,6 +30,19 @@ export async function post_upload(worker, id, file, encrypt) {
     const buffer = await file.arrayBuffer();
     worker.postMessage({command:"wasm-upload",request_id:id,data:"",encrypt,filename:file.name,payload:new Uint8Array(buffer)},[buffer]);
 }
+export async function thumbnail(file, width, height) {
+    const bitmap = await createImageBitmap(file);
+    try {
+        const canvas = document.createElement("canvas");
+        canvas.width = width; canvas.height = height;
+        const ctx = canvas.getContext("2d", {willReadFrequently: true});
+        const scale = Math.min(width / bitmap.width, height / bitmap.height, 1);
+        const w = Math.max(1, Math.round(bitmap.width * scale));
+        const h = Math.max(1, Math.round(bitmap.height * scale));
+        ctx.drawImage(bitmap, Math.floor((width-w)/2), Math.floor((height-h)/2), w, h);
+        return new Uint8Array(ctx.getImageData(0,0,width,height).data.buffer);
+    } finally { bitmap.close(); }
+}
 export async function save_media(worker, path, encrypted, name) {
     const channel = new MessageChannel();
     const bytes = await new Promise((resolve, reject) => {

@@ -10,6 +10,12 @@ extern "C" {
     fn install_files(files: JsValue, hover: JsValue);
     pub fn pick(room: &str);
     #[wasm_bindgen(catch)]
+    pub async fn thumbnail(
+        file: &web_sys::File,
+        width: u32,
+        height: u32,
+    ) -> Result<js_sys::Uint8Array, JsValue>;
+    #[wasm_bindgen(catch)]
     pub async fn post_upload(
         worker: &Worker,
         id: f64,

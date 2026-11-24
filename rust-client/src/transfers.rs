@@ -150,6 +150,11 @@ impl App {
         if !self.current_file(room, id) {
             return;
         }
+        if crate::rooms::server_confirmed(event) {
+            self.live.event(&json!(room), event);
+            self.finish_delivery(room, id, true);
+            return;
+        }
         let Some(txn) = event["transaction_id"].as_str() else {
             self.fail_file(
                 room,
@@ -165,18 +170,29 @@ impl App {
             self.finish_delivery(room, id, ok);
         }
     }
-    pub fn media_delivery(&mut self, data: &Value) {
-        let event = &data["event"];
+    pub fn media_delivery(&mut self, event: &Value, ok: bool) {
         let (Some(txn), Some(room)) = (event["transaction_id"].as_str(), event["room_id"].as_str())
         else {
             return;
         };
+        // A sync echo can arrive after a transient failure. Retire the retry
+        // card for precisely this transaction, never another file in the room.
+        if ok
+            && crate::rooms::server_confirmed(event)
+            && let Some(id) = self
+                .outbox
+                .rooms
+                .get(room)
+                .and_then(|q| q.iter().find(|a| !a.busy && a.txn.as_deref() == Some(txn)))
+                .map(|a| a.id)
+        {
+            self.outbox.remove(room, id);
+        }
         let Some(b) = &mut self.batch else { return };
         let Some(&id) = b.ids.front() else { return };
         if room != b.room {
             return;
         }
-        let ok = data["error"].is_null() && event["send_error"].as_str().unwrap_or("").is_empty();
         if self
             .outbox
             .get_mut(room, id)
@@ -189,10 +205,16 @@ impl App {
             .any(|p| matches!(p,Request::MediaSend(r,i) if r==room && *i==id))
             && b.early.len() < 32
         {
-            b.early.insert(txn.into(), ok);
+            b.early
+                .entry(txn.into())
+                .and_modify(|confirmed| *confirmed |= ok)
+                .or_insert(ok);
         }
     }
-    fn finish_delivery(&mut self, room: &str, id: u64, ok: bool) {
+    pub fn finish_delivery(&mut self, room: &str, id: u64, ok: bool) {
+        if !self.current_file(room, id) {
+            return;
+        }
         if !ok {
             self.fail_file(
                 room,
@@ -246,6 +268,61 @@ pub fn wayland_drops() -> iced::Task<Msg> {
 mod tests {
     use super::*;
     use crate::rooms::Room;
+    #[test]
+    fn accepted_event_with_gomuks_pending_sentinel_clears_the_tray_in_either_order() {
+        for completion_first in [true, false] {
+            let (tx, rx) = async_channel::bounded(8);
+            let mut app = App::new(tx);
+            app.logged_in = true;
+            app.connected = true;
+            app.verified = true;
+            app.selected = "!a".into();
+            app.live.list.insert(
+                "!a".into(),
+                Room {
+                    has_metadata: true,
+                    ..Default::default()
+                },
+            );
+            let _ = app.update(Msg::Files(
+                "!a".into(),
+                vec![media::LocalFile {
+                    name: "photo.png".into(),
+                    size: 42,
+                    path: "unused".into(),
+                }],
+            ));
+            let _ = app.update(Msg::Send);
+            let Command::Upload { id, .. } = rx.try_recv().unwrap() else {
+                panic!("expected upload")
+            };
+            let content =
+                json!({"msgtype":"m.image","url":"mxc://example/photo","body":"photo.png"});
+            app.frame(json!({"command":"response","request_id":id,"data":content}));
+            let rpc = rx.try_recv().unwrap().into_rpc();
+            let local = json!({"room_id":"!a","rowid":7,"transaction_id":"tx","event_id":"~tx","type":"m.room.message","content":content,"send_error":"not sent"});
+            let mut accepted = local.clone();
+            accepted["event_id"] = json!("$from-homeserver");
+            let done = json!({"command":"send_complete","data":{"event":accepted,"error":null}});
+            let reply = json!({"command":"response","request_id":rpc["request_id"],"data":local});
+            if completion_first {
+                app.frame(done);
+                app.frame(reply);
+            } else {
+                app.frame(reply);
+                app.frame(done);
+            }
+            assert!(app.batch.is_none() && app.outbox.rooms.is_empty());
+            assert!(
+                rx.try_recv().is_err(),
+                "a delivered file must not be resent"
+            );
+            let r = app.live.list.get_mut("!a").unwrap();
+            r.insert(&local); // stale local echo after server confirmation
+            assert_eq!(r.history[&7].body, "photo.png");
+            assert!(!app.status.contains("failed"));
+        }
+    }
     #[test]
     fn staged_file_only_sends_on_submit_and_retries_in_original_room() {
         let (tx, rx) = async_channel::bounded(4);

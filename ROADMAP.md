@@ -12,7 +12,8 @@
   The native live test uploads and saves a byte-identical binary; a separate Chromium
   device also decrypted that file. Element Web 1.12.35 displayed the encrypted attachment
   sent by the browser client. Windows cross-builds; Explorer runtime testing is still open.
-- **Files still to do:** inline image thumbnails, native screenshot paste, portal-only
+- **Composer previews:** local image thumbnails and compact file cards on native and web.
+- **Files still to do:** received inline image thumbnails, native screenshot paste, portal-only
   drop offers, transfer percentages and cancellation after upload starts. Check real
   KDE/KWin and Windows Explorer along with the image/PDF acceptance matrix below.
 - **Calls started:** a user-triggered MatrixRTC transport check in Account, and a

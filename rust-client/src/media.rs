@@ -38,31 +38,42 @@ pub struct Outbox {
 pub struct Attachment {
     pub id: u64,
     pub source: LocalFile,
+    pub thumbnail: Option<iced::widget::image::Handle>,
     pub descriptor: Option<Value>,
     pub txn: Option<String>,
     pub busy: bool,
     pub error: Option<String>,
 }
 impl Outbox {
-    pub fn stage(&mut self, room: &str, files: Vec<LocalFile>, limit: u64) -> bool {
+    pub fn stage(
+        &mut self,
+        room: &str,
+        files: Vec<LocalFile>,
+        limit: u64,
+    ) -> (bool, Vec<(u64, LocalFile)>) {
         let queue = self.rooms.entry(room.to_owned()).or_default();
         let mut all = true;
+        let mut previews = vec![];
         for file in files {
             if file.size > limit || queue.len() >= MAX_FILES {
                 all = false;
                 continue;
             }
             self.next += 1;
+            if crate::preview::candidate(&file) {
+                previews.push((self.next, file.clone()));
+            }
             queue.push(Attachment {
                 id: self.next,
                 source: file,
+                thumbnail: None,
                 descriptor: None,
                 txn: None,
                 busy: false,
                 error: None,
             });
         }
-        all
+        (all, previews)
     }
     pub fn get_mut(&mut self, room: &str, id: u64) -> Option<&mut Attachment> {
         self.rooms.get_mut(room)?.iter_mut().find(|a| a.id == id)

@@ -6,6 +6,7 @@ license = "AGPL-3.0-or-later"
 
 [dependencies]
 async-channel = "2"
+async-lock = "3"
 bs58 = "0.5"
 chrono = "0.4"
 futures-util = "0.3"
@@ -13,7 +14,8 @@ serde_json = "1"
 url = "2"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-iced = { version = "0.14", default-features = false, features = ["tiny-skia", "tokio", "x11", "wayland", "advanced"] }
+iced = { version = "0.14", default-features = false, features = ["tiny-skia", "tokio", "x11", "wayland", "advanced", "image-without-codecs"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 tokio = { version = "1", features = ["process", "io-util", "time", "macros", "rt-multi-thread", "fs"] }
 tokio-tungstenite = "0.28"
 reqwest = { version = "0.12", default-features = false, features = ["stream", "json"] }
@@ -28,7 +30,8 @@ smithay-clipboard = "0.7.3"
 smithay-clipboard = { path = "vendor/smithay-clipboard" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-iced = { version = "0.14", default-features = false, features = ["wgpu", "webgl", "fira-sans", "advanced"] }
+iced = { version = "0.14", default-features = false, features = ["wgpu", "webgl", "fira-sans", "advanced", "image-without-codecs"] }
+imagesize = { version = "0.14", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 wasm-bindgen = "=0.2.130"
 wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = ["Worker", "WorkerOptions", "WorkerType", "ErrorEvent", "MessageEvent", "Document", "Window", "Navigator", "Clipboard", "File", "FileList"] }

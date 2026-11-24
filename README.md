@@ -41,7 +41,10 @@ that flow through its frontend API. Room sync, encryption, history, and sends us
 gomuks engine. The UI currently renders plain text and initial-based avatars.
 
 **Files:** Drop files onto a room or click **+** to stage them, optionally type
-a caption for the first attachment, then press **Send**. Each file is a standard
+a caption for the first attachment, then press **Send**. A local preview strip
+shows image thumbnails or file-type cards; use **×** to remove a file. PNG,
+JPEG, GIF and WebP previews are static. Oversized or unsupported images still
+send as ordinary attachments within the upload limit. Each file is a standard
 Matrix media event. Draft attachments stay in their original room when you switch.
 Uploads are sequential, with up to 10 staged files per room and a 64 MiB/file cap
 (lower if the homeserver advertises a smaller limit). Click **Save** on a received

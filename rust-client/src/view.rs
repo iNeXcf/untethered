@@ -4,8 +4,8 @@ use iced::{
     Alignment::Center,
     Border, Color, Element, Fill, Font, Length, Theme, color, font, keyboard,
     widget::{
-        Column, Row, Space, button, column, container, row, rule, scrollable, text, text_editor,
-        text_input, tooltip,
+        Column, Row, Space, button, column, container, image, row, rule, scrollable, stack, text,
+        text_editor, text_input, tooltip,
     },
 };
 
@@ -76,6 +76,112 @@ fn avatar(name: &str, size: f32) -> El<'static> {
 }
 fn label(s: &str) -> El<'_> {
     text(s).font(BOLD).size(11).color(MUTED).into()
+}
+fn attachment_card(a: &crate::media::Attachment) -> El<'_> {
+    let name = &a.source.name;
+    let ext = name
+        .rsplit_once('.')
+        .map(|(_, s)| s)
+        .filter(|s| !s.is_empty() && s.len() <= 6 && s.bytes().all(|b| b.is_ascii_alphanumeric()))
+        .unwrap_or("FILE")
+        .to_ascii_uppercase();
+    let tint = match ext.as_str() {
+        "PDF" => color!(0xf2969d),
+        "ZIP" | "7Z" | "GZ" => color!(0xe7be7c),
+        "WAV" | "MP3" | "OGG" | "MP4" | "WEBM" => color!(0xc4adee),
+        _ => color!(0xa7b6f6),
+    };
+    let visual: El = if let Some(thumb) = &a.thumbnail {
+        image(thumb)
+            .width(Fill)
+            .height(76)
+            .content_fit(iced::ContentFit::Contain)
+            .into()
+    } else {
+        container(
+            container(text(ext).size(13).font(BOLD).color(RAIL))
+                .padding([5, 8])
+                .style(move |_| surface(tint, 5.)),
+        )
+        .center_x(Fill)
+        .center_y(76)
+        .into()
+    };
+    let remove = tooltip(
+        button(text("×").size(16).font(BOLD))
+            .padding([0, 6])
+            .on_press_maybe((!a.busy).then_some(Msg::RemoveFile(a.id)))
+            .style(|_, s| button::Style {
+                background: Some(
+                    if s == button::Status::Hovered {
+                        color!(0x943e47)
+                    } else {
+                        TRAY
+                    }
+                    .into(),
+                ),
+                border: Border::default().rounded(6),
+                text_color: TEXT,
+                ..Default::default()
+            }),
+        "Remove attachment",
+        tooltip::Position::Top,
+    );
+    let picture = stack![
+        container(visual).width(Fill).style(|_| surface(RAIL, 6.)),
+        container(remove).padding(3).align_right(Fill)
+    ];
+    let short = if name.chars().count() > 21 {
+        let head: String = name.chars().take(13).collect();
+        let tail: String = name
+            .chars()
+            .rev()
+            .take(6)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        format!("{head}…{tail}")
+    } else {
+        name.clone()
+    };
+    let state = if a.error.is_some() {
+        "Failed · retry"
+    } else if !a.busy {
+        "Ready"
+    } else if a.descriptor.is_none() {
+        "Uploading…"
+    } else {
+        "Sending…"
+    };
+    let meta = text(format!("{}  ·  {state}", crate::media::size(a.source.size)))
+        .size(11)
+        .color(if a.error.is_some() {
+            color!(0xffa5ad)
+        } else {
+            MUTED
+        });
+    let meta: El = if let Some(err) = &a.error {
+        tooltip(meta, text(err).size(13), tooltip::Position::Top).into()
+    } else {
+        meta.into()
+    };
+    container(
+        column![
+            picture,
+            tooltip(
+                text(short).size(13).height(17).font(BOLD),
+                text(name).size(13),
+                tooltip::Position::Top
+            ),
+            meta
+        ]
+        .spacing(3),
+    )
+    .padding(7)
+    .width(158)
+    .style(|_| surface(SIDE, 8.))
+    .into()
 }
 fn rail_button<'a>(glyph: String, hint: &'a str, active: bool, msg: Msg) -> El<'a> {
     let b = button(container(text(glyph).font(BOLD).color(TEXT).size(19)).center(44))
@@ -482,31 +588,11 @@ impl App {
                     .font(BOLD),
             );
         }
-        for a in files.into_iter().flatten() {
-            let state = if a.busy {
-                if a.descriptor.is_some() {
-                    "Sending…"
-                } else {
-                    "Uploading…"
-                }
-            } else {
-                a.error.as_deref().unwrap_or("Ready")
-            };
-            tray = tray.push(
-                row![
-                    text(format!(
-                        "{}  ·  {}  ·  {state}",
-                        a.source.name,
-                        crate::media::size(a.source.size)
-                    ))
-                    .size(13)
-                    .width(Fill),
-                    button("Remove")
-                        .on_press_maybe((!a.busy).then_some(Msg::RemoveFile(a.id)))
-                        .style(nav(false))
-                ]
-                .align_y(Center),
-            );
+        if let Some(files) = files.filter(|q| !q.is_empty()) {
+            let cards = Row::with_children(files.iter().map(attachment_card))
+                .spacing(8)
+                .padding([2, 0]);
+            tray = tray.push(scrollable(cards).horizontal().width(Fill).height(138));
         }
         let composer = row![
             tooltip(

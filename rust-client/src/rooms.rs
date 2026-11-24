@@ -34,12 +34,33 @@ pub struct Room {
     pub history: BTreeMap<i64, Post>,
 }
 pub struct Post {
+    confirmed: bool,
     pub media: Option<crate::media::Media>,
     pub sender: String,
     pub body: String,
     pub time: i64,
 }
+// gomuks assigns ~txn IDs to local echoes. A $ ID comes from the homeserver.
+// In v0.2611.1, actuallySend updates the ID but can leave the initial "not sent"
+// sentinel on both the completion event and the persisted row.
+pub fn server_confirmed(e: &Value) -> bool {
+    e["event_id"]
+        .as_str()
+        .is_some_and(|s| s.starts_with('$') && s.len() > 1)
+}
+pub fn real_send_error(e: &Value) -> bool {
+    !server_confirmed(e)
+        && e["send_error"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty() && s != "not sent")
+}
 impl Room {
+    pub fn already_confirmed(&self, e: &Value) -> bool {
+        e["rowid"]
+            .as_i64()
+            .and_then(|id| self.history.get(&id))
+            .is_some_and(|p| p.confirmed)
+    }
     pub fn insert(&mut self, e: &Value) {
         let Some(row) = e["rowid"].as_i64().filter(|&r| r > 0) else {
             return;
@@ -57,15 +78,23 @@ impl Room {
             return;
         }
         let mut body = body.to_owned();
+        let confirmed = server_confirmed(e);
+        // A late local echo must not overwrite the synced event for this row.
+        if !confirmed && self.already_confirmed(e) {
+            return;
+        }
         if e["redacted_by"].as_str().is_some_and(|s| !s.is_empty()) {
             body = "Message removed".into();
         }
-        if e["send_error"].as_str().is_some_and(|s| !s.is_empty()) {
+        if real_send_error(e) {
             body.push_str("  ·  Failed to send");
+        } else if !confirmed && e["send_error"] == "not sent" {
+            body.push_str("  ·  Sending…");
         }
         self.history.insert(
             row,
             Post {
+                confirmed,
                 media: if e["redacted_by"].as_str().is_some_and(|s| !s.is_empty()) {
                     None
                 } else {

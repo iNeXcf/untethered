@@ -115,6 +115,16 @@ async fn encrypted_round_trip_and_restart() {
             })
     })
     .await;
+    assert!(
+        !app.outbox.rooms.contains_key(id),
+        "delivery succeeded but the retry card is still visible"
+    );
+    assert!(
+        !app.live.list[id]
+            .history
+            .values()
+            .any(|p| p.body.contains("Failed to send"))
+    );
     let file = app.live.list[id]
         .history
         .values()

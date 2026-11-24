@@ -8,6 +8,7 @@ mod fonts;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod live_test;
 mod media;
+mod preview;
 mod rooms;
 mod transfers;
 mod view;
@@ -43,6 +44,7 @@ enum Msg {
     #[cfg(not(target_arch = "wasm32"))]
     DropPaths(Vec<std::path::PathBuf>),
     Files(String, Vec<media::LocalFile>),
+    Thumbnail(String, u64, Option<iced::widget::image::Handle>),
     PickFiles,
     RemoveFile(u64),
     SaveFile(media::Media),
@@ -358,7 +360,7 @@ impl App {
                     self.selected.clear();
                     self.section = Section::All;
                     self.account = !self.logged_in;
-                    self.outbox = Default::default();
+                    self.outbox.rooms.clear();
                     self.batch = None;
                     self.rtc_status.clear();
                     self.media_limit = media::MAX_BYTES;
@@ -380,6 +382,16 @@ impl App {
                         .retain(|_, p| !matches!(p, Request::Members(_) | Request::Page(_)));
                 }
                 self.live.sync(data);
+                if let Some(rooms) = data["rooms"].as_object() {
+                    for (room, delta) in rooms {
+                        if self.outbox.rooms.contains_key(room) {
+                            for e in items(&delta["events"]).filter(|e| rooms::server_confirmed(e))
+                            {
+                                self.media_delivery(e, true);
+                            }
+                        }
+                    }
+                }
                 for left in items(&data["left_rooms"]).filter_map(Value::as_str) {
                     self.outbox.rooms.remove(left);
                     if self.batch.as_ref().is_some_and(|b| b.room == left) {
@@ -394,11 +406,21 @@ impl App {
                 }
             }
             "send_complete" => {
-                self.live.event(&Value::Null, &data["event"]);
-                self.media_delivery(data);
-                if !data["error"].is_null() {
-                    self.status = "Message delivery failed.".into();
+                let e = &data["event"];
+                let accepted = rooms::server_confirmed(e)
+                    || e["room_id"]
+                        .as_str()
+                        .and_then(|id| self.live.list.get(id))
+                        .is_some_and(|r| r.already_confirmed(e));
+                let ok = accepted || (data["error"].is_null() && !rooms::real_send_error(e));
+                if !ok && !rooms::real_send_error(e) && e.is_object() {
+                    let mut failed = e.clone();
+                    failed["send_error"] = json!("delivery failed");
+                    self.live.event(&Value::Null, &failed);
+                } else {
+                    self.live.event(&Value::Null, e);
                 }
+                self.media_delivery(e, ok);
             }
             "response" | "error" => {
                 let Some(p) = self.pending.remove(&f["request_id"].as_i64().unwrap_or(0)) else {
@@ -406,6 +428,10 @@ impl App {
                 };
                 if f["command"] == "error" {
                     self.status = match p {
+                        Request::MediaSend(ref room,id) if data.as_str()==Some("event was already sent successfully") &&
+                            self.outbox.get_mut(room,id).is_some_and(|a|a.txn.is_some()) => {
+                            self.finish_delivery(room,id,true);return
+                        }
                         Request::Upload(room,id) | Request::MediaSend(room,id) => {
                             self.fail_file(&room,id,"Transfer failed. Retry or remove the attachment.");return
                         }
@@ -571,13 +597,27 @@ impl App {
                 if self.can_stage() && self.rooms().list.contains_key(&room) {
                     if files.is_empty() {
                         self.status = "Select regular files to attach.".into();
-                    } else if !self.outbox.stage(&room, files, self.media_limit) {
-                        self.status = format!(
-                            "Up to {} files per room, {} each.",
-                            media::MAX_FILES,
-                            media::size(self.media_limit)
-                        );
+                    } else {
+                        let (all, jobs) = self.outbox.stage(&room, files, self.media_limit);
+                        if !all {
+                            self.status = format!(
+                                "Up to {} files per room, {} each.",
+                                media::MAX_FILES,
+                                media::size(self.media_limit)
+                            );
+                        }
+                        return Task::batch(jobs.into_iter().map(|(id, file)| {
+                            let room = room.clone();
+                            Task::perform(preview::load(file), move |thumb| {
+                                Msg::Thumbnail(room, id, thumb)
+                            })
+                        }));
                     }
+                }
+            }
+            Msg::Thumbnail(room, id, thumb) => {
+                if let Some(a) = self.outbox.get_mut(&room, id) {
+                    a.thumbnail = thumb;
                 }
             }
             Msg::PickFiles if self.can_stage() => {
