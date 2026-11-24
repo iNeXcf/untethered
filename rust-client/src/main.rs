@@ -71,7 +71,7 @@ impl std::fmt::Debug for Msg {
 }
 enum Request {
     Login,
-    Verify,
+    Verify(account::RecoveryFormat),
     VerifyState,
     Page(String),
     Members(String),
@@ -94,6 +94,7 @@ struct App {
     account: bool,
     people: bool,
     profile: String,
+    matrix_id: String,
     status: String,
     server: String,
     username: String,
@@ -136,6 +137,7 @@ impl App {
             account: false,
             people: false,
             profile: String::new(),
+            matrix_id: String::new(),
             status: "Starting gomuks…".into(),
             server: String::new(),
             username: String::new(),
@@ -245,7 +247,7 @@ impl App {
     fn verifying(&self) -> bool {
         self.pending
             .values()
-            .any(|p| matches!(p, Request::Verify | Request::VerifyState))
+            .any(|p| matches!(p, Request::Verify(_) | Request::VerifyState))
     }
     fn verification_feedback(&self) -> &str {
         if !self.connected {
@@ -257,7 +259,7 @@ impl App {
         } else if self.recovery_unavailable {
             "gomuks reports that recovery isn’t set up for this account. Check recovery in a trusted Matrix client."
         } else {
-            "Use your Matrix recovery key or recovery passphrase. Grouping spaces are fine."
+            "Use the key or passphrase from Matrix recovery setup. Your sign-in password is separate. Grouping spaces are fine."
         }
     }
     fn submit_verification(&mut self) {
@@ -274,8 +276,12 @@ impl App {
             return;
         }
         self.verification_note.clear();
-        let key = account::recovery_input(&self.recovery);
-        self.rpc("verify", json!({"recovery_key":key}), Request::Verify);
+        let (format, key) = account::recovery_input(&self.recovery);
+        self.rpc(
+            "verify",
+            json!({"recovery_key":key}),
+            Request::Verify(format),
+        );
         if !self.verifying() {
             self.verification_note.clone_from(&self.status);
         }
@@ -299,6 +305,7 @@ impl App {
                     .or(data["user_id"].as_str())
                     .unwrap_or("")
                     .into();
+                self.matrix_id = rooms::string(&data["user_id"]);
                 if was != self.logged_in {
                     self.pending.retain(|_, p| matches!(p, Request::Login));
                     self.drafts.clear();
@@ -344,8 +351,12 @@ impl App {
                         Request::Login => {
                             "Sign-in failed. Check your homeserver, username, and password."
                         }
-                        Request::Verify | Request::VerifyState => {
-                            self.verification_note = account::verify_error(data).into();
+                        Request::Verify(format) => {
+                            self.verification_note = account::verify_error(data,format).into();
+                            return;
+                        }
+                        Request::VerifyState => {
+                            self.verification_note = "gomuks finished verification, but the device status couldn’t be refreshed.".into();
                             return;
                         }
                         Request::Page(_) => {
@@ -388,7 +399,7 @@ impl App {
                         }
                     }
                     Request::Login => self.password.clear(),
-                    Request::Verify if !self.verified => {
+                    Request::Verify(_) if !self.verified => {
                         self.rpc("get_state", json!({}), Request::VerifyState);
                     }
                     Request::VerifyState => {
@@ -397,7 +408,7 @@ impl App {
                             self.verification_note="gomuks finished the request but still reports this device as unverified. You can retry.".into();
                         }
                     }
-                    Request::Verify => {}
+                    Request::Verify(_) => {}
                 }
             }
             _ => {}

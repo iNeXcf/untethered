@@ -19,7 +19,7 @@ pub fn listen() -> Task<Msg> {
 pub fn sync(app: &App) {
     render(
         app.logged_in && !app.verified,
-        &app.profile,
+        &app.matrix_id,
         app.connected && !app.recovery_unavailable,
         app.verifying(),
         app.verification_feedback(),

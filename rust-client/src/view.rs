@@ -534,7 +534,7 @@ impl App {
             {
                 form = form
                     .push(text("Verify this device").size(28).font(BOLD))
-                    .push(text(&self.profile))
+                    .push(text(&self.matrix_id))
                     .push(
                         text_input("Recovery key or passphrase", &self.recovery)
                             .on_input(Msg::Recovery)
