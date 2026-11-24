@@ -1,3 +1,5 @@
+#include "matrixrtcwire.h"
+
 #include <QtCore>
 #include <QGuiApplication>
 #include <QtWebEngineQuick/qtwebenginequickglobal.h>
@@ -448,7 +450,7 @@ private:
             const auto content = event["content"].toObject();
             const auto id = content["member"].toObject()["id"].toString();
             const auto slot = content["slot_id"].toString();
-            if (sender.isEmpty() || id.isEmpty() || (slot != "m.call#room" && slot != "m.call#ROOM")) continue;
+            if (sender.isEmpty() || id.isEmpty() || !MatrixRtcWire::isRoomCallSlot(slot)) continue;
             auto &current = latest[sender][id];
             const auto stamp = event["timestamp"].toInteger();
             if (current.isEmpty() || stamp > current["timestamp"].toInteger()
@@ -463,7 +465,7 @@ private:
                 const auto member = event["content"].toObject()["member"].toObject();
                 const auto duration = event["sticky_duration_ms"].toInteger();
                 const auto timestamp = event["timestamp"].toInteger();
-                if (member["membership"].toString() == "join" && duration > 0 && timestamp > 0
+                if (MatrixRtcWire::isJoinedMember(member) && duration > 0 && timestamp > 0
                     && duration > now - timestamp) {
                     participants.insert(user.key());
                     break;

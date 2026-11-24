@@ -12,13 +12,14 @@ optdepends=('qt6-wayland: Wayland platform plugin')
 makedepends=('binutils')
 _gomuks_release=0.2611.1
 _deb="gomuks-desktop-v${_gomuks_release}-linux-amd64.deb"
-source=('untethered.pro' 'main.cpp' 'Main.qml' 'ui.qrc' 'untethered.desktop' 'LICENSE'
+source=('untethered.pro' 'main.cpp' 'matrixrtcwire.h' 'Main.qml' 'ui.qrc' 'untethered.desktop' 'LICENSE'
         "${_deb}::https://github.com/gomuks/gomuks/releases/download/v${_gomuks_release}/gomuks-desktop-linux-amd64.deb")
 noextract=("$_deb")
 options=('!strip' '!debug')
 sha256sums=(
-    'b8b7ae958ae29507bd04a04ee0462711287a2db3d186c799d699ee7edcc7755c'
-    '3809f09180ae6fee9bc9c2e610bc003d58517c3a892ee04edf1a2980764d2e5f'
+    '71131fbdac64c257638019c48a00cec4393419e7d761c32f07c7f70e8142e4b8'
+    '837224e625d99158b2167eb8561d6704d3fb2a9395f53af4617bcda5250d179f'
+    '9d5ac95ef727d6d22ee90b144a97c79ad3ee606245102dcc6124e947390d0f7d'
     'dc771a01d61ec87b4894b73d623a9a9b223f179ee8080a32fb65ba84372f6126'
     '288315478e8401b8efe16eefa0568e2be0c199bb4f9876f01d3eb7a12c77f5dd'
     '636e7f40fa3f8031264be7c0ea51d265cd13f6c48a829f09f1ae006161c8ca3b'
