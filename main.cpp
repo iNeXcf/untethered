@@ -31,6 +31,7 @@ class Chat : public QObject {
     Q_PROPERTY(bool loggingOut READ loggingOut NOTIFY changed)
     Q_PROPERTY(QUrl callUrl MEMBER callUrl NOTIFY callControlsChanged)
     Q_PROPERTY(QString callRoomName MEMBER callRoomName NOTIFY callControlsChanged)
+    Q_PROPERTY(QString callTransportStatus MEMBER callTransportStatus NOTIFY callControlsChanged)
     Q_PROPERTY(QString imageUploadRoom MEMBER imageUploadRoom NOTIFY changed)
     Q_PROPERTY(bool verified MEMBER verified NOTIFY changed)
     Q_PROPERTY(QString status MEMBER status NOTIFY changed)
@@ -69,6 +70,8 @@ public:
             ping.stop();
             ready = false;
             pending.clear();
+            if (callTransportRequest != 0)
+                finishCallTransportDiscovery(tr("Could not check the homeserver’s MatrixRTC transport."));
             logoutRequest = 0;
             cancelImageUpload();
             setStatus("Disconnected. Reconnecting…");
@@ -187,13 +190,16 @@ public:
             query += "&updateTo=" + QUrl::toPercentEncoding(frontendETag);
         callUrl.setQuery(QString::fromLatin1(query));
         callRoomName = roomName;
-        emit callControlsChanged();
+        discoverCallTransports();
     }
 
     Q_INVOKABLE void closeCall() {
         if (callUrl.isEmpty()) return;
         callUrl.clear();
         callRoomName.clear();
+        callTransports.clear();
+        callTransportRequest = 0;
+        callTransportStatus.clear();
         emit callControlsChanged();
     }
 
@@ -402,6 +408,37 @@ signals:
     void callControlsChanged();
 
 private:
+    void discoverCallTransports() {
+        callTransports.clear();
+        const int request = callTransportRequest = transmit("get_rtc_transports", {});
+        callTransportStatus = tr("Checking the homeserver’s MatrixRTC transport…");
+        emit callControlsChanged();
+        QTimer::singleShot(8000, this, [this, request] {
+            if (request == callTransportRequest)
+                finishCallTransportDiscovery(tr("MatrixRTC transport discovery timed out."));
+        });
+    }
+
+    void finishCallTransportDiscovery(const QString &status) {
+        callTransportRequest = 0;
+        callTransportStatus = status;
+        emit callControlsChanged();
+    }
+
+    void readCallTransports(const QJsonObject &data) {
+        for (const auto &value : data["rtc_transports"].toArray()) {
+            const auto transport = value.toObject();
+            if (transport["type"].toString() != "livekit") continue;
+            const QUrl service(transport["livekit_service_url"].toString(), QUrl::StrictMode);
+            if (service.isValid() && service.scheme() == "https" && !service.host().isEmpty()
+                && service.userInfo().isEmpty() && !service.hasFragment() && !callTransports.contains(service))
+                callTransports.append(service);
+        }
+        finishCallTransportDiscovery(callTransports.isEmpty()
+            ? tr("The homeserver did not advertise a LiveKit service. The room may use a participant’s service.")
+            : tr("LiveKit service advertised by the homeserver."));
+    }
+
     static QJsonObject messageParams(const QString &room, const QString &text, const QString &replyTo) {
         QJsonObject params{{"room_id", room}, {"text", text}};
         if (!replyTo.isEmpty()) {
@@ -582,6 +619,13 @@ private:
                 }
                 return;
             }
+            if (callTransportRequest != 0 && id == callTransportRequest) {
+                if (name == "error" || !data["rtc_transports"].isArray())
+                    finishCallTransportDiscovery(tr("Could not check the homeserver’s MatrixRTC transport."));
+                else
+                    readCallTransports(data);
+                return;
+            }
             if (!pending.contains(int(id))) return;
             auto callback = pending.take(int(id));
             if (name == "error") setStatus("Matrix request failed. Check your homeserver, credentials or room access.");
@@ -671,7 +715,9 @@ private:
     QWebSocket socket;
     QUrl callUrl;
     QString frontendETag;
-    QString callRoomName;
+    QString callRoomName, callTransportStatus;
+    QList<QUrl> callTransports;
+    int callTransportRequest = 0;
     QTimer startup, ping;
     QUrl base;
     QByteArray key, stdoutBuffer;

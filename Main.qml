@@ -1176,6 +1176,18 @@ ApplicationWindow {
                         }
 
                         Label {
+                            text: chat.callTransportStatus
+                            visible: text !== ""
+                            Layout.fillWidth: true
+                            Layout.leftMargin: 10
+                            Layout.rightMargin: 10
+                            Layout.bottomMargin: 6
+                            color: window.muted
+                            font.pixelSize: 12
+                            wrapMode: Text.WordWrap
+                        }
+
+                        Label {
                             visible: callContent.audioSettingsError !== ""
                             Layout.fillWidth: true
                             Layout.leftMargin: 10
