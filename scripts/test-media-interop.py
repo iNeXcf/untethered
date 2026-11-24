@@ -148,9 +148,12 @@ def main():
     args.add_argument("--voice-room",action="store_true",help="Join a silent encrypted voice room with three native Linux clients and measure every audio path")
     args.add_argument("--window-share",action="store_true",help="Share a selected test window through KDE's ScreenCast portal to two encrypted voice peers")
     args.add_argument("--room-camera",action="store_true",help="Toggle a portal-authorized virtual camera and measure the changing decoded frames at both voice-room peers")
+    args.add_argument("--room-ptt",action="store_true",help="Verify key-gated microphone and uninterrupted peer audio in a three-client Linux voice room")
     args.add_argument("--upload-cancel",action="store_true",help="Test native and browser cancellation against a throttled Matrix upload")
     args=args.parse_args()
-    if args.window_share or args.room_camera: args.voice_room=True
+    if args.room_ptt and (args.window_share or args.room_camera):
+        raise SystemExit("--room-ptt uses private X displays; run the KWin video fixtures separately")
+    if args.window_share or args.room_camera or args.room_ptt: args.voice_room=True
     if args.call_controls or args.call_devices or args.call_reconnect or args.call_turn: args.desktop_dm=True
     if args.desktop_dm or args.incoming_dm or args.voice_room: args.rtc_audio=True
     assert BACKEND.is_file(), "Run scripts/rust-client.sh once or set UNTETHERED_BACKEND"
@@ -196,7 +199,7 @@ federation_domain_whitelist: []
                 except requests.ConnectionError:
                     time.sleep(.1)
             if args.rtc_audio:
-                audio_test(tmp,hs,server_name,rtc_service,ROOT,BACKEND,seed,http,service,desktop=args.desktop_dm or args.incoming_dm,incoming=args.incoming_dm,controls=args.call_controls,devices=args.call_devices,reconnect=args.call_reconnect,turn=args.call_turn,group=args.voice_room,share=args.window_share,camera=args.room_camera)
+                audio_test(tmp,hs,server_name,rtc_service,ROOT,BACKEND,seed,http,service,desktop=args.desktop_dm or args.incoming_dm,incoming=args.incoming_dm,controls=args.call_controls,devices=args.call_devices,reconnect=args.call_reconnect,turn=args.call_turn,group=args.voice_room,share=args.window_share,camera=args.room_camera,ptt=args.room_ptt)
                 return
             if args.rtc_membership:
                 from qa_rtc_membership import test

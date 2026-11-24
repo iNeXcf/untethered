@@ -67,6 +67,25 @@ After one leaves, the remaining two must exchange newly injected tones on
 their original participant and track IDs. Final leave must clear call
 memberships and release all capture/playback streams.
 
+### Verify push-to-talk
+
+Run `sh experiments/rtc-audio/run_element.sh --room-ptt` with the three-client
+environment above and `xmessage` available. Alice enables **Push-to-talk**
+before joining. The fixture drives physical Right Ctrl press/release events
+on her isolated X display. Both peers’ speaker monitors must decode her
+410 Hz tone while held, then a fresh 530 Hz tone during the same hold.
+Key-up must silence just Alice and remove her capture stream while her
+input tone keeps playing. Each measured key edge must settle at both
+receivers within 800 ms (includes 100 ms speaker-analysis windows).
+
+The test moves focus to another window mid-hold, returns focus with the key
+still held, and separately delivers key-up to the other window. Neither case
+may reopen capture. Manual mute and deafen override the key and require a new
+press afterwards. Every consecutive 100 ms window across the exercise is
+checked for Bruno’s tone at Clara and Clara’s at Bruno. Their original GCM
+tracks must remain in place. This fixture covers an in-window key, not a
+desktop-wide shortcut.
+
 ### Verify portal window sharing
 
 Use the three-client setup above, plus `pipewire`, `wireplumber`, `pw-dump`,

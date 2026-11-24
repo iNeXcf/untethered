@@ -84,6 +84,10 @@ enum Msg {
     #[cfg(target_os = "linux")]
     ToggleDeafen,
     #[cfg(target_os = "linux")]
+    RoomPtt(bool),
+    #[cfg(target_os = "linux")]
+    TalkKey(bool),
+    #[cfg(target_os = "linux")]
     ToggleVideo(desktop_call::VideoInput),
     #[cfg(target_os = "linux")]
     AudioDevices,
@@ -160,6 +164,8 @@ struct App {
     #[cfg(target_os = "linux")]
     call: Option<desktop_call::ActiveCall>,
     #[cfg(target_os = "linux")]
+    room_ptt: bool,
+    #[cfg(target_os = "linux")]
     drop_epoch: u64,
     #[cfg(not(target_arch = "wasm32"))]
     paste_seq: u64,
@@ -218,6 +224,8 @@ impl App {
         Self {
             #[cfg(target_os = "linux")]
             call: None,
+            #[cfg(target_os = "linux")]
+            room_ptt: false,
             #[cfg(target_os = "linux")]
             inbox: Default::default(),
             #[cfg(target_os = "linux")]
@@ -860,6 +868,7 @@ impl App {
                             return false;
                         }
                         s.muted = !s.muted;
+                        s.hold(false);
                         true
                     });
                 }
@@ -869,7 +878,30 @@ impl App {
                 if let Some(call) = &self.call
                     && !call.cancel.is_closed()
                 {
-                    call.audio.send_modify(|s| s.deafened = !s.deafened);
+                    call.audio.send_modify(|s| {
+                        s.deafened = !s.deafened;
+                        s.hold(false);
+                    });
+                }
+            }
+            #[cfg(target_os = "linux")]
+            Msg::RoomPtt(enabled) => {
+                self.room_ptt = enabled;
+                if let Some(call) = &self.call
+                    && call.group
+                    && !call.cancel.is_closed()
+                {
+                    call.audio
+                        .send_modify(|s| s.talk = desktop_call::TalkGate::from_ptt(enabled));
+                }
+            }
+            #[cfg(target_os = "linux")]
+            Msg::TalkKey(down) => {
+                if let Some(call) = &self.call
+                    && call.group
+                    && !call.cancel.is_closed()
+                {
+                    call.audio.send_if_modified(|s| s.hold(down));
                 }
             }
             #[cfg(target_os = "linux")]
@@ -1322,6 +1354,25 @@ fn main() -> iced::Result {
             iced::Subscription::batch([
                 #[cfg(not(target_arch = "wasm32"))]
                 iced::event::listen_with(|event, _, _| match event {
+                    // Right Ctrl is a non-repeating modifier. On X11 the first
+                    // repeat of an ordinary key after refocus can look like a
+                    // fresh press. Always handle release/blur, even in an editor.
+                    #[cfg(target_os = "linux")]
+                    iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                        physical_key:
+                            iced::keyboard::key::Physical::Code(iced::keyboard::key::Code::ControlRight),
+                        repeat: false,
+                        ..
+                    }) => Some(Msg::TalkKey(true)),
+                    #[cfg(target_os = "linux")]
+                    iced::Event::Keyboard(iced::keyboard::Event::KeyReleased {
+                        physical_key:
+                            iced::keyboard::key::Physical::Code(iced::keyboard::key::Code::ControlRight),
+                        ..
+                    })
+                    | iced::Event::Window(iced::window::Event::Unfocused) => {
+                        Some(Msg::TalkKey(false))
+                    }
                     iced::Event::Window(iced::window::Event::FileDropped(path)) => {
                         Some(Msg::DropPaths(vec![path]))
                     }

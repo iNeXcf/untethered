@@ -109,7 +109,11 @@
   25% on Alice's client reduced his decoded tone from 6,994 to 1,748; Clara's
   tone on Alice stayed at 6,987, and both other listeners' mixes stayed at
   baseline. Local silence, independent 150% boost and reset also passed.
-  Push-to-talk remains open.
+  [Focused push-to-talk](experiments/rtc-audio/README.md#verify-push-to-talk)
+  passed on Linux/X11: both peers decoded Alice only on a Right Ctrl hold;
+  release or focus loss closed her capture stream. Bruno and Clara still
+  heard each other in every 100 ms measurement window across transitions.
+  A system-wide key for talking from another app remains open.
 - **Linux portal window sharing:** [The three-client window test](experiments/rtc-audio/README.md#verify-portal-window-sharing)
   uses a private KDE Wayland picker and PipeWire. Cancelling creates no video
   publication. Selecting a window publishes one GCM screen track; both other

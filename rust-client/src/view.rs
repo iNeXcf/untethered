@@ -226,6 +226,15 @@ fn rail_button<'a>(glyph: String, hint: &'a str, active: bool, msg: Msg) -> El<'
 
 impl App {
     #[cfg(target_os = "linux")]
+    fn ptt_control(&self, active: bool) -> El<'_> {
+        iced::widget::checkbox(self.room_ptt)
+            .label("Push-to-talk")
+            .size(16)
+            .text_size(14)
+            .on_toggle_maybe(active.then_some(Msg::RoomPtt))
+            .into()
+    }
+    #[cfg(target_os = "linux")]
     fn call_bar(&self) -> Option<El<'_>> {
         use crate::call_devices::Port;
         use iced::widget::pick_list;
@@ -269,6 +278,7 @@ impl App {
         .align_y(Center);
         let mut controls = controls;
         if call.group {
+            controls = controls.push(self.ptt_control(active));
             controls = controls.push(
                 button(text("Mixer").size(15).font(BOLD))
                     .style(nav(call.mixer))
@@ -292,6 +302,18 @@ impl App {
             controls.wrap()
         ]
         .spacing(3);
+        if mode.talk != crate::desktop_call::TalkGate::Open {
+            let hint = if mode.deafened {
+                "Undeafen to use push-to-talk."
+            } else if mode.muted {
+                "Unmute to use push-to-talk."
+            } else if mode.talk == crate::desktop_call::TalkGate::Held {
+                "Right Ctrl held · release to stop talking."
+            } else {
+                "Hold Right Ctrl to talk while Untethered is focused."
+            };
+            bar = bar.push(text(hint).size(13));
+        }
         for status in &call.video_status {
             if !status.label.is_empty() {
                 bar = bar.push(text(&status.label).size(13));
@@ -605,7 +627,7 @@ impl App {
             && room.is_some_and(|r| r.encrypted && (r.voice || r.dm_peer.is_some()))
         {
             if room.is_some_and(|r| r.voice) {
-                header.push(
+                header.push(self.ptt_control(true)).push(
                     button(text("Join voice").size(16).font(BOLD))
                         .padding([5, 12])
                         .style(nav(false))

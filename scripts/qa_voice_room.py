@@ -8,6 +8,7 @@ import os
 import re
 import subprocess as sp
 import threading
+import time
 from collections import deque
 from contextlib import ExitStack
 from urllib.parse import quote
@@ -34,6 +35,7 @@ class Desktop:
         self.kde=kde
         self.tone=i
         self.windows=deque(maxlen=12)
+        self.audit=None
         pcm=["--raw","--rate=48000","--channels=1","--format=s16le","--latency-msec=40"]
         def process(args,**kw):
             proc=sp.Popen(args,env=env,stderr=sp.DEVNULL,**kw)
@@ -53,6 +55,7 @@ class Desktop:
                 samples=samples[::4]
                 amps=[2*abs(sum(v*c for v,c in zip(samples,b)))/len(samples) for b in BINS]
                 self.windows.append(amps)
+                if (audit:=self.audit) is not None:audit.append((time.monotonic(),amps))
         for fn in (feed,listen):threading.Thread(target=fn,daemon=True).start()
         if kde:
             self.client=kde.native
@@ -131,7 +134,7 @@ def check_speaking(desks,names):
     stage(set())
 
 
-def test_group(tmp,hs,name,root,backend,seed,http,secret,*,share=False,camera=False):
+def test_group(tmp,hs,name,root,backend,seed,http,secret,*,share=False,camera=False,ptt=False):
     dirs=[tmp/f"p{i}" for i in range(3)]
     for p in dirs:p.mkdir()
     credentials=[seed(p,hs) for p in dirs]
@@ -207,24 +210,32 @@ def test_group(tmp,hs,name,root,backend,seed,http,secret,*,share=False,camera=Fa
                 words={w for w,x,_ in peer.words() if x<280}
                 return all((name.lower() in words)==(i<n) for i,name in enumerate(names))
             original={}
+            if ptt:
+                desks[0].click("push-to-talk")
+                for d in desks[1:]:d.audit=[]
             for i,d in enumerate(desks):
                 d.click("join")
                 wait_for("silent join membership",lambda:members()==sorted(users[:i+1]))
                 if i==1:
-                    wait_for("two voices before third joins",lambda:desks[0].hears({670}) and desks[1].hears({410}),20)
+                    wait_for("pair audio before third joins",lambda:desks[0].hears({670}) and desks[1].hears(set() if ptt else {410}),20)
                     original=wait_for("original pair",lambda:publications(2))
-                    assert audio_counts()==[(1,1),(1,1),(0,0)]
+                    assert audio_counts()==[(int(not ptt),1),(1,1),(0,0)]
             tracks=wait_for("three encrypted microphone publications",lambda:publications(3))
             expected=[set(TONES[:3])-{hz} for hz in TONES[:3]]
-            wait_for("all six decoded audio paths",lambda:all(d.hears(h) for d,h in zip(desks,expected)),25)
+            if ptt:
+                for tones in expected:tones.discard(410)
+            wait_for("three-client decoded audio",lambda:all(d.hears(h) for d,h in zip(desks,expected)),25)
             assert {u:tracks[u] for u in original}==original
-            assert audio_counts()==[(1,2)]*3
+            assert audio_counts()==[(int(not ptt),2),(1,2),(1,2)]
             wait_for("participant names under the voice channel",lambda:all(sidebar(d,3) for d in desks),8)
             no_ring()
             for i,heard in enumerate(expected):
-                print(f"Client {i+1}: sent {TONES[i]} Hz; speaker received {sorted(heard)} Hz, no self tone (12 consecutive 100 ms windows).",flush=True)
+                print(f"Client {i+1}: input {TONES[i]} Hz; speaker received {sorted(heard)} Hz, no self tone (12 consecutive 100 ms windows).",flush=True)
             print("Three joined devices, three GCM microphones, two playback streams per client; zero ring or other non-state events.",flush=True)
-            if not share and not camera:
+            if ptt:
+                from qa_room_ptt import check_ptt
+                check_ptt(stack,desks,audio_counts,lambda:publications(3)==tracks)
+            elif not share and not camera:
                 from qa_room_volume import check_volume
                 check_volume(desks)
                 assert publications(3)==tracks and audio_counts()==[(1,2)]*3

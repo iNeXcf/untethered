@@ -128,6 +128,12 @@ sounds to you for this call. Drag their slider from **0%** (silent for you)
 to **200%**, or click **Reset** to return to **100%**. Other listeners keep
 their own mixes.
 
+For **Push-to-talk**, check the box beside **Join voice** or in the call bar.
+Hold **Right Ctrl** while Untethered is focused to send your voice. Releasing
+the key or switching applications closes your microphone; you still hear
+the room. **Mute** and **Deafen** override the key. The choice carries over
+to your next voice room until you quit the app.
+
 In the voice-room call bar, click **Share window** and pick a window in your
 desktop's chooser. Other participants see the live window in the voice room.
 You can browse another channel and use **Stop sharing** there without

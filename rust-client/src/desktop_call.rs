@@ -54,11 +54,25 @@ const SECOND: Duration = Duration::from_secs(1);
 const LEASE: Duration = Duration::from_secs(16);
 const RECOVERY_LIMIT: Duration = Duration::from_secs(60);
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum TalkGate {
+    #[default]
+    Open,
+    Waiting,
+    Held,
+}
+impl TalkGate {
+    pub(super) fn from_ptt(enabled: bool) -> Self {
+        if enabled { Self::Waiting } else { Self::Open }
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct AudioMode {
     // Deafen is an overlay: lifting it must not undo a manual mute.
     pub muted: bool,
     pub deafened: bool,
+    pub(super) talk: TalkGate,
     pub mic: Route,
     pub speaker: Route,
     // Receiver-local gain, keyed by Matrix user rather than a device/track
@@ -83,7 +97,22 @@ impl AudioMode {
         true
     }
     fn mic_off(&self) -> bool {
-        self.muted || self.deafened
+        self.muted || self.deafened || self.talk == TalkGate::Waiting
+    }
+    pub(super) fn hold(&mut self, down: bool) -> bool {
+        if self.talk == TalkGate::Open {
+            return false;
+        }
+        let next = if down && !self.muted && !self.deafened {
+            TalkGate::Held
+        } else {
+            TalkGate::Waiting
+        };
+        if next == self.talk {
+            return false;
+        }
+        self.talk = next;
+        true
     }
 }
 pub struct ActiveCall {
@@ -124,7 +153,10 @@ impl crate::App {
             Target::Dm { .. } => "Starting call…",
         };
         let (cancel, rx) = async_channel::bounded(1);
-        let (audio, mode) = watch::channel(AudioMode::default());
+        let (audio, mode) = watch::channel(AudioMode {
+            talk: TalkGate::from_ptt(group && self.room_ptt),
+            ..AudioMode::default()
+        });
         let previews = Previews::default();
         let (speakers, speaking) = watch::channel(Default::default());
         let controls = Controls {
@@ -952,6 +984,8 @@ async fn controlled_capture(
             if !publication.is_muted() {
                 publication.mute();
             }
+            // No queued audio from the previous hold should survive a closed gate.
+            src.clear_buffer();
             mode.wait_for(|s| !s.mic_off()).await.map_err(|_| ENDED)?;
             continue;
         }
