@@ -72,6 +72,10 @@ uses encrypted Matrix thumbnails when available, or decodes a small original
 `scripts/test-media-interop.py` test checks actual pixels in an independent browser
 device after both login and reload against a disposable Synapse.
 
+The [KWin/Element acceptance test](scripts/kwin-element.md) exercises a real
+Dolphin multi-file drag, room switching during upload, and byte-for-byte PNG/PDF
+downloads in both directions using the two clients’ visible controls.
+
 **Calls (experimental):** Open your account via the bottom-left profile button and
 choose **Check call server support** to query gomuks for MatrixRTC transports.
 This checks discovery only; it doesn't ring anyone or open a microphone.

@@ -765,6 +765,7 @@ impl App {
                     return Task::perform(
                         async move {
                             rfd::AsyncFileDialog::new()
+                                .set_title("Save attachment")
                                 .set_file_name(name)
                                 .save_file()
                                 .await

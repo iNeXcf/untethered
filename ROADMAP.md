@@ -28,8 +28,14 @@
   a GTK sender with no URI list and a real private `xdg-document-portal`. Switching
   rooms during retrieval and upload left the other room untouched. The original
   encrypted room received exactly one PNG and one PDF; both decrypted byte-for-byte.
-- **Files still to do:** finish the real KDE/KWin and Windows Explorer runtime
-  checks and the bidirectional Element image/PDF acceptance matrix below.
+- **KWin/Dolphin ↔ Element:** [repeatable runtime test](scripts/kwin-element.md)
+  passed with KWin 6.8.3, Dolphin 26.08.3 and Element Web 1.12.35 on a second
+  Matrix account. One PNG and one PDF stayed local until Send. Switching rooms
+  mid-upload produced two encrypted events in the original room, none in the
+  other. Element saved both and sent those bytes back; the native KDE Save
+  dialogs produced files identical to the originals.
+- **Files still to do:** real Windows Explorer drop/send/save, plus the remaining
+  unencrypted-room and limit/error-path platform acceptance checks below.
 - **Calls started:** a user-triggered MatrixRTC transport check in Account, and a
   [repeatable native audio probe](experiments/rtc-audio/README.md). Two Rust peers
   decoded each other's encrypted audio through a test SFU. Element interop, real

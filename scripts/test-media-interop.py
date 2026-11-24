@@ -11,6 +11,8 @@ It needs a debug client build plus Xvfb, xdotool, ImageMagick, and either
 sway/grim/wl-copy (Wayland) or xclip (X11); it never uses your desktop clipboard.
 --portal-drop uses the same nested Wayland setup plus a private dbus-daemon,
 xdg-document-portal/FUSE and a GTK4/PyGObject system Python (GTK_PYTHON).
+--kwin-element uses a virtual KWin, KDE inputsynth, Spectacle, kdotool,
+Dolphin and a local extracted Element Web release (see scripts/kwin-element.md).
 """
 import argparse
 import io
@@ -134,11 +136,12 @@ def main():
     args=argparse.ArgumentParser(description=__doc__)
     args.add_argument("--native-paste",choices=("wayland","x11"))
     args.add_argument("--portal-drop",action="store_true",help="Native Wayland portal-only PNG/PDF drag with a real document portal")
+    args.add_argument("--kwin-element",action="store_true",help="Drive a real Dolphin drag under KWin and round-trip both files through Element Web")
     args.add_argument("--upload-cancel",action="store_true",help="Test native and browser cancellation against a throttled Matrix upload")
     args=args.parse_args()
     assert BACKEND.is_file(), "Run scripts/rust-client.sh once or set UNTETHERED_BACKEND"
     dist = ROOT/"rust-client/web/dist"
-    if not args.native_paste and not args.portal_drop:
+    if not args.native_paste and not args.portal_drop and not args.kwin_element:
         assert (dist/"backend/gomuks-worker.js").is_file(), "Run scripts/rust-web.sh first"
     os.umask(0o077)
     with tempfile.TemporaryDirectory(prefix="untethered-media-",dir=os.environ.get("TMPDIR")) as d:
@@ -147,7 +150,7 @@ def main():
                         "-H", "test.invalid", "--report-stats", "no"], cwd=tmp, stdout=subprocess.DEVNULL, check=True)
         port = free_port()
         hs = f"http://127.0.0.1:{port}"
-        gateway_port=free_port() if args.upload_cancel or args.portal_drop else None
+        gateway_port=free_port() if args.upload_cancel or args.portal_drop or args.kwin_element else None
         public_url=f"http://127.0.0.1:{gateway_port}" if gateway_port else hs
         (tmp/"local.yaml").write_text(f"""listeners:
   - port: {port}
@@ -170,6 +173,10 @@ federation_domain_whitelist: []
                     break
                 except requests.ConnectionError:
                     time.sleep(.1)
+            if args.kwin_element:
+                from qa_kwin_element import test
+                test(tmp,hs,gateway_port,ROOT,BACKEND,seed)
+                return
             if args.portal_drop:
                 from qa_portal_drop import test
                 test(tmp,hs,gateway_port,ROOT,BACKEND,seed)
