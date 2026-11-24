@@ -226,6 +226,55 @@ fn rail_button<'a>(glyph: String, hint: &'a str, active: bool, msg: Msg) -> El<'
 
 impl App {
     #[cfg(target_os = "linux")]
+    fn call_bar(&self) -> Option<El<'_>> {
+        let call = self.call.as_ref()?;
+        let mode = *call.audio.borrow();
+        let name = self
+            .live
+            .list
+            .get(&call.room)
+            .map_or("DM", |r| r.name.as_str());
+        let active = !call.cancel.is_closed();
+        let mic = if mode.deafened {
+            "Mic muted"
+        } else if mode.muted {
+            "Unmute"
+        } else {
+            "Mute"
+        };
+        let controls = row![
+            button(text(mic).size(15).font(BOLD))
+                .style(nav(mode.muted || mode.deafened))
+                .on_press_maybe((active && !mode.deafened).then_some(Msg::ToggleMic)),
+            button(
+                text(if mode.deafened { "Undeafen" } else { "Deafen" })
+                    .size(15)
+                    .font(BOLD)
+            )
+            .style(nav(mode.deafened))
+            .on_press_maybe(active.then_some(Msg::ToggleDeafen)),
+            button(text("Hang up").size(15).font(BOLD))
+                .on_press_maybe(active.then_some(Msg::EndCall))
+        ]
+        .spacing(8)
+        .align_y(Center);
+        Some(
+            container(
+                column![
+                    text(format!("{} · {name}", call.label))
+                        .size(13)
+                        .color(TEXT),
+                    controls
+                ]
+                .spacing(3),
+            )
+            .width(Fill)
+            .padding([6, 12])
+            .style(|_| surface(TRAY, 4.))
+            .into(),
+        )
+    }
+    #[cfg(target_os = "linux")]
     fn incoming_banner(&self) -> Option<El<'_>> {
         let (i, _) = self.inbox.ringing.as_ref()?;
         Some(
@@ -390,17 +439,8 @@ impl App {
         .spacing(9)
         .align_y(Center);
         #[cfg(target_os = "linux")]
-        let header = if let Some((id, state, _)) = &self.call {
-            let name = self
-                .live
-                .list
-                .get(id)
-                .map(|r| r.name.as_str())
-                .unwrap_or("DM");
-            header
-                .push(text(format!("{state} · {name}")).size(13))
-                .push(button("Hang up").on_press(Msg::EndCall))
-        } else if self.verified
+        let header = if self.call.is_none()
+            && self.verified
             && self.connected
             && self.inbox.ringing.is_none()
             && room.is_some_and(|r| r.encrypted && r.dm_peer.is_some())
@@ -439,6 +479,10 @@ impl App {
         #[cfg(target_os = "linux")]
         if let Some(b) = self.incoming_banner() {
             chat = chat.push(b);
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(bar) = self.call_bar() {
+            chat = chat.push(bar);
         }
         if !self.status.is_empty() && !self.status.starts_with("Starting") {
             chat = chat.push(
@@ -761,14 +805,8 @@ impl App {
             form = form.push(b);
         }
         #[cfg(target_os = "linux")]
-        if let Some((_, state, _)) = &self.call {
-            form = form.push(
-                row![
-                    text(state).width(Fill),
-                    button("Hang up").on_press(Msg::EndCall)
-                ]
-                .align_y(Center),
-            );
+        if let Some(bar) = self.call_bar() {
+            form = form.push(bar);
         }
         if !self.logged_in {
             form = form

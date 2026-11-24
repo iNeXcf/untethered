@@ -51,7 +51,7 @@ extra_well_known_client_content:
     return name,listen,settings,jwt
 
 
-def test(tmp, hs, name, jwt, root, backend, seed, http, service, *, desktop=False,incoming=False):
+def test(tmp, hs, name, jwt, root, backend, seed, http, service, *, desktop=False,incoming=False,controls=False):
     native,hdr=seed(tmp,hs)
     peer_dir=tmp/"peer";peer_dir.mkdir()
     peer,ph=seed(peer_dir,hs)
@@ -74,6 +74,8 @@ def test(tmp, hs, name, jwt, root, backend, seed, http, service, *, desktop=Fals
         # disposable room without granting the peer admin/moderation powers.
         power.setdefault("notifications",{})["room"]=0
     http("PUT",api+"/state/m.room.power_levels",headers=hdr,json=power)
+    if controls:
+        http("POST",hs+"/_matrix/client/v3/createRoom",headers=hdr,json={"name":"Sidechat","preset":"private_chat"})
     assert http("GET",api+"/state/m.room.encryption",headers=ph).json()["algorithm"]=="m.megolm.v1.aes-sha2"
     secret=secrets.token_hex(32)
     (tmp/"lk.yaml").write_text(f"""port: 18820
@@ -115,7 +117,7 @@ rtc:
         page=login_element(ctx,web,peer,room)
         if desktop:
             from qa_desktop_dm import desktop_call
-            desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,incoming=incoming)
+            desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,incoming=incoming,controls=controls)
             return
         sockets=[]
         def watch_sfu(ws):

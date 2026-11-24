@@ -31,6 +31,18 @@ was created, even transiently. On the second, Iced **Accept** must open one
 microphone; both distinct tones and both GCM publications are checked again.
 Hanging up from Element must empty its roster and release both desktop streams.
 
+### Verify mute and deafen
+
+Use `sh experiments/rtc-audio/run_element.sh --call-controls` with the same
+setup. The test clicks **Mute**, switches to another room, and uses the active
+DM's call bar there. It tests deafen/undeafen both with and without a prior
+manual mute. Each transition requires 12 fresh 100 ms samples at **both**
+ends: a through-tone or silence (Element FFT peak below −65 dB; desktop peak
+below 32 in signed 16-bit PCM). It also checks the actual capture-stream
+count and the SFU mute flags. Throughout the test the browser receiver, track,
+SSRC and signaling sockets stay the same, and both participants keep their
+original GCM publications on the SFU.
+
 ## Replay the Element ↔ Rust encrypted audio test
 
 From the checkout, with Chromium, OpenSSL, iproute2, the pinned gomuks backend,
@@ -128,5 +140,5 @@ sentinel, so a roster entry does not demonstrate a media connection.
 ## What comes next
 
 Element and Untethered can each initiate DM calls while both apps are open.
-Next implement mute/deafen and device selection. Verify reconnect and
+Next implement device selection. Verify reconnect and
 relay-required audio separately. Windows runtime testing is deferred.

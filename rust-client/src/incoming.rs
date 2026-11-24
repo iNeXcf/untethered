@@ -1,6 +1,6 @@
 //! Foreground encrypted DM invitations. An incoming notification never starts capture.
 use crate::{
-    App, Msg, Request, backend,
+    App, Msg, Request,
     desktop_call::{active_member, check_dm, now},
     rooms::items,
 };
@@ -299,22 +299,7 @@ impl App {
             return;
         }
         if accept {
-            let (cancel, rx) = async_channel::bounded(1);
-            if self
-                .commands
-                .try_send(backend::Command::Voice {
-                    room: i.room.clone(),
-                    peer: i.peer.clone(),
-                    incoming: Some(i.clone()),
-                    cancel: rx,
-                })
-                .is_ok()
-            {
-                self.status.clear();
-                self.call = Some((i.room, "Answering…".into(), cancel))
-            } else {
-                self.status = "Could not queue answer.".into()
-            }
+            self.start_voice(i.room.clone(), i.peer.clone(), Some(i));
         } else {
             self.rpc("send_event",json!({"room_id":i.room,"type":DECLINE,"synchronous":true,"content":{
                 "m.relates_to":{"rel_type":"m.reference","event_id":i.event},"msc4354_sticky_key":i.event}}),Request::DeclineSent);

@@ -90,6 +90,11 @@ shows the caller, **Accept**, and **Decline**. Declining notifies Element
 without opening your microphone. Accepting joins the existing encrypted call.
 Either participant can hang up.
 
+The call bar stays with the active DM while you browse other rooms. **Mute**
+releases your microphone and leaves the other person audible. **Deafen**
+silences playback and also mutes your microphone. **Undeafen** restores
+playback and your previous mute setting.
+
 The [desktop call tests](experiments/rtc-audio/README.md) drive both clients'
 actual call controls and measure audio through isolated Linux devices.
 Device selection and relay-only connections are separate milestones.

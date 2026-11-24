@@ -19,7 +19,7 @@ import requests
 from qa_native_paste import child, isolated_env, start_display, wait_for
 
 
-def sfu_audio(secret):
+def sfu_publications(secret):
     def query(method,params,grant):
         def b64(v):
             return base64.urlsafe_b64encode(v).rstrip(b"=")
@@ -34,11 +34,17 @@ def sfu_audio(secret):
     assert len(rooms)==1
     name=rooms[0]["name"]
     peers=query("ListParticipants",{"room":name},{"roomAdmin":True,"room":name})["participants"]
-    return {p["identity"]: [track.get("encryption","NONE") for track in p.get("tracks",[]) if track.get("type","AUDIO")=="AUDIO"]
-            for p in peers if p.get("tracks")}
+    return [(p["identity"],p["sid"],t) for p in peers for t in p.get("tracks",[]) if t.get("type","AUDIO")=="AUDIO"]
 
 
-def desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,*,incoming=False):
+def sfu_audio(secret):
+    result={}
+    for who,_,track in sfu_publications(secret):
+        result.setdefault(who,[]).append(track.get("encryption","NONE"))
+    return result
+
+
+def desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,*,incoming=False,controls=False):
     env=isolated_env(tmp,backend,"x11")
     start_display(stack,tmp,env,"x11",1280,900)
     sock=Path(env["XDG_RUNTIME_DIR"])/"qa-pulse"
@@ -68,12 +74,16 @@ def desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,*,incoming=Fa
         except (OSError,ValueError):pass
     received=threading.Event()
     chime=threading.Event()
+    speaker=(0,0,0)  # completed 100ms windows, consecutive 960 Hz windows, consecutive silent windows
     def observe():
-        good=0
+        nonlocal speaker
+        good=quiet=0
         while data:=monitor.stdout.read(9600):
             pcm=array.array("h");pcm.frombytes(data)
             hz=sum(a<=0<b for a,b in zip(pcm,pcm[1:]))*48000/len(pcm)
             good=good+1 if abs(hz-960)<35 and max(pcm)>500 else 0
+            quiet=quiet+1 if max(abs(min(pcm)),abs(max(pcm)))<32 else 0
+            speaker=(speaker[0]+1,good,quiet)
             if good>=6:received.set()
             if incoming and max(pcm)>500:
                 # Both ringtone partials must actually be playing on the private sink.
@@ -113,6 +123,9 @@ def desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,*,incoming=Fa
             return
         ring_started=threading.Event()
         page.on("console",lambda m:ring_started.set() if "LegacyCallHandler.play(ringAudio): playing audio successfully" in m.text else None)
+        sockets=[]
+        if controls:
+            page.on("websocket",lambda ws:sockets.append(ws) if urlsplit(ws.url).netloc=="127.0.0.1:18820" else None)
         click("Voice")
         toast=page.locator(".mx_IncomingCallToast_content")
         toast.get_by_text("Incoming voice call",exact=True).wait_for(timeout=25000)
@@ -135,16 +148,28 @@ def desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,*,incoming=Fa
         assert len(tracks)==2 and all(v==["GCM"] for v in tracks.values()) and {p.rsplit(":",1)[0] for p in tracks}=={alice,bob}, tracks
         print("Element accepted; Element measured 480 Hz on received WebRTC audio, desktop speaker monitor measured 960 Hz for 600 ms.",flush=True)
         print("LiveKit independently reports GCM on both microphone publications.",flush=True)
-        while time.time()*1000 < first["expiry"]+1200:
-            assert set(roster())=={alice,bob}, f"lost a member {int((time.time()*1000-first['expiry'])/1000+60)}s after join"
-            page.wait_for_timeout(400)
-        updated=lease()
-        assert updated["event"]!=first["event"] and updated["expiry"]>time.time()*1000
-        sample=widget.evaluate("window.qaAudioStats()")
-        assert sample["got480"] and sample["spectra"]-sample["last480"]<5
-        received.clear()
-        assert received.wait(3)
-        print("Both tones still present past the original 60-second membership expiry.",flush=True)
+        if controls:
+            def change_room():
+                click("Sidechat")
+                wait_for("browsing another room",lambda:"Sidechat" in cmd("xdotool","getwindowname",win,text=True).stdout)
+                assert set(roster())=={alice,bob}
+                print("Switched the desktop to Sidechat during mute; DM call bar remained active.",flush=True)
+            audio_controls(widget,click,lambda:speaker,streams,secret,sockets,alice,bob,change_room)
+            # Return to the DM so the final assertion checks its Voice call button.
+            x,y=wait_for("original DM sidebar entry",lambda:next(((x,y) for t,x,y in words() if "media-proof" in t.lower() and x<265),None))
+            cmd("xdotool","mousemove","--window",win,str(x),str(y),"click","1",check=True)
+            wait_for("original DM selected",lambda:"media-proof" in cmd("xdotool","getwindowname",win,text=True).stdout)
+        else:
+            while time.time()*1000 < first["expiry"]+1200:
+                assert set(roster())=={alice,bob}, f"lost a member {int((time.time()*1000-first['expiry'])/1000+60)}s after join"
+                page.wait_for_timeout(400)
+            updated=lease()
+            assert updated["event"]!=first["event"] and updated["expiry"]>time.time()*1000
+            sample=widget.evaluate("window.qaAudioStats()")
+            assert sample["got480"] and sample["spectra"]-sample["last480"]<5
+            received.clear()
+            assert received.wait(3)
+            print("Both tones still present past the original 60-second membership expiry.",flush=True)
         click("Hang")
         wait_for("desktop and Element left DM call",lambda:roster()==[],22)
         wait_for("desktop released both audio devices",lambda:not streams("source-outputs") and not streams("sink-inputs"))
@@ -161,6 +186,45 @@ def desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,*,incoming=Fa
                 .getLiveTimeline().getEvents().filter(e=>e.getType().includes("notification")||e.getType().includes("decline"))
                 .map(e=>[e.getType(),e.getContent().notification_type,e.getContent()["m.call.intent"],e.getWireType()])""",room),flush=True)
         raise
+
+
+def audio_controls(widget,click,speaker,streams,secret,sockets,alice,bob,change_room):
+    """Use fresh PCM after every click; an old 'tone seen' latch can't pass."""
+    def stats():return widget.evaluate("window.qaAudioStats()")
+    initial=stats()
+    original_sockets=tuple(sockets)
+    assert initial["ssrc"] and initial["state"]=="connected" and original_sockets
+    def publications():
+        tracks=sfu_publications(secret)
+        ids={who.rsplit(":",1)[0]:(participant,track["sid"],track.get("encryption")) for who,participant,track in tracks}
+        mutes={who.rsplit(":",1)[0]:track.get("muted",False) for who,_,track in tracks}
+        assert len(tracks)==2 and set(ids)=={alice,bob} and all(v[-1]=="GCM" for v in ids.values())
+        return ids,mutes
+    original,mutes=publications()
+    assert mutes=={alice:False,bob:False}
+    def phase(button,mic_on,output_on):
+        click(button)
+        first=stats()["spectra"]
+        start=speaker()[0]
+        def match():
+            s=stats(); n,tone,quiet=speaker()
+            assert s["state"]=="connected" and all(s[k]==initial[k] for k in ("receiverId","trackId","ssrc","peerConnections","losses"))
+            assert tuple(sockets)==original_sockets and all(not ws.is_closed() for ws in sockets)
+            return min(s["spectra"]-first,n-start,s["run480"] if mic_on else s["quiet"],tone if output_on else quiet)>=12
+        wait_for(button+" measured at both clients",match,12)
+        ids,mutes=publications()
+        assert ids==original and mutes=={alice:not mic_on,bob:False},f"unexpected publications after {button}"
+        assert len(streams("source-outputs"))==int(mic_on),"capture did not follow effective mute state"
+        print(f"{button}: Element {'480 Hz' if mic_on else 'silent (< -65 dB FFT peak)'}; "
+              f"desktop {'960 Hz' if output_on else 'silent (< 32 PCM peak)'} for 12 fresh 100 ms windows.",flush=True)
+    phase("Mute",False,True)
+    change_room()
+    phase("Deafen",False,False)
+    phase("Undeafen",False,True)  # explicit mute survives
+    phase("Unmute",True,True)
+    phase("Deafen",False,False)   # open mic is automatically muted
+    phase("Undeafen",True,True)
+    print("No reconnect: same Element receiver, SSRC and signaling sockets; both original GCM track and participant SIDs retained.",flush=True)
 
 
 def reverse_call(stack,page,room,alice,bob,secret,find,click,roster,streams,chime,received,env,cmd):

@@ -21,6 +21,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
     process::Command,
+    sync::watch,
     task::JoinSet,
     time::{self, Instant},
 };
@@ -38,6 +39,68 @@ const RING: &str = "org.matrix.msc4075.rtc.notification";
 const SLOT_ID: &str = "m.call#ROOM";
 const ENDED: &str = "Call ended.";
 const SECOND: Duration = Duration::from_secs(1);
+
+#[derive(Clone, Copy, Default)]
+pub struct AudioMode {
+    // Deafen is an overlay: lifting it must not undo a manual mute.
+    pub muted: bool,
+    pub deafened: bool,
+}
+impl AudioMode {
+    fn mic_off(self) -> bool {
+        self.muted || self.deafened
+    }
+}
+pub struct ActiveCall {
+    pub room: String,
+    pub label: String,
+    pub cancel: Sender<()>,
+    pub audio: watch::Sender<AudioMode>,
+}
+pub struct Controls {
+    cancel: Receiver<()>,
+    audio: watch::Receiver<AudioMode>,
+}
+impl crate::App {
+    pub(super) fn start_voice(
+        &mut self,
+        room: String,
+        peer: String,
+        incoming: Option<crate::incoming::Offer>,
+    ) {
+        let label = if incoming.is_some() {
+            "Answering…"
+        } else {
+            "Starting call…"
+        };
+        let (cancel, rx) = async_channel::bounded(1);
+        let (audio, mode) = watch::channel(AudioMode::default());
+        let controls = Controls {
+            cancel: rx,
+            audio: mode,
+        };
+        if self
+            .commands
+            .try_send(crate::backend::Command::Voice {
+                room: room.clone(),
+                peer,
+                controls,
+                incoming,
+            })
+            .is_ok()
+        {
+            self.status.clear();
+            self.call = Some(ActiveCall {
+                room,
+                label: label.into(),
+                cancel,
+                audio,
+            });
+        } else {
+            self.status = "Could not queue the voice call.".into();
+        }
+    }
+}
 pub(super) fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -326,10 +389,11 @@ pub async fn run(
     cookie: &str,
     room: &str,
     peer: &str,
-    cancel: Receiver<()>,
+    controls: Controls,
     events: &Sender<Value>,
     incoming: Option<crate::incoming::Offer>,
 ) -> Result<&'static str> {
+    let Controls { cancel, audio } = controls;
     let mut req = format!("ws://{addr}/_gomuks/websocket")
         .into_client_request()
         .map_err(|_| "Cannot open call signaling.")?;
@@ -364,7 +428,7 @@ pub async fn run(
             }
         };
     let mut media = None;
-    let result = tokio::select! {biased;_=cancel.recv()=>Ok(ENDED),r=call(&mut w,&s,&mut member,events,&mut media,incoming.as_ref())=>r};
+    let result = tokio::select! {biased;_=cancel.recv()=>Ok(ENDED),r=call(&mut w,&s,&mut member,events,&mut media,incoming.as_ref(),audio)=>r};
     if let Some(lk) = media {
         let _ = time::timeout(SECOND * 4, lk.close()).await;
     }
@@ -381,6 +445,7 @@ async fn call(
     events: &Sender<Value>,
     media: &mut Option<Room>,
     incoming: Option<&crate::incoming::Offer>,
+    mode: watch::Receiver<AudioMode>,
 ) -> Result<&'static str> {
     let notification = if incoming.is_none() {
         let n = w
@@ -486,7 +551,7 @@ async fn call(
         return Err("Microphone encryption unavailable.");
     }
     let mut audio = JoinSet::new();
-    audio.spawn(capture(src));
+    audio.spawn(controlled_capture(src, publication, mode.clone()));
     let mut playing = false;
     loop {
         install(w, &provider, &peer_device, &peer_member, &peer_id)?;
@@ -506,12 +571,37 @@ async fn call(
             event=rtc.recv()=>match event {
                 Some(RoomEvent::TrackSubscribed{track:RemoteTrack::Audio(track),participant,publication,..}) if participant.identity().0==peer_id && !playing=>{
                     if publication.encryption_type()!=EncryptionType::Gcm{return Err("Peer did not encrypt audio.")}
-                    audio.spawn(play(track));playing=true;status(events,w.room,"Connected").await;
+                    audio.spawn(play(track,mode.clone()));playing=true;status(events,w.room,"Connected").await;
                 }
                 Some(RoomEvent::ParticipantDisconnected(p)) if p.identity().0==peer_id=>return Ok(ENDED),
                 None|Some(RoomEvent::Disconnected{..}|RoomEvent::Reconnecting)=>return Err("Call connection lost."),
                 _=>()
             }
+        }
+    }
+}
+
+async fn controlled_capture(
+    src: NativeAudioSource,
+    publication: LocalTrackPublication,
+    mut mode: watch::Receiver<AudioMode>,
+) -> Result<()> {
+    loop {
+        if mode.borrow_and_update().mic_off() {
+            if !publication.is_muted() {
+                publication.mute();
+            }
+            mode.wait_for(|s| !s.mic_off()).await.map_err(|_| ENDED)?;
+        }
+        if publication.is_muted() {
+            publication.unmute();
+        }
+        // Dropping capture also closes its pacat child, so buffered microphone
+        // input from the muted interval cannot be sent after unmuting.
+        tokio::select! {
+            biased;
+            change=mode.wait_for(|s| s.mic_off())=>{change.map_err(|_| ENDED)?;}
+            result=capture(src.clone())=>return result,
         }
     }
 }
@@ -564,12 +654,19 @@ async fn capture(src: NativeAudioSource) -> Result<()> {
         .map_err(|_| "Microphone capture failed.")?;
     }
 }
-async fn play(track: RemoteAudioTrack) -> Result<()> {
+async fn play(track: RemoteAudioTrack, mode: watch::Receiver<AudioMode>) -> Result<()> {
     let mut child = audio_process(false)?;
     let mut out = child.stdin.take().unwrap();
     let mut stream = NativeAudioStream::new(track.rtc_track(), 48000, 1);
+    let mut bytes = Vec::new();
     while let Some(frame) = stream.next().await {
-        let bytes: Vec<_> = frame.data.iter().flat_map(|s| s.to_le_bytes()).collect();
+        bytes.clear();
+        if mode.borrow().deafened {
+            // Keep consuming the live subscription; never queue deafened speech.
+            bytes.resize(frame.data.len() * 2, 0);
+        } else {
+            bytes.extend(frame.data.iter().flat_map(|s| s.to_le_bytes()));
+        }
         out.write_all(&bytes)
             .await
             .map_err(|_| "Speaker unavailable.")?;

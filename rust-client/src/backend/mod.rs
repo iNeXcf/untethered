@@ -15,7 +15,7 @@ pub enum Command {
     Voice {
         room: String,
         peer: String,
-        cancel: Receiver<()>,
+        controls: crate::desktop_call::Controls,
         incoming: Option<crate::incoming::Offer>,
     },
     Rpc(Value),

@@ -67,8 +67,15 @@
   stream opened. On the second, **Accept** opened one microphone, transmitted
   480 Hz to Element and played Element’s 960 Hz. LiveKit reported GCM on
   both audio tracks. Hanging up in Element cleared both devices and released
-  desktop audio. Physical hardware, mute/deafen, device selection, recovery
-  after disconnect and TURN-only calls remain open.
+  desktop audio.
+- **Mute and deafen:** `run_element.sh --call-controls` exercised the Linux
+  call bar during a live encrypted Element DM, including after switching to
+  another room. Muting stopped capture and silenced the desktop's 480 Hz at
+  Element while the 960 Hz return tone continued. Deafening silenced both;
+  undeafening preserved an explicit mute and restored an open mic when it
+  had been on. Both original GCM track IDs and the connection survived all
+  six transitions. Device selection, physical hardware, recovery after
+  disconnect and TURN-only calls remain open.
 
 ## What parity means
 

@@ -76,6 +76,10 @@ enum Msg {
     #[cfg(target_os = "linux")]
     EndCall,
     #[cfg(target_os = "linux")]
+    ToggleMic,
+    #[cfg(target_os = "linux")]
+    ToggleDeafen,
+    #[cfg(target_os = "linux")]
     DecideRing(String, bool),
     #[cfg(target_os = "linux")]
     RingExpired(String),
@@ -136,7 +140,7 @@ struct App {
     #[cfg(target_os = "linux")]
     inbox: incoming::Inbox,
     #[cfg(target_os = "linux")]
-    call: Option<(String, String, Sender<()>)>,
+    call: Option<desktop_call::ActiveCall>,
     #[cfg(target_os = "linux")]
     drop_epoch: u64,
     #[cfg(not(target_arch = "wasm32"))]
@@ -382,12 +386,12 @@ impl App {
         match f["command"].as_str().unwrap_or("") {
             #[cfg(target_os = "linux")]
             "desktop_call" => {
-                if let Some((room, label, _)) = &mut self.call
-                    && data["room"] == *room
+                if let Some(call) = &mut self.call
+                    && data["room"] == call.room
                 {
-                    *label = rooms::string(&data["label"]);
+                    call.label = rooms::string(&data["label"]);
                     if data["ended"] == true {
-                        self.status = label.clone();
+                        self.status = call.label.clone();
                         self.call = None;
                         if self.closing {
                             self.commands.close();
@@ -722,8 +726,8 @@ impl App {
                 #[cfg(target_os = "linux")]
                 self.clear_ring();
                 #[cfg(target_os = "linux")]
-                if let Some((_, _, cancel)) = &self.call {
-                    cancel.close();
+                if let Some(call) = &self.call {
+                    call.cancel.close();
                     return Task::none();
                 }
                 self.commands.close();
@@ -758,28 +762,36 @@ impl App {
                     .filter(|r| r.encrypted)
                     .and_then(|r| r.dm_peer.clone())
                 {
-                    let (cancel, rx) = async_channel::bounded(1);
-                    let room = self.selected.clone();
-                    if self
-                        .commands
-                        .try_send(backend::Command::Voice {
-                            room: room.clone(),
-                            peer,
-                            cancel: rx,
-                            incoming: None,
-                        })
-                        .is_ok()
-                    {
-                        self.status.clear();
-                        self.call = Some((room, "Starting call…".into(), cancel));
-                    }
+                    self.start_voice(self.selected.clone(), peer, None);
                 }
             }
             #[cfg(target_os = "linux")]
             Msg::EndCall => {
-                if let Some((_, label, cancel)) = &mut self.call {
-                    cancel.close();
-                    *label = "Ending call…".into();
+                if let Some(call) = &mut self.call {
+                    call.cancel.close();
+                    call.label = "Ending call…".into();
+                }
+            }
+            #[cfg(target_os = "linux")]
+            Msg::ToggleMic => {
+                if let Some(call) = &self.call
+                    && !call.cancel.is_closed()
+                {
+                    call.audio.send_if_modified(|s| {
+                        if s.deafened {
+                            return false;
+                        }
+                        s.muted = !s.muted;
+                        true
+                    });
+                }
+            }
+            #[cfg(target_os = "linux")]
+            Msg::ToggleDeafen => {
+                if let Some(call) = &self.call
+                    && !call.cancel.is_closed()
+                {
+                    call.audio.send_modify(|s| s.deafened = !s.deafened);
                 }
             }
             Msg::CheckCalls
