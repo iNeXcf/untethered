@@ -48,7 +48,19 @@ async fn encrypted_round_trip_and_restart() {
     app.password = rooms::string(&fixture["password"]);
     let _ = app.update(Msg::Login);
     wait(&mut app, &rx, "login", |a| a.logged_in).await;
-    app.recovery = rooms::string(&fixture["key"]);
+    // Exercise the error path before retrying. The failed request also
+    // dispatches client_state; it must not make the feedback disappear.
+    app.recovery = "not a recovery key".into();
+    let _ = app.update(Msg::Verify);
+    tokio::time::timeout(Duration::from_secs(25), async {
+        while app.verifying() {
+            app.frame(rx.recv().await.unwrap());
+        }
+    })
+    .await
+    .expect("failed verification returned");
+    assert!(app.verification_feedback().contains("invalid"));
+    app.recovery = rooms::string(&fixture["key"]).replace(' ', "\u{202f}");
     let _ = app.update(Msg::Verify);
     wait(&mut app, &rx, "verified room sync", |a| {
         a.verified && a.live.list.contains_key(id)

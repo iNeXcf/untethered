@@ -16,9 +16,13 @@ and `UNTETHERED_PROFILE` to use another compatible binary and dedicated profile.
 The first launch opens a **local preview**: try the space rail, direct messages,
 channel switching, People, Copy chat, or the composer (Enter sends, Shift+Enter adds
 a line). Preview messages are never sent and disappear when you quit. Choose
-**Sign in to Matrix** for live rooms. This prototype supports password login and
-verification with an existing recovery key; SSO and first-time encryption setup
-aren’t implemented. Room sync, encryption, history, and sends use the upstream
+**Sign in to Matrix** for live rooms. Enter a homeserver such as `matrix.org`;
+the client adds `https://`. This prototype supports password login and verification
+with the account’s existing recovery key (grouped or compact) or recovery passphrase.
+The web verification form supports ordinary keyboard and context-menu paste.
+SSO and first-time encryption setup aren’t implemented. Emoji comparison (SAS)
+needs support from the client engine; the pinned gomuks release does not expose
+that flow through its frontend API. Room sync, encryption, history, and sends use the upstream
 gomuks engine. The UI currently renders plain text and initial-based avatars.
 
 ![Untethered room preview in the Rust frontend](rust-client/docs/preview.png)

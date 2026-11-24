@@ -1,5 +1,8 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+mod account;
 mod backend;
+#[cfg(target_arch = "wasm32")]
+mod browser_verification;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod live_test;
 mod rooms;
@@ -26,7 +29,6 @@ enum Field {
     Server,
     Username,
     Password,
-    Recovery,
     Composer(String),
 }
 #[derive(Clone)]
@@ -46,8 +48,12 @@ enum Msg {
     Username(String),
     Password(String),
     Login,
+    #[cfg(not(target_arch = "wasm32"))]
     Recovery(String),
+    #[cfg(not(target_arch = "wasm32"))]
     Verify,
+    #[cfg(target_arch = "wasm32")]
+    SubmitWebRecovery(String),
     Tab(bool),
     Close,
     #[cfg(target_arch = "wasm32")]
@@ -66,6 +72,7 @@ impl std::fmt::Debug for Msg {
 enum Request {
     Login,
     Verify,
+    VerifyState,
     Page(String),
     Members(String),
     Send(String, String),
@@ -92,6 +99,8 @@ struct App {
     username: String,
     password: String,
     recovery: String,
+    verification_note: String,
+    recovery_unavailable: bool,
     closing: bool,
     stopped: bool,
 }
@@ -105,6 +114,8 @@ impl App {
             }),
             Task::run(events, Msg::Frame),
         ]);
+        #[cfg(target_arch = "wasm32")]
+        let task = Task::batch([task, browser_verification::listen()]);
         (Self::new(commands), task)
     }
     fn new(commands: Sender<Value>) -> Self {
@@ -130,6 +141,8 @@ impl App {
             username: String::new(),
             password: String::new(),
             recovery: String::new(),
+            verification_note: String::new(),
+            recovery_unavailable: false,
             closing: false,
             stopped: false,
         }
@@ -229,6 +242,44 @@ impl App {
             self.open(first);
         }
     }
+    fn verifying(&self) -> bool {
+        self.pending
+            .values()
+            .any(|p| matches!(p, Request::Verify | Request::VerifyState))
+    }
+    fn verification_feedback(&self) -> &str {
+        if !self.connected {
+            &self.status
+        } else if self.verifying() {
+            "Verifying with your homeserver…"
+        } else if !self.verification_note.is_empty() {
+            &self.verification_note
+        } else if self.recovery_unavailable {
+            "gomuks reports that recovery isn’t set up for this account. Check recovery in a trusted Matrix client."
+        } else {
+            "Use your Matrix recovery key or recovery passphrase. Grouping spaces are fine."
+        }
+    }
+    fn submit_verification(&mut self) {
+        if !self.logged_in
+            || self.verified
+            || !self.connected
+            || self.verifying()
+            || self.recovery_unavailable
+        {
+            return;
+        }
+        if self.recovery.trim().is_empty() {
+            self.verification_note = "Enter your recovery key or passphrase first.".into();
+            return;
+        }
+        self.verification_note.clear();
+        let key = account::recovery_input(&self.recovery);
+        self.rpc("verify", json!({"recovery_key":key}), Request::Verify);
+        if !self.verifying() {
+            self.verification_note.clone_from(&self.status);
+        }
+    }
     fn frame(&mut self, f: Value) {
         let data = &f["data"];
         match f["command"].as_str().unwrap_or("") {
@@ -237,6 +288,12 @@ impl App {
                 self.connected = true;
                 self.logged_in = data["is_logged_in"] == true;
                 self.verified = data["is_verified"] == true;
+                let vs = &data["verification_state"];
+                self.recovery_unavailable = vs["state_checked"] == true && vs["has_ssss"] == false;
+                if self.verified || !self.logged_in {
+                    self.recovery.clear();
+                    self.verification_note.clear();
+                }
                 self.profile = data["displayname"]
                     .as_str()
                     .or(data["user_id"].as_str())
@@ -254,12 +311,7 @@ impl App {
                         self.live = Rooms::default();
                     }
                 }
-                self.status = if self.logged_in && !self.verified {
-                    "Verify with your Matrix recovery key to sync encrypted rooms."
-                } else {
-                    ""
-                }
-                .into();
+                self.status.clear();
                 self.reconcile();
             }
             "sync_complete" => {
@@ -292,7 +344,10 @@ impl App {
                         Request::Login => {
                             "Sign-in failed. Check your homeserver, username, and password."
                         }
-                        Request::Verify => "Verification failed. Check your recovery key.",
+                        Request::Verify | Request::VerifyState => {
+                            self.verification_note = account::verify_error(data).into();
+                            return;
+                        }
                         Request::Page(_) => {
                             "Could not load history. Use Earlier messages to retry."
                         }
@@ -333,7 +388,16 @@ impl App {
                         }
                     }
                     Request::Login => self.password.clear(),
-                    Request::Verify => self.recovery.clear(),
+                    Request::Verify if !self.verified => {
+                        self.rpc("get_state", json!({}), Request::VerifyState);
+                    }
+                    Request::VerifyState => {
+                        self.frame(json!({"command":"client_state","data":data}));
+                        if !self.verified {
+                            self.verification_note="gomuks finished the request but still reports this device as unverified. You can retry.".into();
+                        }
+                    }
+                    Request::Verify => {}
                 }
             }
             _ => {}
@@ -369,29 +433,35 @@ impl App {
             Msg::Server(s) => self.server = s,
             Msg::Username(s) => self.username = s,
             Msg::Password(s) => self.password = s,
+            #[cfg(not(target_arch = "wasm32"))]
             Msg::Recovery(s) => self.recovery = s,
             Msg::Login
                 if !self.logged_in
                     && self.connected
                     && !self.pending.values().any(|p| matches!(p, Request::Login)) =>
             {
-                if !valid_server(self.server.trim())
-                    || self.username.trim().is_empty()
-                    || self.password.is_empty()
+                if let Some(url) = account::homeserver(&self.server)
+                    && !self.username.trim().is_empty()
+                    && !self.password.is_empty()
                 {
-                    self.status = "Enter an HTTPS homeserver, username, and password.".into();
-                } else {
+                    self.server = url;
                     self.status = "Signing in…".into();
-                    self.rpc("login",json!({"homeserver_url":self.server.trim(),"username":self.username.trim(),"password":self.password}),Request::Login);
+                    self.rpc("login",json!({"homeserver_url":self.server,"username":self.username.trim(),"password":self.password}),Request::Login);
+                } else {
+                    self.status =
+                        "Enter your homeserver (for example, matrix.org), username, and password."
+                            .into();
                 }
             }
-            Msg::Verify if self.logged_in && !self.recovery.trim().is_empty() => {
-                self.status = "Verifying device…".into();
-                self.rpc(
-                    "verify",
-                    json!({"recovery_key":self.recovery.trim()}),
-                    Request::Verify,
-                );
+            #[cfg(not(target_arch = "wasm32"))]
+            Msg::Verify => self.submit_verification(),
+            #[cfg(target_arch = "wasm32")]
+            Msg::SubmitWebRecovery(s) => {
+                if self.logged_in && !self.verified {
+                    self.recovery = s;
+                    self.submit_verification();
+                    self.recovery.clear();
+                }
             }
             Msg::Draft(a) => self.editor.perform(a),
             Msg::Send => {
@@ -472,9 +542,6 @@ impl App {
                     self.username = s.trim().into()
                 }
                 Field::Server if self.account && !self.logged_in => self.server = s.trim().into(),
-                Field::Recovery if self.logged_in && !self.verified => {
-                    self.recovery = s.trim().into()
-                }
                 _ => {}
             },
             #[cfg(target_arch = "wasm32")]
@@ -492,6 +559,7 @@ impl App {
         }
         #[cfg(target_arch = "wasm32")]
         if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+            browser_verification::sync(self);
             let title = self.title();
             if doc.title() != title {
                 doc.set_title(&title);
@@ -514,17 +582,6 @@ impl App {
             if self.logged_in { "" } else { "  ·  Preview" }
         )
     }
-}
-fn valid_server(s: &str) -> bool {
-    url::Url::parse(s).is_ok_and(|u| {
-        u.host().is_some()
-            && u.username().is_empty()
-            && u.password().is_none()
-            && (u.scheme() == "https"
-                || (u.scheme() == "http"
-                    && matches!(u.host(),
-            Some(url::Host::Ipv4(ip)) if ip.is_loopback())))
-    })
 }
 fn main() -> iced::Result {
     iced::application(App::boot, App::update, App::view)

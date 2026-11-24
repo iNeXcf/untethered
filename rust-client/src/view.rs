@@ -513,11 +513,7 @@ impl App {
             form = form
                 .push(text("Welcome back").size(32).font(BOLD))
                 .push(text("Sign in to your Matrix homeserver.").color(MUTED))
-                .push(field!(
-                    "Homeserver · https://matrix.org",
-                    &self.server,
-                    Server
-                ))
+                .push(field!("Homeserver · matrix.org", &self.server, Server))
                 .push(field!("Matrix username", &self.username, Username))
                 .push(
                     field!("Password", &self.password, Password)
@@ -532,23 +528,47 @@ impl App {
                     ),
                 );
         } else if !self.verified {
-            form = form
-                .push(text("Verify this device").size(28).font(BOLD))
-                .push(text(&self.profile))
-                .push(
-                    field!("Matrix recovery key", &self.recovery, Recovery)
-                        .secure(true)
-                        .on_submit(Msg::Verify),
-                )
-                .push(
-                    button("Verify device").on_press_maybe(self.connected.then_some(Msg::Verify)),
-                );
+            // The web build uses a real password input in a browser dialog,
+            // so keyboard, context-menu paste and password managers work normally.
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                form = form
+                    .push(text("Verify this device").size(28).font(BOLD))
+                    .push(text(&self.profile))
+                    .push(
+                        text_input("Recovery key or passphrase", &self.recovery)
+                            .on_input(Msg::Recovery)
+                            .padding(11)
+                            .secure(true)
+                            .on_submit(Msg::Verify),
+                    )
+                    .push(
+                        button(if self.verifying() {
+                            "Verifying…"
+                        } else {
+                            "Verify device"
+                        })
+                        .on_press_maybe(
+                            (self.connected
+                                && !self.verifying()
+                                && !self.recovery_unavailable
+                                && !self.recovery.trim().is_empty())
+                            .then_some(Msg::Verify),
+                        ),
+                    )
+                    .push(text(self.verification_feedback()).size(14))
+                    .push(
+                        text("Emoji comparison isn’t available with this version of gomuks.")
+                            .size(13)
+                            .color(MUTED),
+                    );
+            }
         } else {
             form = form
                 .push(text(&self.profile).size(25).font(BOLD))
                 .push(text("Verified Matrix device").color(MUTED));
         }
-        if !self.status.is_empty() {
+        if (!self.logged_in || self.verified) && !self.status.is_empty() {
             form = form.push(text(&self.status).size(14).color(MUTED));
         }
         if !self.logged_in || self.verified {
