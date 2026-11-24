@@ -73,6 +73,23 @@ receivers, all six decoded audio paths, the original microphone IDs and a GCM
 restore the PipeWire video graph to baseline, unpublish the video and clear
 both receiver tiles while the voice room stays connected.
 
+### Verify voice-room camera video
+
+Use `sh experiments/rtc-audio/run_element.sh --room-camera` with the same
+three-client and [private KWin setup](../../scripts/kwin-element.md). The fixture
+provides a virtual camera using GStreamer's `rawvideoparse` and `pipewiresink`
+on its own PipeWire server; it does not open a physical webcam. The sender can
+reach the camera only through the real Camera portal's file descriptor.
+
+The test starts with no camera, then cancels a pending permission request and
+checks that no capture process, PipeWire link or SFU video track exists. On a
+fresh grant it verifies an active link to the virtual camera and a GCM
+`CAMERA` publication. Screenshots of both peers must show the green/magenta
+test fields, then fresh orange/blue fields on the same video track. **Stop
+camera** must remove the capture process, camera links, SFU video track and
+both remote tiles while leaving the virtual camera available. Changing mic
+tones verifies all six audio paths both during video and after stopping it.
+
 ### Verify mute and deafen
 
 Use `sh experiments/rtc-audio/run_element.sh --call-controls` with the same

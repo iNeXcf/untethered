@@ -1,10 +1,11 @@
-//! Window-only ScreenCast portal. The PipeWire client receives the session's
-//! restricted FD and node, never a desktop-wide/default capture source.
+//! Group camera and single-window video use distinct portal grants and tracks.
 use super::*;
 use ashpd::desktop::{
     PersistMode, Session as PortalSession,
+    camera::Camera,
     screencast::{CursorMode, Screencast, SourceType},
 };
+use ashpd::{zbus, zvariant};
 use iced::widget::image::Handle;
 use livekit::webrtc::{
     prelude::{
@@ -15,6 +16,7 @@ use livekit::webrtc::{
 };
 use std::{
     collections::BTreeMap,
+    os::fd::OwnedFd,
     sync::{Arc, Mutex},
 };
 use tokio::process::{Child, ChildStdout};
@@ -24,6 +26,54 @@ const W: u32 = 960;
 const H: u32 = 540;
 const Y: usize = (W * H) as usize;
 const FRAME: usize = Y * 3 / 2;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VideoInput {
+    Window,
+    Camera,
+}
+impl VideoInput {
+    pub(crate) const ALL: [Self; 2] = [Self::Window, Self::Camera];
+    fn name(self) -> &'static str {
+        match self {
+            Self::Window => "Shared window",
+            Self::Camera => "Camera",
+        }
+    }
+    pub(crate) fn from_name(name: Option<&str>) -> Option<Self> {
+        Self::ALL.into_iter().find(|i| Some(i.name()) == name)
+    }
+    pub(crate) fn starting(self) -> &'static str {
+        match self {
+            Self::Window => "Choose a window in the desktop picker…",
+            Self::Camera => "Opening camera…",
+        }
+    }
+    pub(crate) fn control(self, requested: bool, live: bool) -> &'static str {
+        match (self, requested, live) {
+            (Self::Window, false, _) => "Share window",
+            (Self::Window, true, true) => "Stop sharing",
+            (Self::Window, true, false) => "Cancel share",
+            (Self::Camera, false, _) => "Start camera",
+            (Self::Camera, true, true) => "Stop camera",
+            (Self::Camera, true, false) => "Cancel camera",
+        }
+    }
+    fn source(self) -> TrackSource {
+        match self {
+            Self::Window => TrackSource::Screenshare,
+            Self::Camera => TrackSource::Camera,
+        }
+    }
+    fn request(self, mode: &AudioMode) -> Option<Uuid> {
+        mode.video[self as usize]
+    }
+}
+#[derive(Default)]
+pub(crate) struct Status {
+    pub label: String,
+    pub live: bool,
+}
 
 type Tiles = BTreeMap<String, (String, Handle)>;
 #[derive(Clone, Default)]
@@ -46,7 +96,7 @@ impl Drop for Tile {
 }
 pub(super) async fn display(
     track: RemoteVideoTrack,
-    user: String,
+    caption: String,
     views: Previews,
     events: Sender<Value>,
 ) -> Result<()> {
@@ -87,7 +137,7 @@ pub(super) async fn display(
         );
         tile.views.0.lock().unwrap().insert(
             tile.sid.clone(),
-            (user.clone(), Handle::from_rgba(ow, oh, rgba)),
+            (caption.clone(), Handle::from_rgba(ow, oh, rgba)),
         );
         let _ = tile.events.try_send(json!({"command":"video_redraw"}));
     }
@@ -112,14 +162,100 @@ impl Drop for Lease {
         }
     }
 }
+
+// Camera.AccessCamera has a Request but no Session. Keep its handle so cancelling
+// from the call bar (or leaving voice) also dismisses the desktop prompt.
+struct PermissionPrompt(Option<zbus::Proxy<'static>>);
+impl Drop for PermissionPrompt {
+    fn drop(&mut self) {
+        if let Some(p) = self.0.take() {
+            tokio::spawn(async move {
+                let _: zbus::Result<()> = p.call("Close", &()).await;
+            });
+        }
+    }
+}
+async fn authorize_camera(portal: &Camera<'_>) -> Result<()> {
+    let conn = portal.connection();
+    let sender = conn
+        .unique_name()
+        .ok_or("Camera portal disconnected.")?
+        .as_str()
+        .trim_start_matches(':')
+        .replace('.', "_");
+    let token = format!("untethered_{}", Uuid::new_v4().simple());
+    let path = format!("/org/freedesktop/portal/desktop/request/{sender}/{token}");
+    let proxy = zbus::Proxy::new_owned(
+        conn.clone(),
+        "org.freedesktop.portal.Desktop",
+        path.clone(),
+        "org.freedesktop.portal.Request",
+    )
+    .await
+    .map_err(|_| "Camera permission request unavailable.")?;
+    let mut response = proxy
+        .receive_signal("Response")
+        .await
+        .map_err(|_| "Cannot receive camera permission.")?;
+    let mut prompt = PermissionPrompt(Some(proxy));
+    let options =
+        std::collections::HashMap::from([("handle_token", zvariant::Value::from(token.as_str()))]);
+    let handle: zvariant::OwnedObjectPath = portal
+        .call("AccessCamera", &(options,))
+        .await
+        .map_err(|_| "Camera permission request failed.")?;
+    if handle.as_str() != path {
+        return Err("Unexpected camera permission handle.");
+    }
+    let msg = response
+        .next()
+        .await
+        .ok_or("Camera permission request closed.")?;
+    let (code, _): (u32, std::collections::HashMap<String, zvariant::OwnedValue>) = msg
+        .body()
+        .deserialize()
+        .map_err(|_| "Invalid camera permission response.")?;
+    prompt.0 = None;
+    if code != 0 {
+        return Err("Camera access cancelled or denied.");
+    }
+    Ok(())
+}
 pub(super) struct Capture {
-    lease: Lease,
+    lease: Option<Lease>,
     child: Child,
     pipe: ChildStdout,
     pixels: Vec<u8>,
 }
 impl Capture {
-    async fn choose() -> Result<Self> {
+    async fn open(input: VideoInput) -> Result<Self> {
+        let (fd, node, lease) = match input {
+            VideoInput::Window => {
+                let (fd, node, lease) = Self::window().await?;
+                (fd, Some(node), Some(lease))
+            }
+            VideoInput::Camera => {
+                let portal = Camera::new()
+                    .await
+                    .map_err(|_| "Camera portal unavailable.")?;
+                if !portal
+                    .is_present()
+                    .await
+                    .map_err(|_| "Could not check for a camera.")?
+                {
+                    return Err("No camera available.");
+                }
+                authorize_camera(&portal).await?;
+                let fd = portal
+                    .open_pipe_wire_remote()
+                    .await
+                    .map_err(|_| "Could not open the camera connection.")?;
+                (fd, None, None)
+            }
+        };
+        Self::reader(fd, node, lease).await
+    }
+    async fn window() -> Result<(OwnedFd, u32, Lease)> {
         let proxy = Screencast::new()
             .await
             .map_err(|_| "Window capture portal unavailable.")?;
@@ -160,15 +296,24 @@ impl Capture {
             .open_pipe_wire_remote(session)
             .await
             .map_err(|_| "Could not open the selected PipeWire stream.")?;
+        Ok((fd, stream.pipe_wire_node_id(), lease))
+    }
+    async fn reader(fd: OwnedFd, node: Option<u32>, lease: Option<Lease>) -> Result<Self> {
         // Stdio maps the already-authorized FD to descriptor 0 in the child;
         // no inheritance of arbitrary FDs, temporary recording or shell needed.
-        let mut child = Command::new("gst-launch-1.0")
+        let mut pipeline = Command::new("gst-launch-1.0");
+        pipeline.args(["-q", "pipewiresrc", "fd=0"]);
+        if let Some(node) = node {
+            pipeline.args([format!("path={node}"), "keepalive-time=300".into()]);
+        } else {
+            // Autoconnect on the camera-only portal remote; the media session
+            // manager chooses the camera. Never fall back to a host device.
+            pipeline.arg(
+                "stream-properties=props,media.role=Camera,node.name=untethered-camera-capture",
+            );
+        }
+        let mut child = pipeline
             .args([
-                "-q",
-                "pipewiresrc",
-                "fd=0",
-                &format!("path={}", stream.pipe_wire_node_id()),
-                "keepalive-time=300",
                 "do-timestamp=true",
                 "!",
                 "queue",
@@ -195,13 +340,13 @@ impl Capture {
             .stderr(Stdio::null())
             .kill_on_drop(true)
             .spawn()
-            .map_err(|_| "Install GStreamer and its PipeWire plugin to share a window.")?;
+            .map_err(|_| "Install GStreamer and its PipeWire plugin to capture video.")?;
         let mut pipe = child.stdout.take().unwrap();
         let mut pixels = vec![0; FRAME];
         time::timeout(SECOND * 12, pipe.read_exact(&mut pixels))
             .await
-            .map_err(|_| "Window capture timed out.")?
-            .map_err(|_| "Could not read the selected window.")?;
+            .map_err(|_| "Video capture timed out.")?
+            .map_err(|_| "Could not read video from the selected source.")?;
         Ok(Self {
             lease,
             child,
@@ -214,26 +359,34 @@ impl Capture {
         src: NativeVideoSource,
         mut mode: watch::Receiver<AudioMode>,
         id: Uuid,
+        input: VideoInput,
     ) -> Result<()> {
         // Stop capture independently of room-state and key-distribution RPCs.
         let result = tokio::select! {
             biased;
-            _=mode.wait_for(|m|m.share!=Some(id))=>Ok(()),
+            _=mode.wait_for(|m|input.request(m)!=Some(id))=>Ok(()),
             f=self.pump(src)=>f,
         };
         let _ = self.child.kill().await;
-        self.lease.close().await;
+        if let Some(lease) = &mut self.lease {
+            lease.close().await;
+        }
         result
     }
     async fn pump(&mut self, src: NativeVideoSource) -> Result<()> {
-        let closed = self
-            .lease
-            .0
-            .as_ref()
-            .unwrap()
-            .receive_closed()
-            .await
-            .map_err(|_| "Window capture ended.")?;
+        let lease = &self.lease;
+        let closed = async {
+            if let Some(lease) = lease
+                && let Some(session) = &lease.0
+            {
+                if let Ok(closed) = session.receive_closed().await {
+                    tokio::pin!(closed);
+                    closed.next().await;
+                }
+            } else {
+                std::future::pending::<()>().await
+            }
+        };
         tokio::pin!(closed);
         loop {
             let mut buf = I420Buffer::new(W, H);
@@ -243,15 +396,15 @@ impl Capture {
             v.copy_from_slice(&self.pixels[Y + Y / 4..]);
             src.capture_frame(&VideoFrame::new(VideoRotation::VideoRotation0, buf));
             tokio::select! {
-                _=closed.next()=>return Ok(()),
-                f=time::timeout(SECOND*12,self.pipe.read_exact(&mut self.pixels))=>{f.map_err(|_|"Window capture timed out.")?.map_err(|_|"Window capture ended.")?;}
+                _=&mut closed=>return Ok(()),
+                f=time::timeout(SECOND*12,self.pipe.read_exact(&mut self.pixels))=>{f.map_err(|_|"Video capture timed out.")?.map_err(|_|"Video capture ended.")?;}
             }
         }
     }
 }
 
-#[derive(Default)]
-pub(super) struct Share {
+pub(super) struct Publisher {
+    input: VideoInput,
     request: Option<Uuid>,
     picker: JoinSet<Result<Capture>>,
     frames: JoinSet<Result<()>>,
@@ -261,7 +414,16 @@ pub(super) enum Update {
     Chosen(Result<Box<Capture>>),
     Ended(&'static str),
 }
-impl Share {
+impl Publisher {
+    pub(super) fn new(input: VideoInput) -> Self {
+        Self {
+            input,
+            request: None,
+            picker: JoinSet::new(),
+            frames: JoinSet::new(),
+            published: None,
+        }
+    }
     pub(super) async fn select(&mut self, request: Option<Uuid>, lk: &Room) -> Result<()> {
         if self.request == request {
             return Ok(());
@@ -269,7 +431,7 @@ impl Share {
         self.stop(lk).await?;
         self.request = request;
         if request.is_some() {
-            self.picker.spawn(Capture::choose());
+            self.picker.spawn(Capture::open(self.input));
         }
         Ok(())
     }
@@ -286,14 +448,14 @@ impl Share {
             lk.local_participant()
                 .unpublish_track(&sid)
                 .await
-                .map_err(|_| "Could not unpublish window share.")?;
+                .map_err(|_| "Could not unpublish video track.")?;
         }
         Ok(())
     }
     pub(super) async fn next(&mut self) -> Update {
         tokio::select! {
-            p=self.picker.join_next(),if !self.picker.is_empty()=>Update::Chosen(p.and_then(|r|r.ok()).unwrap_or(Err("Window selection interrupted.")).map(Box::new)),
-            f=self.frames.join_next(),if !self.frames.is_empty()=>Update::Ended(f.and_then(|r|r.ok()).and_then(|r|r.err()).unwrap_or("Window sharing stopped.")),
+            p=self.picker.join_next(),if !self.picker.is_empty()=>Update::Chosen(p.and_then(|r|r.ok()).unwrap_or(Err("Video start interrupted.")).map(Box::new)),
+            f=self.frames.join_next(),if !self.frames.is_empty()=>Update::Ended(f.and_then(|r|r.ok()).and_then(|r|r.err()).unwrap_or("Video stopped.")),
             else=>std::future::pending().await,
         }
     }
@@ -309,7 +471,7 @@ impl Share {
         let Some(id) = self.request else {
             return Ok(());
         };
-        if mode.borrow().share != Some(id) {
+        if self.input.request(&mode.borrow()) != Some(id) {
             return Ok(());
         }
         let outcome = match update {
@@ -319,10 +481,10 @@ impl Share {
                         width: W,
                         height: H,
                     },
-                    true,
+                    self.input == VideoInput::Window,
                 );
                 let video = LocalVideoTrack::create_video_track(
-                    "Shared window",
+                    self.input.name(),
                     RtcVideoSource::Native(src.clone()),
                 );
                 match lk
@@ -330,7 +492,7 @@ impl Share {
                     .publish_track(
                         LocalTrack::Video(video),
                         TrackPublishOptions {
-                            source: TrackSource::Screenshare,
+                            source: self.input.source(),
                             simulcast: false,
                             ..Default::default()
                         },
@@ -349,15 +511,19 @@ impl Share {
                         {
                             fc.set_key_index(i32::from(index));
                             if fc.key_index() != i32::from(index) {
-                                return Err("Could not encrypt shared window.");
+                                return Err("Could not encrypt video.");
                             }
-                            self.frames.spawn(cap.feed(src, mode.clone(), id));
-                            Ok("Sharing the selected window")
+                            self.frames
+                                .spawn(cap.feed(src, mode.clone(), id, self.input));
+                            Ok(match self.input {
+                                VideoInput::Window => "Sharing the selected window",
+                                VideoInput::Camera => "Camera is on",
+                            })
                         } else {
-                            Err("Shared window encryption unavailable.")
+                            Err("Video encryption unavailable.")
                         }
                     }
-                    Err(_) => Err("Could not publish the selected window."),
+                    Err(_) => Err("Could not publish video."),
                 }
             }
             Update::Chosen(Err(e)) | Update::Ended(e) => Err(e),
@@ -367,7 +533,7 @@ impl Share {
         }
         let _ = events
             .send(
-                json!({"command":"window_share","data":{"room":room,"request":id.to_string(),
+                json!({"command":"room_video","data":{"room":room,"source":self.input.name(),"request":id.to_string(),
             "live":outcome.is_ok(),"label":outcome.unwrap_or_else(|e|e)}}),
             )
             .await;

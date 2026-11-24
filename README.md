@@ -128,6 +128,11 @@ leaving voice. Capture requires a ScreenCast portal backend, PipeWire and
 GStreamer (`gst-launch-1.0`, `pipewiresrc`, and the base video plugins).
 The share carries window pixels; microphones remain separate encrypted tracks.
 
+**Start camera** uses the Linux Camera portal and the default camera on its
+PipeWire connection. Other participants see a **Camera** tile with your name.
+**Stop camera** releases capture and removes the tile while voice continues.
+Camera and window sharing have independent controls and encrypted tracks.
+
 ![Untethered room preview in the Rust frontend](rust-client/docs/preview.png)
 
 ## Browser

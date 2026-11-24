@@ -102,16 +102,23 @@
   all six sender→listener paths carried the correct tones (410, 670, 1030 Hz);
   the SFU reported three GCM microphones, and room history had zero rings.
   After the third participant left, the other two exchanged fresh tones on
-  their original tracks. Speaking indicators, per-user volume, push-to-talk,
-  and camera remain open.
+  their original tracks. Speaking indicators, per-user volume and push-to-talk
+  remain open.
 - **Linux portal window sharing:** [The three-client window test](experiments/rtc-audio/README.md#verify-portal-window-sharing)
   uses a private KDE Wayland picker and PipeWire. Cancelling creates no video
   publication. Selecting a window publishes one GCM screen track; both other
   desktops rendered its original and changed color pattern while the sharer
   browsed another channel. All six audio paths stayed live on the original
   microphone tracks. **Stop sharing** released the portal session and capture
-  nodes, unpublished the video and cleared both remote views. Camera video,
-  full-monitor capture and system-audio sharing are still unverified.
+  nodes, unpublished the video and cleared both remote views. Full-monitor
+  capture and system-audio sharing are still unverified.
+- **Linux voice-room camera:** [The three-client camera test](experiments/rtc-audio/README.md#verify-voice-room-camera-video)
+  uses a real Camera portal with an isolated virtual camera. Both peers
+  rendered changing green/magenta → orange/blue frames from a single GCM
+  camera publication. Turning the camera off removed the reader, PipeWire
+  capture links, SFU video publication and remote tiles; all six audio paths
+  remained live on the original tracks. Physical webcams and multi-camera
+  grid/focus layouts have not been verified.
 
 ## What parity means
 

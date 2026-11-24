@@ -10,6 +10,20 @@ from qa_desktop_dm import sfu_participants
 from qa_native_paste import wait_for
 
 
+def area(peer,palette):
+    raw=sp.check_output(["import","-window",peer.win,"png:-"],env=peer.env,timeout=6)
+    im=Image.open(io.BytesIO(raw)).convert("RGB")
+    # Two adjacent unique fields at rendered video-tile scale, not an icon.
+    boxes=[]
+    for color in palette:
+        pts=[(x,y) for y in range(90,630,5) for x in range(290,1175,5)
+             if max(abs(v-w) for v,w in zip(im.getpixel((x,y)),color))<32]
+        if len(pts)<800:return False
+        boxes.append((min(x for x,_ in pts),max(x for x,_ in pts),min(y for _,y in pts),max(y for _,y in pts)))
+    a,b=boxes
+    return 0<b[0]-a[1]<16 and abs(a[2]-b[2])<10 and abs(a[3]-b[3])<10
+
+
 def window_share(stack,desks,secret,original,publications):
     sender,*peers=desks
     kde=sender.kde
@@ -31,21 +45,6 @@ def window_share(stack,desks,secret,original,publications):
         tree=kde.command("busctl","--address="+kde.env["DBUS_SESSION_BUS_ADDRESS"],"--list",
                          "tree","org.freedesktop.portal.Desktop").stdout
         return {p.strip() for p in tree.splitlines() if re.fullmatch(r"/org/freedesktop/portal/desktop/session/[^/]+/[^/]+",p.strip())}
-    def screen(peer):
-        raw=sp.check_output(["import","-window",peer.win,"png:-"],env=peer.env,timeout=6)
-        return Image.open(io.BytesIO(raw)).convert("RGB")
-    def area(peer,palette):
-        im=screen(peer)
-        # Sample a grid across the remote UI. Require the two adjacent fields
-        # at shared-window scale, not a thumbnail, an icon, or a desktop crop.
-        boxes=[]
-        for color in palette:
-            pts=[(x,y) for y in range(90,630,5) for x in range(290,1175,5)
-                 if max(abs(v-w) for v,w in zip(im.getpixel((x,y)),color))<32]
-            if len(pts)<800:return False
-            boxes.append((min(x for x,_ in pts),max(x for x,_ in pts),min(y for _,y in pts),max(y for _,y in pts)))
-        a,b=boxes
-        return 0<b[0]-a[1]<16 and abs(a[2]-b[2])<10 and abs(a[3]-b[3])<10
     first=[(235,36,119),(14,204,153)]
     second=[(24,79,234),(245,132,33)]
     before=pw_nodes();before_sessions=sessions()

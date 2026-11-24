@@ -84,7 +84,7 @@ enum Msg {
     #[cfg(target_os = "linux")]
     ToggleDeafen,
     #[cfg(target_os = "linux")]
-    ToggleShare,
+    ToggleVideo(desktop_call::VideoInput),
     #[cfg(target_os = "linux")]
     AudioDevices,
     #[cfg(target_os = "linux")]
@@ -399,19 +399,21 @@ impl App {
         let data = &f["data"];
         match f["command"].as_str().unwrap_or("") {
             #[cfg(target_os = "linux")]
-            "window_share" => {
+            "room_video" => {
+                let Some(input) = desktop_call::VideoInput::from_name(data["source"].as_str())
+                else {
+                    return;
+                };
+                let slot = input as usize;
                 if let Some(call) = &mut self.call
                     && data["room"] == call.room
-                    && call
-                        .audio
-                        .borrow()
-                        .share
+                    && call.audio.borrow().video[slot]
                         .is_some_and(|id| data["request"] == id.to_string())
                 {
-                    call.share_label = rooms::string(&data["label"]);
-                    call.sharing = data["live"] == true;
-                    if !call.sharing {
-                        call.audio.send_modify(|m| m.share = None);
+                    call.video_status[slot].label = rooms::string(&data["label"]);
+                    call.video_status[slot].live = data["live"] == true;
+                    if !call.video_status[slot].live {
+                        call.audio.send_modify(|m| m.video[slot] = None);
                     }
                 }
             }
@@ -867,24 +869,25 @@ impl App {
                 }
             }
             #[cfg(target_os = "linux")]
-            Msg::ToggleShare => {
+            Msg::ToggleVideo(input) => {
                 if let Some(call) = &mut self.call
                     && call.group
                     && !call.cancel.is_closed()
                 {
-                    let stop = call.audio.borrow().share.is_some();
+                    let slot = input as usize;
+                    let stop = call.audio.borrow().video[slot].is_some();
                     call.audio.send_modify(|m| {
-                        m.share = if stop {
+                        m.video[slot] = if stop {
                             None
                         } else {
                             Some(uuid::Uuid::new_v4())
                         }
                     });
-                    call.sharing = false;
-                    call.share_label = if stop {
+                    call.video_status[slot].live = false;
+                    call.video_status[slot].label = if stop {
                         String::new()
                     } else {
-                        "Choose a window in the desktop picker…".into()
+                        input.starting().into()
                     };
                 }
             }

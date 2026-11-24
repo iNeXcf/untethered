@@ -205,7 +205,10 @@ impl Subscriptions {
                     && matches!(
                         (publication.kind(), publication.source()),
                         (TrackKind::Audio, TrackSource::Microphone)
-                            | (TrackKind::Video, TrackSource::Screenshare)
+                            | (
+                                TrackKind::Video,
+                                TrackSource::Screenshare | TrackSource::Camera
+                            )
                     );
                 if wanted && publication.encryption_type() != EncryptionType::Gcm {
                     return Err("Unencrypted voice room track.");
@@ -219,9 +222,17 @@ impl Subscriptions {
                         RemoteTrack::Audio(track) => {
                             self.jobs.spawn(play(track, mode.clone(), notices.clone()))
                         }
-                        RemoteTrack::Video(track) => self.jobs.spawn(window_share::display(
+                        RemoteTrack::Video(track) => self.jobs.spawn(room_video::display(
                             track,
-                            keys.members[&id.0].user.clone(),
+                            format!(
+                                "{} · {}",
+                                if publication.source() == TrackSource::Camera {
+                                    "Camera"
+                                } else {
+                                    "Shared window"
+                                },
+                                keys.members[&id.0].user
+                            ),
                             previews.clone(),
                             notices.events.clone(),
                         )),
@@ -266,7 +277,8 @@ pub(super) async fn joined(
         notices.clone(),
     ));
     let mut subscriptions = Subscriptions::default();
-    let mut share = window_share::Share::default();
+    let mut share = room_video::Publisher::new(VideoInput::Window);
+    let mut camera = room_video::Publisher::new(VideoInput::Camera);
     let mut heartbeat = time::interval(SECOND * 4);
     heartbeat.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
     let mut renew = Instant::now();
@@ -286,11 +298,17 @@ pub(super) async fn joined(
         }
         keys.receive(w)?;
         subscriptions.sync(lk, &keys, &mode, &notices, &previews)?;
-        let requested = mode.borrow_and_update().share;
-        share.select(requested, lk).await?;
+        let requests = mode.borrow_and_update().video;
+        share
+            .select(requests[VideoInput::Window as usize], lk)
+            .await?;
+        camera
+            .select(requests[VideoInput::Camera as usize], lk)
+            .await?;
         tokio::select! {
             changed=mode.changed()=>{changed.map_err(|_|ENDED)?;}
             update=share.next()=>share.update(update,lk,keys.outbound.index,events,w.room,&mode).await?,
+            update=camera.next()=>camera.update(update,lk,keys.outbound.index,events,w.room,&mode).await?,
             r=input.join_next()=>return Err(r.and_then(|j|j.ok()).and_then(|v|v.err()).unwrap_or("Microphone stream ended.")),
             job=subscriptions.jobs.join_next(),if !subscriptions.jobs.is_empty()=>match job {
                 Some(Ok(result))=>result?,

@@ -34,8 +34,8 @@ use untethered_iced::rtc_keys::{self, EVENT as KEY, SenderKey};
 use untethered_iced::rtc_membership::{EVENT_TYPE, Membership};
 use url::Url;
 mod channel;
-mod window_share;
-pub(super) use window_share::Previews;
+mod room_video;
+pub(super) use room_video::{Previews, VideoInput};
 
 pub enum Target {
     Dm {
@@ -61,7 +61,7 @@ pub struct AudioMode {
     pub deafened: bool,
     pub mic: Route,
     pub speaker: Route,
-    pub share: Option<uuid::Uuid>,
+    pub video: [Option<uuid::Uuid>; 2],
 }
 impl AudioMode {
     fn mic_off(&self) -> bool {
@@ -81,8 +81,7 @@ pub struct ActiveCall {
     pub list_error: Option<&'static str>,
     pub mic_error: bool,
     pub speaker_error: bool,
-    pub share_label: String,
-    pub sharing: bool,
+    pub video_status: [room_video::Status; 2],
     pub previews: Previews,
 }
 pub struct Controls {
@@ -131,8 +130,7 @@ impl crate::App {
                 list_error: None,
                 mic_error: false,
                 speaker_error: false,
-                share_label: String::new(),
-                sharing: false,
+                video_status: Default::default(),
                 previews,
             });
         } else {

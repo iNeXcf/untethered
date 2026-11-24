@@ -96,7 +96,7 @@ class Desktop:
                                         for amps in windows)
 
 
-def test_group(tmp,hs,name,root,backend,seed,http,secret,*,share=False):
+def test_group(tmp,hs,name,root,backend,seed,http,secret,*,share=False,camera=False):
     dirs=[tmp/f"p{i}" for i in range(3)]
     for p in dirs:p.mkdir()
     credentials=[seed(p,hs) for p in dirs]
@@ -143,7 +143,7 @@ def test_group(tmp,hs,name,root,backend,seed,http,secret,*,share=False):
     with ExitStack() as stack:
         sock=tmp/"pulse"
         for i,d in enumerate(dirs):
-            wayland=share and i==0
+            wayland=(share or camera) and i==0
             env=isolated_env(d,backend,"wayland" if wayland else "x11");env.update(TOKIO_WORKER_THREADS="2",RAYON_NUM_THREADS="2",GOMAXPROCS="2")
             if not wayland:start_display(stack,d,env,"x11")
             env.update(PULSE_SERVER="unix:"+str(sock),PULSE_SOURCE=f"Mic{i}.monitor",PULSE_SINK=f"Out{i}")
@@ -192,6 +192,9 @@ def test_group(tmp,hs,name,root,backend,seed,http,secret,*,share=False):
             if share:
                 from qa_window_share import window_share
                 window_share(stack,desks,secret,tracks,publications)
+            if camera:
+                from qa_room_camera import room_camera
+                room_camera(stack,desks,secret,tracks,publications)
             desks[2].click("leave")
             wait_for("third device left MatrixRTC",lambda:members()==sorted(users[:2]))
             remaining=wait_for("third device left SFU",lambda:publications(2))

@@ -267,31 +267,30 @@ impl App {
         ]
         .spacing(8)
         .align_y(Center);
-        let controls = if call.group {
-            let label = if mode.share.is_none() {
-                "Share window"
-            } else if call.sharing {
-                "Stop sharing"
-            } else {
-                "Cancel share"
-            };
-            controls.push(
-                button(text(label).size(15).font(BOLD))
-                    .style(nav(mode.share.is_some()))
-                    .on_press_maybe(active.then_some(Msg::ToggleShare)),
-            )
-        } else {
-            controls
-        };
+        let mut controls = controls;
+        if call.group {
+            for input in crate::desktop_call::VideoInput::ALL {
+                let slot = input as usize;
+                let requested = mode.video[slot].is_some();
+                let label = input.control(requested, call.video_status[slot].live);
+                controls = controls.push(
+                    button(text(label).size(15).font(BOLD))
+                        .style(nav(requested))
+                        .on_press_maybe(active.then_some(Msg::ToggleVideo(input))),
+                );
+            }
+        }
         let mut bar = column![
             text(format!("{} · {name}", call.label))
                 .size(13)
                 .color(TEXT),
-            controls
+            controls.wrap()
         ]
         .spacing(3);
-        if !call.share_label.is_empty() {
-            bar = bar.push(text(&call.share_label).size(13));
+        for status in &call.video_status {
+            if !status.label.is_empty() {
+                bar = bar.push(text(&status.label).size(13));
+            }
         }
         if call.mic_error {
             bar =
@@ -595,10 +594,10 @@ impl App {
         if let Some(call) = &self.call
             && call.room == self.selected
         {
-            for (user, frame) in call.previews.tiles() {
+            for (caption, frame) in call.previews.tiles() {
                 chat = chat.push(
                     column![
-                        text(format!("Shared window · {user}")).size(13),
+                        text(caption).size(13),
                         image(frame)
                             .height(210)
                             .width(Fill)
