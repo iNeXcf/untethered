@@ -636,6 +636,16 @@ impl App {
             header
         };
         #[cfg(target_os = "linux")]
+        let header = if self.logged_in && self.verified && room.is_some() {
+            header.push(
+                button(text("Alerts").size(13))
+                    .style(nav(self.alerts.panel))
+                    .on_press(Msg::NotificationPanel),
+            )
+        } else {
+            header
+        };
+        #[cfg(target_os = "linux")]
         let header = if self.call.is_none()
             && self.verified
             && self.connected
@@ -681,6 +691,49 @@ impl App {
         ];
         if let Some(banner) = banner {
             chat = chat.push(banner)
+        }
+        #[cfg(target_os = "linux")]
+        if self.alerts.panel
+            && let Some(r) = room
+        {
+            let selected = self.alerts.mode(&self.selected);
+            let pending = self.notifications_pending(&self.selected);
+            let mut options = Row::new().spacing(5);
+            for mode in crate::notifications::Mode::CHOICES {
+                options = options.push(
+                    button(text(mode.label()).size(14))
+                        .style(nav(mode == selected))
+                        .on_press_maybe(
+                            (self.alerts.ready && self.connected && !pending && selected != mode)
+                                .then(|| Msg::NotifyMode(self.selected.clone(), mode)),
+                        ),
+                );
+            }
+            let state = if pending {
+                "Saving…"
+            } else if !self.alerts.ready {
+                "Loading push rules…"
+            } else {
+                selected.label()
+            };
+            let mut settings = column![
+                text(format!("Room alerts · {} · {state}", r.name)).font(BOLD),
+                options.wrap(),
+                text("Mute ordinary messages; higher-priority mention rules still apply.")
+                    .size(13)
+                    .color(MUTED)
+            ]
+            .spacing(4);
+            if self.alerts.delivery_failed {
+                settings =
+                    settings.push(text("Desktop notification service unavailable.").size(13));
+            }
+            chat = chat.push(
+                container(settings)
+                    .padding([6, 14])
+                    .width(Fill)
+                    .style(|_| surface(TRAY, 5.)),
+            );
         }
         #[cfg(target_os = "linux")]
         if let Some(b) = self.incoming_banner() {

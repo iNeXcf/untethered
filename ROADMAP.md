@@ -162,6 +162,15 @@
   using the base reply ID. **Return to timeline** restored the same message
   at the same pixel position after three arrivals and a five-line edit above it.
 
+- **Linux room notifications:** The [two-account notification test](scripts/room-alerts.md)
+  muted ordinary chat in an encrypted room through the Iced controls. A
+  direct mention from Element appeared in Dunst; an ordinary message and a
+  mention addressed to someone else reached the receiver but produced zero
+  desktop notification calls. A second room still notified. The override
+  survived restart without replaying notifications, and **Account default**
+  removed it from the homeserver. Browser, closed-app and wider notification
+  workflows remain unverified.
+
 ## What parity means
 
 A small community should be able to move its everyday conversations here: find a server and its channels, talk in DMs, drop a screenshot, join friends in voice, share a screen, catch up on mentions, and moderate its space. Test those workflows side by side with Discord. A button that looks right but doesn't work with another Matrix client isn't parity.

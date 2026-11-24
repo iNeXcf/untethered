@@ -140,6 +140,12 @@ pub async fn run(commands: Commands, events: Events) -> Result<(), String> {
     let mut last_received = 0;
     let mut last_frame = time::Instant::now();
     let mut transfers = tokio::task::JoinSet::new();
+    // --desktop also writes notification previews to stdout. Delivery uses
+    // the WebSocket's sync/rule decisions; drain this second copy without
+    // logging message text or allowing a full pipe to stall gomuks.
+    transfers.spawn(async move {
+        let _ = tokio::io::copy(&mut stdout.into_inner(), &mut tokio::io::sink()).await;
+    });
     loop {
         let outgoing = tokio::select! {
             frame = ws.next() => {

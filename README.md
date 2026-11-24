@@ -47,6 +47,14 @@ is outside the loaded timeline, Untethered loads that part of the room’s
 history through gomuks. **Preceding messages** shows what led up to it, and
 **Back to latest** returns to the conversation.
 
+**Linux desktop notifications:** Open **Alerts** in the room header. **All
+messages** enables ordinary message alerts; **Mute ordinary** quiets them
+while higher-priority Matrix rules, such as direct mentions, still apply.
+**Account default** removes the room override. The setting syncs with your
+Matrix account. While Untethered is running, alerts go to the desktop
+notification service; the room you’re currently viewing in a focused
+window doesn’t also show a popup.
+
 **Room search:** Click **Search** in the room header, enter a word or phrase,
 and press Enter. Results come from this device’s gomuks history and use the
 current text of edited messages. **Check coverage** shows the number of

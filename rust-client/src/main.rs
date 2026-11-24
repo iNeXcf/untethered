@@ -16,6 +16,8 @@ mod inline;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod live_test;
 mod media;
+#[cfg(target_os = "linux")]
+mod notifications;
 #[cfg(not(target_arch = "wasm32"))]
 mod paste;
 mod preview;
@@ -55,6 +57,14 @@ enum Field {
 }
 #[derive(Clone)]
 enum Msg {
+    #[cfg(target_os = "linux")]
+    NotificationPanel,
+    #[cfg(target_os = "linux")]
+    NotifyMode(String, notifications::Mode),
+    #[cfg(target_os = "linux")]
+    WindowFocus(bool),
+    #[cfg(target_os = "linux")]
+    DesktopDelivery(bool),
     #[cfg(target_os = "linux")]
     WaylandDrop(async_channel::Receiver<smithay_clipboard::FileDrop>),
     #[cfg(target_os = "linux")]
@@ -169,6 +179,8 @@ impl std::fmt::Debug for Msg {
 }
 enum Request {
     #[cfg(target_os = "linux")]
+    NotifyRule(notifications::Change),
+    #[cfg(target_os = "linux")]
     RingState(incoming::Offer),
     #[cfg(target_os = "linux")]
     DeclineSent,
@@ -189,6 +201,8 @@ enum Request {
     Search(String, search::Page),
 }
 struct App {
+    #[cfg(target_os = "linux")]
+    alerts: notifications::Alerts,
     #[cfg(target_os = "linux")]
     inbox: incoming::Inbox,
     #[cfg(target_os = "linux")]
@@ -257,6 +271,8 @@ impl App {
     }
     fn new(commands: Sender<backend::Command>) -> Self {
         Self {
+            #[cfg(target_os = "linux")]
+            alerts: Default::default(),
             #[cfg(target_os = "linux")]
             call: None,
             #[cfg(target_os = "linux")]
@@ -375,6 +391,10 @@ impl App {
             return;
         }
         self.close_original();
+        #[cfg(target_os = "linux")]
+        {
+            self.alerts.panel = false;
+        }
         self.clear_search();
         self.editing = None;
         self.drafts
@@ -551,6 +571,8 @@ impl App {
                     self.drafts.clear();
                     self.clear_search();
                     self.reply_drafts.clear();
+                    #[cfg(target_os = "linux")]
+                    self.alerts.reset();
                     self.editing = None;
                     self.close_original();
                     self.editor = text_editor::Content::new();
@@ -585,6 +607,8 @@ impl App {
                         .retain(|_, p| !matches!(p, Request::Members(_) | Request::Page(_)));
                 }
                 self.live.sync(data);
+                #[cfg(target_os = "linux")]
+                self.notifications_sync(data);
                 if let Some(rooms) = data["rooms"].as_object() {
                     for (room, delta) in rooms {
                         if let Some(c) = self
@@ -630,6 +654,7 @@ impl App {
             "events_decrypted" => {
                 #[cfg(target_os = "linux")]
                 if let Some(room) = data["room_id"].as_str() {
+                    self.room_alerts(room, data, true);
                     self.ring_events(room, data, true);
                 }
                 for e in items(&data["events"]) {
@@ -664,6 +689,8 @@ impl App {
                 };
                 if f["command"] == "error" {
                     self.status = match p {
+                        #[cfg(target_os="linux")]
+                        Request::NotifyRule(_)=>"Could not save the room notification setting. Try again.",
                         #[cfg(target_os="linux")]
                         Request::RingState(i)=>{self.present_ring(i,&Value::Null);return}
                         #[cfg(target_os="linux")]
@@ -703,6 +730,8 @@ impl App {
                     return;
                 }
                 match p {
+                    #[cfg(target_os = "linux")]
+                    Request::NotifyRule(c) => self.saved_notifications(c),
                     #[cfg(target_os = "linux")]
                     Request::RingState(i) => self.present_ring(i, data),
                     #[cfg(target_os = "linux")]
@@ -813,6 +842,19 @@ impl App {
             _ => false,
         };
         match msg {
+            #[cfg(target_os = "linux")]
+            Msg::NotificationPanel => self.alerts.panel = !self.alerts.panel,
+            #[cfg(target_os = "linux")]
+            Msg::NotifyMode(room, mode) => self.set_notifications(room, mode),
+            #[cfg(target_os = "linux")]
+            Msg::WindowFocus(focused) => {
+                self.alerts.focused = focused;
+                if !focused {
+                    return self.update(Msg::TalkKey(false));
+                }
+            }
+            #[cfg(target_os = "linux")]
+            Msg::DesktopDelivery(ok) => self.alerts.delivery_failed = !ok,
             #[cfg(not(target_arch = "wasm32"))]
             Msg::PasteComposer if self.can_stage() && !self.pasting => {
                 self.paste_seq += 1;
@@ -1515,7 +1557,7 @@ impl App {
             Task::none()
         };
         #[cfg(target_os = "linux")]
-        let task = Task::batch([task, self.start_ringtone()]);
+        let task = Task::batch([task, self.start_ringtone(), self.send_alerts()]);
         task
     }
     fn title(&self) -> String {
@@ -1568,10 +1610,13 @@ fn main() -> iced::Result {
                         physical_key:
                             iced::keyboard::key::Physical::Code(iced::keyboard::key::Code::ControlRight),
                         ..
-                    })
-                    | iced::Event::Window(iced::window::Event::Unfocused) => {
+                    }) => {
                         Some(Msg::TalkKey(false))
                     }
+                    #[cfg(target_os="linux")]
+                    iced::Event::Window(iced::window::Event::Unfocused)=>Some(Msg::WindowFocus(false)),
+                    #[cfg(target_os="linux")]
+                    iced::Event::Window(iced::window::Event::Focused)=>Some(Msg::WindowFocus(true)),
                     iced::Event::Window(iced::window::Event::FileDropped(path)) => {
                         Some(Msg::DropPaths(vec![path]))
                     }

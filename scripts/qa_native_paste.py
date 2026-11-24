@@ -31,7 +31,7 @@ def wait_for(description, check, timeout=20):
 @contextmanager
 def child(args, env, **kw):
     stderr=kw.pop("stderr",None if os.getenv("PASTE_QA_DEBUG") else sp.DEVNULL)
-    proc = sp.Popen(args, env=env, stdout=sp.DEVNULL, stderr=stderr, start_new_session=True, **kw)
+    proc = sp.Popen(args, env=env, stdout=kw.pop("stdout",sp.DEVNULL), stderr=stderr, start_new_session=True, **kw)
     try:
         yield proc
     finally:
@@ -55,7 +55,7 @@ def isolated_env(tmp,backend,platform):
         folder = tmp/k
         folder.mkdir(mode=0o700)
         env[k] = str(folder)
-    env.update(XDG_SESSION_TYPE=platform, UNTETHERED_BACKEND=str(backend),
+    env.update(XDG_SESSION_TYPE=platform, DBUS_SESSION_BUS_ADDRESS="unix:path="+env["XDG_RUNTIME_DIR"]+"/bus", UNTETHERED_BACKEND=str(backend),
                UNTETHERED_PROFILE=str(tmp/"seed"))
     return env
 

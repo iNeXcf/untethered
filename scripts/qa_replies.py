@@ -15,7 +15,7 @@ from qa_native_paste import child,isolated_env,start_display,wait_for
 from qa_upload_cancel import slow_gateway
 
 
-def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False,room_search=False):
+def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False,room_search=False,alerts=False):
     paths=[]
     def observe(method,path):
         if room_search or method=="GET" and "/context/" in path:paths.append(unquote(path))
@@ -47,6 +47,9 @@ def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False,room_searc
                 .map(e=>({id:e.getId(),target:e.replyEventId}))""",[room,body])
         env=isolated_env(tmp,backend,"x11")
         start_display(stack,tmp,env,"x11")
+        if alerts:
+            from qa_room_alerts import NotificationDesktop
+            desktop=NotificationDesktop(stack,tmp,env)
         native_life=stack.enter_context(ExitStack())
         def x(*args):return sp.check_output(["xdotool",*args],env=env,text=True,timeout=6).strip()
         def launch():
@@ -73,6 +76,14 @@ def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False,room_searc
                 print("Native visible words:",[w for w,_,_ in words()],flush=True);raise
         def click(pos):x("mousemove","--window",win,*map(str,pos),"click","1")
         def lines(words,label):return [(x,y) for v,x,y in words if v==label and x>280]
+        if alerts:
+            from qa_room_alerts import check_room_alerts
+            def restart_native():
+                nonlocal win
+                native_life.close()
+                win=launch()
+            check_room_alerts(tmp,hs,page,room,native,hdr,http,desktop,locate,click,restart_native,lambda:win)
+            return
         if room_search:
             from qa_room_search import check_room_search
             def restart_native():
