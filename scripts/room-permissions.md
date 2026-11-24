@@ -34,3 +34,33 @@ record and restores fields still at the preset level. The test compares the
 entire resulting document to the baseline, including an originally absent
 `events_default`, except for two later changes made by the administrator’s
 other session: a custom audit rule and a stricter reaction rule.
+
+## Verify ban, unban and reinvitation
+
+Using the same Element release and Python environment:
+
+```sh
+export ELEMENT_WEB_DIR=/path/to/element-v1.12.35
+export PYTHON=/path/to/qa/venv/bin/python
+"$PYTHON" scripts/test-media-interop.py --room-ban
+unshare -Urn sh -ec 'ip link set lo up; exec "$PYTHON" scripts/test-media-interop.py --federated-ban'
+```
+
+The second run starts two Synapse homeservers with distinct identities,
+databases and signing keys. They federate with one another using temporary
+TLS certificates in a loopback-only network namespace (requires OpenSSL,
+`unshare` and `ip`). The first run puts both accounts on one Synapse.
+
+The admin selects the member’s row in Iced, enters a reason and clicks
+**Ban**. The fixture checks membership and reason on Synapse and captures
+the banned user’s actual join response from Element. The room is public at
+that point, so invite-only rules cannot explain the refusal. Synapse 1.166
+returns `M_BAD_STATE` from its local join handler and `M_FORBIDDEN` on the
+federated join path, both with HTTP 403 and an explicit ban explanation.
+
+The admin restarts Untethered and selects the persisted banned member. The
+test switches to invite-only before **Unban**: unbanning must yield `leave`,
+and joining without an invitation must still fail. **Invite** must yield
+`invite`; the same Element account then joins and posts a fresh message.
+The fixture checks the send response, Megolm event, decrypted text on both
+screens, and the actual membership sequence `ban → leave → invite → join`.

@@ -15,7 +15,7 @@ from qa_native_paste import child,isolated_env,start_display,wait_for
 from qa_upload_cancel import slow_gateway
 
 
-def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False,room_search=False,alerts=False,permissions=False):
+def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False,room_search=False,alerts=False,permissions=False,ban=False,peer_hs=None):
     paths=[]
     def observe(method,path):
         if room_search or method=="GET" and "/context/" in path:paths.append(unquote(path))
@@ -23,12 +23,14 @@ def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False,room_searc
         proxy,_=stack.enter_context(slow_gateway(hs,port,observe_path=observe))
         native,hdr=seed(tmp,proxy)
         remote=tmp/"peer";remote.mkdir()
-        bob,bh=seed(remote,hs)
+        bob,bh=seed(remote,peer_hs or hs)
         room=native["room"];api=hs+"/_matrix/client/v3/rooms/"+quote(room,safe="")
-        uid="@"+bob["username"]+":test.invalid"
+        uid=(http("GET",peer_hs+"/_matrix/client/v3/account/whoami",headers=bh).json()["user_id"]
+             if peer_hs else "@"+bob["username"]+":test.invalid")
         http("POST",api+"/invite",headers=hdr,json={"user_id":uid})
-        http("POST",api+"/join",headers=bh,json={})
-        web=stack.enter_context(element_server(hs));pw=stack.enter_context(sync_playwright())
+        member_api=(peer_hs or hs)+"/_matrix/client/v3/rooms/"+quote(room,safe="")
+        http("POST",member_api+"/join",headers=bh,json={})
+        web=stack.enter_context(element_server(peer_hs or hs,server_name=uid.split(":",1)[1]));pw=stack.enter_context(sync_playwright())
         browser=pw.chromium.launch(executable_path=os.environ.get("CHROMIUM") or shutil.which("chromium"),
                                    args=["--disable-dev-shm-usage"]);stack.callback(browser.close)
         ctx=browser.new_context(viewport={"width":1280,"height":920},locale="en-US")
@@ -76,14 +78,19 @@ def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False,room_searc
                 print("Native visible words:",[w for w,_,_ in words()],flush=True);raise
         def click(pos):x("mousemove","--window",win,*map(str,pos),"click","1")
         def lines(words,label):return [(x,y) for v,x,y in words if v==label and x>280]
-        if permissions:
-            from qa_room_permissions import check_permissions
+        if permissions or ban:
             def restart_native():
                 nonlocal win
                 native_life.close()
                 win=launch()
-            check_permissions(page,api,room,native,hdr,bh,http,locate,click,restart_native,
-                              lambda *args:x(*[win if arg=="WIN" else arg for arg in args]))
+            if ban:
+                from qa_room_ban import check_ban
+                check_ban(page,api,room,peer_hs,hdr,bh,http,locate,click,restart_native,
+                          lambda *args:x(*[win if arg=="WIN" else arg for arg in args]))
+            else:
+                from qa_room_permissions import check_permissions
+                check_permissions(page,api,room,native,hdr,bh,http,locate,click,restart_native,
+                                  lambda *args:x(*[win if arg=="WIN" else arg for arg in args]))
             return
         if alerts:
             from qa_room_alerts import check_room_alerts

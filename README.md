@@ -62,6 +62,13 @@ sufficient power can still post announcements. **Restore posting** brings
 back the previous posting levels, including inherited defaults, and keeps
 rules another administrator changed in the meantime.
 
+**Room membership:** Open **People**, find the member by name or Matrix ID,
+and select their row. **Ban** removes them and prevents rejoining; you can
+include a reason. To readmit someone, select their **Banned** row and choose
+**Unban**. In an invite-only room, choose **Invite** separately. Their status
+changes to **Joined** when they accept. Membership controls use your room role
+and the selected account’s full Matrix ID.
+
 **Room search:** Click **Search** in the room header, enter a word or phrase,
 and press Enter. Results come from this device’s gomuks history and use the
 current text of edited messages. **Check coverage** shows the number of

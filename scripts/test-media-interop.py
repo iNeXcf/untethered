@@ -143,6 +143,8 @@ def main():
     args.add_argument("--room-search",action="store_true",help="Find an older edited reply in the local room cache and verify the exact reading position on return")
     args.add_argument("--room-alerts",action="store_true",help="Verify per-room push rules and visible direct-mention notifications on a private Linux desktop")
     args.add_argument("--room-permissions",action="store_true",help="Restrict and restore room posting from Iced; check the member's actual Synapse send response")
+    args.add_argument("--room-ban",action="store_true",help="Ban, unban and reinvite a member from Untethered; verify Synapse join enforcement and encrypted delivery")
+    args.add_argument("--federated-ban",action="store_true",help="Test the member ban flow through a second Synapse homeserver in a private loopback namespace")
     args.add_argument("--rtc-audio",action="store_true",help="Verify encrypted Rust ↔ Element Call tones using real LiveKit and Matrix OpenID authorization")
     args.add_argument("--desktop-dm",action="store_true",help="Drive the Iced DM call controls and Element's incoming call prompt with isolated audio")
     args.add_argument("--incoming-dm",action="store_true",help="Ring the Iced desktop twice from Element, decline then accept and hang up")
@@ -165,8 +167,14 @@ def main():
     if args.call_controls or args.call_devices or args.call_reconnect or args.call_turn: args.desktop_dm=True
     if args.desktop_dm or args.incoming_dm or args.voice_room: args.rtc_audio=True
     assert BACKEND.is_file(), "Run scripts/rust-client.sh once or set UNTETHERED_BACKEND"
+    if args.federated_ban:
+        from qa_ban_federation import federated_ban
+        os.umask(0o077)
+        with tempfile.TemporaryDirectory(prefix="untethered-ban-",dir=os.environ.get("TMPDIR")) as d:
+            federated_ban(Path(d),ROOT,BACKEND,seed,http,free_port,service)
+        return
     dist = ROOT/"rust-client/web/dist"
-    chat_test=args.replies or args.reactions or args.room_search or args.room_alerts or args.room_permissions
+    chat_test=args.replies or args.reactions or args.room_search or args.room_alerts or args.room_permissions or args.room_ban
     if not any((args.native_paste,args.portal_drop,args.kwin_element,args.rtc_membership,args.rtc_audio,chat_test)):
         assert (dist/"backend/gomuks-worker.js").is_file(), "Run scripts/rust-web.sh first"
     os.umask(0o077)
@@ -211,7 +219,7 @@ federation_domain_whitelist: []
                     time.sleep(.1)
             if chat_test:
                 from qa_replies import test_replies
-                test_replies(tmp,hs,ROOT,BACKEND,seed,http,gateway_port,reactions=args.reactions,room_search=args.room_search,alerts=args.room_alerts,permissions=args.room_permissions)
+                test_replies(tmp,hs,ROOT,BACKEND,seed,http,gateway_port,reactions=args.reactions,room_search=args.room_search,alerts=args.room_alerts,permissions=args.room_permissions,ban=args.room_ban)
                 return
             if args.rtc_audio:
                 audio_test(tmp,hs,server_name,rtc_service,ROOT,BACKEND,seed,http,service,desktop=args.desktop_dm or args.incoming_dm,incoming=args.incoming_dm,controls=args.call_controls,devices=args.call_devices,reconnect=args.call_reconnect,turn=args.call_turn,group=args.voice_room,share=args.window_share,camera=args.room_camera,ptt=args.room_ptt,layout=args.room_layout)

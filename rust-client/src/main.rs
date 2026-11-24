@@ -16,6 +16,7 @@ mod inline;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod live_test;
 mod media;
+mod moderation;
 #[cfg(target_os = "linux")]
 mod notifications;
 #[cfg(not(target_arch = "wasm32"))]
@@ -151,6 +152,11 @@ enum Msg {
     More,
     Copy,
     TogglePeople,
+    MemberFilter(String),
+    SelectMember(String),
+    MemberReason(String),
+    RefreshMembers,
+    Moderate(moderation::Change),
     Permissions,
     SetPosting(permissions::Change),
     Account,
@@ -200,6 +206,7 @@ enum Request {
     Send(String, String, Option<rooms::Quote>),
     Context(String, String),
     Posting(permissions::Flight),
+    Membership(moderation::Flight),
     Edit(String, String),
     Reaction(reactions::Toggle),
     Search(String, search::Page),
@@ -245,6 +252,7 @@ struct App {
     verified: bool,
     account: bool,
     people: bool,
+    directory: moderation::Directory,
     permission_panel: bool,
     profile: String,
     matrix_id: String,
@@ -316,6 +324,7 @@ impl App {
             verified: false,
             account: false,
             people: false,
+            directory: Default::default(),
             permission_panel: false,
             profile: String::new(),
             matrix_id: String::new(),
@@ -397,6 +406,7 @@ impl App {
             return;
         }
         self.close_original();
+        self.reset_directory();
         self.leave_permission_panel();
         #[cfg(target_os = "linux")]
         {
@@ -409,6 +419,9 @@ impl App {
         self.editor =
             text_editor::Content::with_text(self.drafts.get(&id).map(String::as_str).unwrap_or(""));
         self.selected = id.clone();
+        if self.people {
+            self.read_directory(None);
+        }
         if self.logged_in && self.verified && !id.is_empty() && self.loaded.insert(id.clone()) {
             self.page();
             self.rpc(
@@ -578,6 +591,7 @@ impl App {
                     self.drafts.clear();
                     self.clear_search();
                     self.reply_drafts.clear();
+                    self.reset_directory();
                     self.leave_permission_panel();
                     #[cfg(target_os = "linux")]
                     self.alerts.reset();
@@ -605,6 +619,7 @@ impl App {
             }
             "sync_complete" => {
                 if data["clear_state"] == true {
+                    self.reset_directory();
                     self.leave_permission_panel();
                     self.close_original();
                     self.clear_search();
@@ -620,6 +635,9 @@ impl App {
                 self.notifications_sync(data);
                 if let Some(rooms) = data["rooms"].as_object() {
                     for (room, delta) in rooms {
+                        if self.people && *room == self.selected {
+                            self.directory.sync(room, delta);
+                        }
                         if let Some(c) = self
                             .original
                             .as_mut()
@@ -730,6 +748,7 @@ impl App {
                         }
                         Request::Members(_) => "Could not load room members.",
                         Request::Posting(_)=> "Could not change posting permissions. Check your room role and connection.",
+                        Request::Membership(f)=>{self.membership_error(f);return}
                         Request::Send(..) => "Could not send. Your draft has been kept.",
                         Request::Context(..)=>"Could not load the original message. Try again from the reply.",
                         Request::Edit(room,id)=>{self.finish_edit(f["request_id"].as_i64().unwrap(),&room,&id,&Value::Null);return}
@@ -773,6 +792,7 @@ impl App {
                     }
                     Request::Context(room, id) => self.show_context(room, id, data),
                     Request::Posting(f) => self.posting_result(f, data),
+                    Request::Membership(f) => self.membership_result(f, data),
                     Request::Reaction(op) => self.finish_reaction(op, data),
                     Request::Search(room, kind) => self.search_response(room, kind, data),
                     Request::Edit(room, id) => {
@@ -1317,7 +1337,24 @@ impl App {
                 self.reconcile();
             }
             Msg::Open(id) => self.open(id),
-            Msg::TogglePeople => self.people = !self.people,
+            Msg::TogglePeople => {
+                self.people = !self.people;
+                self.reset_directory();
+                if self.people {
+                    self.read_directory(None);
+                }
+            }
+            Msg::MemberFilter(s) => {
+                self.directory.filter = s;
+                self.directory.choose(None);
+            }
+            Msg::SelectMember(id) => self.directory.choose(Some(id)),
+            Msg::MemberReason(reason) => self.directory.reason = reason,
+            Msg::RefreshMembers => {
+                self.directory.note.clear();
+                self.read_directory(None);
+            }
+            Msg::Moderate(c) => self.moderate(c),
             Msg::Account => self.account = true,
             Msg::Back => self.account = false,
             Msg::Server(s) => self.server = s,

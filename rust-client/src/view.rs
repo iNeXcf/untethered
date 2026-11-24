@@ -1,5 +1,6 @@
 use super::{App, Msg, Request, Section, rooms::Room};
 mod reaction_bar;
+mod room_people;
 mod room_search;
 #[cfg(target_os = "linux")]
 mod video_wall;
@@ -842,7 +843,9 @@ impl App {
             .into()
         };
         let mut middle = Row::new().push(body).height(Fill);
-        if self.people
+        if self.people && self.logged_in && room.is_some() {
+            middle = middle.push(room_people::view(self));
+        } else if self.people
             && let Some(r) = room
         {
             let people: std::collections::BTreeSet<_> =

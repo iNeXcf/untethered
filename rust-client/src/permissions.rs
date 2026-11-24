@@ -104,6 +104,25 @@ impl Posting {
         )?;
         Some(self.actor(me)? >= min)
     }
+    pub fn can_moderate(&self, me: &str, user: &str, action: crate::moderation::Action) -> bool {
+        use crate::moderation::Action;
+        let (Some(c), Some(actor), Some(target)) =
+            (self.content(), self.actor(me), self.actor(user))
+        else {
+            return false;
+        };
+        if me == user {
+            return false;
+        }
+        let enough = |name, default| level(c, name, default).is_some_and(|v| actor >= v);
+        match action {
+            Action::Invite => enough("invite", 0),
+            Action::Ban => actor > target && enough("ban", 50),
+            // In Synapse unbanning another user is ban -> leave, so the
+            // room's kick threshold also applies.
+            Action::Unban => actor > target && enough("ban", 50) && enough("kick", 50),
+        }
+    }
     pub fn summary(&self) -> Option<(i64, i64, i64)> {
         let c = self.content()?;
         let d = level(c, "events_default", 0)?;

@@ -178,7 +178,14 @@
   post. After Untethered restarted and restored posting, Synapse accepted
   the member’s message and both clients displayed it. A stricter sticker
   permission and intervening changes to two other rules survived restoration.
-  Kick, ban, and broader moderation workflows remain open.
+- **Ban and unban:** [Two-account tests](scripts/room-permissions.md#verify-ban-unban-and-reinvitation)
+  used the native **People** controls and a real Element member. With public
+  joins allowed, the federated member’s banned rejoin returned HTTP 403
+  `M_FORBIDDEN` (“You are banned from this room”). On the same Synapse server
+  the equivalent refusal was HTTP 403 `M_BAD_STATE`. After restart, **Unban**
+  left the member outside; in invite-only mode **Invite** allowed rejoining,
+  and both clients displayed the new encrypted message. Kicks, reports and
+  broader moderation workflows remain open.
 
 ## What parity means
 
