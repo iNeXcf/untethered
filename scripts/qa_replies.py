@@ -15,7 +15,15 @@ from qa_native_paste import child,isolated_env,start_display,wait_for
 from qa_upload_cancel import slow_gateway
 
 
-def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False,room_search=False,alerts=False,permissions=False,ban=False,kick=False,peer_hs=None):
+def screen_words(raw):
+    im=Image.open(io.BytesIO(raw)).convert("RGB");buf=io.BytesIO()
+    im.resize((im.width*2,im.height*2)).save(buf,"PNG")
+    t=sp.check_output(["tesseract","stdin","stdout","--psm","11","tsv"],input=buf.getvalue(),stderr=sp.DEVNULL)
+    return [(s[11].lower().strip(".,:|"),(int(s[6])+int(s[8])//2)//2,(int(s[7])+int(s[9])//2)//2)
+            for line in t.decode().splitlines() if len(s:=line.split("\t"))==12 and s[0]=="5"]
+
+
+def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False,room_search=False,alerts=False,permissions=False,ban=False,kick=False,report=False,report_web=None,peer_hs=None):
     paths=[]
     def observe(method,path):
         if room_search or method=="GET" and "/context/" in path:paths.append(unquote(path))
@@ -27,15 +35,23 @@ def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False,room_searc
         room=native["room"];api=hs+"/_matrix/client/v3/rooms/"+quote(room,safe="")
         uid=(http("GET",peer_hs+"/_matrix/client/v3/account/whoami",headers=bh).json()["user_id"]
              if peer_hs else "@"+bob["username"]+":test.invalid")
-        if kick:
+        if report:
+            # The reporter joins the sender's room as an ordinary member.
+            http("POST",api+"/leave",headers=hdr,json={})
+            room=bob["room"];api=hs+"/_matrix/client/v3/rooms/"+quote(room,safe="")
+            reporter=http("GET",hs+"/_matrix/client/v3/account/whoami",headers=hdr).json()["user_id"]
+            http("POST",api+"/invite",headers=bh,json={"user_id":reporter})
+            http("POST",api+"/join",headers=hdr,json={})
+        elif kick:
             http("PUT",api+"/state/m.room.join_rules",headers=hdr,json={"join_rule":"public"})
         else:
             http("POST",api+"/invite",headers=hdr,json={"user_id":uid})
         member_api=(peer_hs or hs)+"/_matrix/client/v3/rooms/"+quote(room,safe="")
-        http("POST",member_api+"/join",headers=bh,json={})
+        if not report:http("POST",member_api+"/join",headers=bh,json={})
         web=stack.enter_context(element_server(peer_hs or hs,server_name=uid.split(":",1)[1]));pw=stack.enter_context(sync_playwright())
+        flags=["--enable-unsafe-swiftshader","--ignore-gpu-blocklist"] if report_web else []
         browser=pw.chromium.launch(executable_path=os.environ.get("CHROMIUM") or shutil.which("chromium"),
-                                   args=["--disable-dev-shm-usage"]);stack.callback(browser.close)
+                                   args=["--disable-dev-shm-usage",*flags]);stack.callback(browser.close)
         ctx=browser.new_context(viewport={"width":1280,"height":920},locale="en-US")
         ctx.route(re.compile(r"^https?://(?!127\.0\.0\.1:)"),lambda route:route.abort())
         page=login_element(ctx,web,bob,room)
@@ -50,6 +66,22 @@ def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False,room_searc
             return page.evaluate("""([room,body])=>window.mxMatrixClientPeg.get().getRoom(room)?.getLiveTimeline().getEvents()
                 .filter(e=>e.getContent().body?.endsWith(body)&&e.getId()?.startsWith('$')&&e.replyEventId)
                 .map(e=>({id:e.getId(),target:e.replyEventId}))""",[room,body])
+        def locate(what,fn):
+            try:return wait_for(what,lambda:fn(words()),15)
+            except RuntimeError:
+                print("Client visible words:",[w for w,_,_ in words()],flush=True);raise
+        if report_web:
+            from qa_message_report import check_reports
+            from qa_web_login import login_client
+            reporter_ctx=browser.new_context(viewport={"width":1180,"height":760})
+            client=reporter_ctx.new_page()
+            login_client(client,report_web,native)
+            def words():return screen_words(client.screenshot())
+            def enter(n=1):
+                for _ in range(n):client.keyboard.press("Enter")
+            check_reports(tmp,hs,api,room,page,hdr,http,messages,locate,lambda pos:client.mouse.click(*pos),
+                          lambda s:client.keyboard.type(s,delay=5),enter)
+            return
         env=isolated_env(tmp,backend,"x11")
         start_display(stack,tmp,env,"x11")
         if alerts:
@@ -69,18 +101,14 @@ def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False,room_searc
             return wid
         win=launch()
         def words():
-            raw=sp.check_output(["import","-window",win,"png:-"],env=env,timeout=6)
-            im=Image.open(io.BytesIO(raw)).convert("RGB");buf=io.BytesIO()
-            im.resize((2360,1520)).save(buf,"PNG")
-            t=sp.check_output(["tesseract","stdin","stdout","--psm","11","tsv"],input=buf.getvalue(),stderr=sp.DEVNULL)
-            return [(s[11].lower().strip(".,:|"),(int(s[6])+int(s[8])//2)//2,(int(s[7])+int(s[9])//2)//2)
-                    for line in t.decode().splitlines() if len(s:=line.split("\t"))==12 and s[0]=="5"]
-        def locate(what,fn):
-            try:return wait_for(what,lambda:fn(words()),15)
-            except RuntimeError:
-                print("Native visible words:",[w for w,_,_ in words()],flush=True);raise
+            return screen_words(sp.check_output(["import","-window",win,"png:-"],env=env,timeout=6))
         def click(pos):x("mousemove","--window",win,*map(str,pos),"click","1")
         def lines(words,label):return [(x,y) for v,x,y in words if v==label and x>280]
+        if report:
+            from qa_message_report import check_reports
+            check_reports(tmp,hs,api,room,page,hdr,http,messages,locate,click,lambda s:x("type","--clearmodifiers",s),
+                          lambda n=1:x("key",*(["Return"]*n)))
+            return
         if permissions or ban or kick:
             def restart_native():
                 nonlocal win

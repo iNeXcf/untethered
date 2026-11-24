@@ -97,23 +97,13 @@ def seed(tmp, hs):
 
 
 def check_browser(fixture, web):
+    from qa_web_login import login_client
     with sync_playwright() as pw:
         browser = pw.chromium.launch(executable_path=os.environ.get("CHROMIUM") or shutil.which("chromium"),
                                      args=["--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"])
         ctx = browser.new_context(viewport={"width": 1180, "height": 760})
         page = ctx.new_page()
-        page.goto(web)
-        page.wait_for_function("document.title.includes('Preview')", timeout=35000)
-        page.mouse.click(1095, 73)
-        page.wait_for_function("document.title.includes('Account')")
-        for y, field in [(333, "server"), (391, "username"), (447, "password")]:
-            page.mouse.click(510, y)
-            page.keyboard.type(fixture[field], delay=6)
-        page.keyboard.press("Enter")
-        secret = page.get_by_label("Recovery key or passphrase")
-        secret.wait_for(timeout=35000)
-        secret.fill(fixture["key"])
-        secret.press("Enter")
+        login_client(page,web,fixture)
         for attempt in range(2):
             if attempt:
                 page.reload()
@@ -146,6 +136,7 @@ def main():
     args.add_argument("--room-permissions",action="store_true",help="Restrict and restore room posting from Iced; check the member's actual Synapse send response")
     args.add_argument("--room-ban",action="store_true",help="Ban, unban and reinvite a member from Untethered; verify Synapse join enforcement and encrypted delivery")
     args.add_argument("--room-kick",action="store_true",help="Kick a member from a public room; verify denied posting, invitation-free rejoin and encrypted delivery")
+    args.add_argument("--message-report",nargs="?",const="native",choices=("native","web"),help="Report a selected encrypted message as a regular member and inspect the Synapse admin queue")
     args.add_argument("--federated-ban",action="store_true",help="Test the member ban flow through a second Synapse homeserver in a private loopback namespace")
     args.add_argument("--rtc-audio",action="store_true",help="Verify encrypted Rust ↔ Element Call tones using real LiveKit and Matrix OpenID authorization")
     args.add_argument("--desktop-dm",action="store_true",help="Drive the Iced DM call controls and Element's incoming call prompt with isolated audio")
@@ -178,8 +169,8 @@ def main():
             federated_ban(Path(d),ROOT,BACKEND,seed,http,free_port,service)
         return
     dist = ROOT/"rust-client/web/dist"
-    chat_test=args.replies or args.reactions or args.room_search or args.room_alerts or args.room_permissions or args.room_ban or args.room_kick
-    if not any((args.native_paste,args.portal_drop,args.kwin_element,args.rtc_membership,args.rtc_audio,chat_test)):
+    chat_test=args.replies or args.reactions or args.room_search or args.room_alerts or args.room_permissions or args.room_ban or args.room_kick or args.message_report
+    if args.message_report=="web" or not any((args.native_paste,args.portal_drop,args.kwin_element,args.rtc_membership,args.rtc_audio,chat_test)):
         assert (dist/"backend/gomuks-worker.js").is_file(), "Run scripts/rust-web.sh first"
     os.umask(0o077)
     with tempfile.TemporaryDirectory(prefix="untethered-media-",dir=os.environ.get("TMPDIR")) as d:
@@ -229,7 +220,12 @@ federation_domain_whitelist: []
                 return
             if chat_test:
                 from qa_replies import test_replies
-                test_replies(tmp,hs,ROOT,BACKEND,seed,http,gateway_port,reactions=args.reactions,room_search=args.room_search,alerts=args.room_alerts,permissions=args.room_permissions,ban=args.room_ban,kick=args.room_kick)
+                if args.message_report=="web":
+                    wp=free_port()
+                    with service([sys.executable,"-m","http.server",str(wp),"--bind","127.0.0.1","--directory",str(dist)],tmp):
+                        test_replies(tmp,hs,ROOT,BACKEND,seed,http,gateway_port,report=True,report_web=f"http://127.0.0.1:{wp}")
+                    return
+                test_replies(tmp,hs,ROOT,BACKEND,seed,http,gateway_port,reactions=args.reactions,room_search=args.room_search,alerts=args.room_alerts,permissions=args.room_permissions,ban=args.room_ban,kick=args.room_kick,report=args.message_report)
                 return
             if args.rtc_audio:
                 audio_test(tmp,hs,server_name,rtc_service,ROOT,BACKEND,seed,http,service,desktop=args.desktop_dm or args.incoming_dm,incoming=args.incoming_dm,controls=args.call_controls,devices=args.call_devices,reconnect=args.call_reconnect,turn=args.call_turn,group=args.voice_room,share=args.window_share,camera=args.room_camera,ptt=args.room_ptt,layout=args.room_layout)

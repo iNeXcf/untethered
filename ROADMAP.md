@@ -197,8 +197,15 @@
   the supplied reason and rejected both encrypted and plain member sends
   with HTTP 403 `M_FORBIDDEN` while the member was out. The member rejoined
   with HTTP 200 and both clients displayed the next encrypted message.
-  There were no invite or ban events for that member. Reports and broader
-  moderation workflows remain open.
+  There were no invite or ban events for that member.
+- **Message reporting:** The [Linux desktop and Chromium tests](scripts/room-permissions.md#verify-message-reports)
+  each submitted reports as an ordinary member of an encrypted room. An
+  independent Synapse administrator checked the exact room ID, event ID,
+  reporter, sender and reason for each report. Canceling on a look-alike
+  message produced none. Editing the target while the form was open did
+  not redirect the report; reporting the updated text targeted its edit
+  event. No message was removed or report posted in chat. In-client
+  moderation history and the wider community workflows remain open.
 
 ## What parity means
 

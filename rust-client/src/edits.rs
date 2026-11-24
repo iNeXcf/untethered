@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 
 pub struct Revision {
+    pub(super) event_id: String,
     sender: String,
     encrypted: bool,
     timestamp: i64,
@@ -68,6 +69,7 @@ impl Replacements {
             }
             let new = &c["m.new_content"];
             let rev = Revision {
+                event_id: id.into(),
                 sender: e["sender"].as_str()?.into(),
                 encrypted,
                 timestamp: e["timestamp"].as_i64()?,

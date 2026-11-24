@@ -46,6 +46,7 @@ impl App {
         self.original = None;
         self.reaction_picker = None;
         self.editing = None;
+        self.reporting = None;
         self.pending
             .retain(|_, r| !matches!(r, Request::Context(..)));
     }

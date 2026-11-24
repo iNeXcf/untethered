@@ -85,3 +85,32 @@ message. The fixture checks both HTTP 200 responses, the event ID and text
 on both clients, unchanged join rules and power levels, and a final
 moderator-authored `leave` followed by a member-authored `join`, with no ban
 or invitation in the member’s history.
+
+## Verify message reports
+
+Build the native debug client and the web frontend (`bash scripts/rust-web.sh`).
+With the Element release and QA Python environment above, run:
+
+```sh
+unshare -Urn sh -ec 'ip link set lo up; exec "$PYTHON" scripts/test-media-interop.py --message-report native'
+unshare -Urn sh -ec 'ip link set lo up; exec "$PYTHON" scripts/test-media-interop.py --message-report web'
+```
+
+Each run starts a fresh Synapse. The reporter has room power level **0**
+and gets HTTP **403** if they try to read the moderation queue. The sender
+uses Element; the reporter uses either the native Iced client on Xvfb or a
+fresh Chromium tab running the Rust/WASM client and gomuks worker.
+
+1. Element sends two identical messages. Open **Report** on the first and
+   cancel after typing a reason: the server still has zero reports.
+2. Open **Report** on the second. Before submitting, Element edits that
+   message. Once the new text is visible, submit the open form. The queue
+   must contain the **second original event ID**, not the look-alike or edit.
+3. Open a fresh report on the edited text and press Enter twice. The queue
+   must gain exactly one report for the **replacement event ID**.
+
+A separate reviewer account reads both `/_synapse/admin/v1/event_reports`
+and the individual report details. The fixture checks the exact room,
+event, reporter, sender, and reason; the referenced event still contains
+Megolm ciphertext. Room history contains only the original pair and their
+one edit. The reviewer’s credentials are never provided to either client.

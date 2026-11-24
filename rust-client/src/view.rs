@@ -1043,6 +1043,19 @@ impl App {
                             ),
                     );
                 }
+                if self.verified && p.report_id(&self.matrix_id).is_some() {
+                    line = line.push(
+                        button(text("Report").size(12))
+                            .padding([1, 6])
+                            .style(nav(false))
+                            .on_press_maybe(
+                                (self.connected
+                                    && self.reporting.is_none()
+                                    && !self.report_pending())
+                                .then(|| Msg::Report(self.selected.clone(), id.clone())),
+                            ),
+                    );
+                }
             }
             if let Some(edit) = self
                 .editing
@@ -1278,6 +1291,36 @@ impl App {
         let has_files = files.is_some_and(|q| !q.is_empty());
         let uploading = self.batch.as_ref().is_some_and(|b| b.room == self.selected);
         let mut tray = Column::new().spacing(4);
+        if let Some(d) = &self.reporting {
+            let busy = self.report_pending();
+            let ready = !busy && self.connected && self.verified && !d.reason.trim().is_empty();
+            let input = text_input("Reason for reporting", &d.reason)
+                .id("report-reason")
+                .on_input_maybe((!busy).then_some(Msg::ReportReason))
+                .on_submit_maybe(ready.then_some(Msg::SubmitReport));
+            let submit = button(if busy {
+                "Submitting…"
+            } else {
+                "Submit report"
+            })
+            .style(if ready { nav(true) } else { nav(false) })
+            .on_press_maybe(ready.then_some(Msg::SubmitReport));
+            let cancel = button("Cancel")
+                .style(nav(false))
+                .on_press_maybe((!busy).then_some(Msg::CancelReport));
+            let panel=column![
+                text(format!("Report message · {}",d.preview)).font(BOLD).size(14),
+                text("Your homeserver admin receives the event ID and your reason. The message text is not attached.").size(13).color(MUTED),
+                row![input,submit,cancel].align_y(Center).spacing(6),
+            ].spacing(5);
+            return column![
+                viewport.push(feed).height(Fill),
+                container(panel).padding([10, 16])
+            ]
+            .width(Fill)
+            .height(Fill)
+            .into();
+        }
         if let Some(q) = self.reply_drafts.get(&self.selected) {
             tray = tray.push(
                 row![

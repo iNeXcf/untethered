@@ -55,6 +55,12 @@ Matrix account. While Untethered is running, alerts go to the desktop
 notification service; the room you’re currently viewing in a focused
 window doesn’t also show a popup.
 
+**Report a message:** Select **Report** beside someone else’s message, enter
+a reason, and choose **Submit report**. The report goes to your homeserver
+administrator. In an encrypted room, the administrator can read your reason;
+Untethered does not attach the decrypted message or post the reason to the room.
+[Verified on Linux desktop and in Chromium](scripts/room-permissions.md#verify-message-reports).
+
 **Room posting permissions:** Open **Permissions** in the room header to see
 the levels required for plain and encrypted messages. If your role allows it,
 choose **Make read-only** to stop ordinary members from posting. Members with

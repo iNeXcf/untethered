@@ -25,6 +25,7 @@ mod permissions;
 mod preview;
 mod reactions;
 mod replies;
+mod reports;
 mod rooms;
 mod search;
 mod transfers;
@@ -136,6 +137,10 @@ enum Msg {
     Draft(text_editor::Action),
     Send,
     Reply(String),
+    Report(String, String),
+    ReportReason(String),
+    SubmitReport,
+    CancelReport,
     ReactionPicker(String),
     ReactionInput(String),
     ToggleReaction(reactions::Toggle),
@@ -215,6 +220,7 @@ enum Request {
     Membership(moderation::Flight),
     Edit(String, String),
     Reaction(reactions::Toggle),
+    Report,
     Search(String, search::Page),
 }
 struct App {
@@ -250,6 +256,7 @@ struct App {
     original: Option<replies::Original>,
     search: Option<search::Search>,
     editing: Option<edits::Editing>,
+    reporting: Option<reports::Draft>,
     reaction_picker: Option<reactions::Picker>,
     editor: text_editor::Content,
     loaded: BTreeSet<String>,
@@ -327,6 +334,7 @@ impl App {
             original: None,
             search: None,
             editing: None,
+            reporting: None,
             reaction_picker: None,
             editor: text_editor::Content::new(),
             loaded: Default::default(),
@@ -761,6 +769,7 @@ impl App {
                         Request::Members(_) => "Could not load room members.",
                         Request::Posting(_)=> "Could not change posting permissions. Check your room role and connection.",
                         Request::Membership(f)=>{self.membership_error(f);return}
+                        Request::Report=>{self.report_result(false);return}
                         Request::Send(..) => "Could not send. Your draft has been kept.",
                         Request::Context(..)=>"Could not load the original message. Try again from the reply.",
                         Request::Edit(room,id)=>{self.finish_edit(f["request_id"].as_i64().unwrap(),&room,&id,&Value::Null);return}
@@ -805,6 +814,7 @@ impl App {
                     Request::Context(room, id) => self.show_context(room, id, data),
                     Request::Posting(f) => self.posting_result(f, data),
                     Request::Membership(f) => self.membership_result(f, data),
+                    Request::Report => self.report_result(true),
                     Request::Reaction(op) => self.finish_reaction(op, data),
                     Request::Search(room, kind) => self.search_response(room, kind, data),
                     Request::Edit(room, id) => {
@@ -1477,6 +1487,18 @@ impl App {
                 }
             }
             Msg::ToggleReaction(op) => self.toggle_reaction(op),
+            Msg::Report(room, id) => {
+                if self.begin_report(&room, &id) {
+                    return operation::focus("report-reason");
+                }
+            }
+            Msg::ReportReason(reason) if !self.report_pending() => {
+                if let Some(d) = &mut self.reporting {
+                    d.reason = reason;
+                }
+            }
+            Msg::CancelReport if !self.report_pending() => self.reporting = None,
+            Msg::SubmitReport => self.submit_report(),
             Msg::Edit(id) => {
                 if self.start_edit(id) {
                     return operation::focus("message-edit");
