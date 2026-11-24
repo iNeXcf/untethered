@@ -13,10 +13,10 @@ from qa_native_paste import child, isolated_env, wait_for
 
 
 class KWin:
-    def __init__(self, stack, tmp, root, backend):
+    def __init__(self, stack, tmp, root, backend, *, env=None, screencast=False):
         self.tmp = tmp
         self.stack = stack
-        self.env = env = isolated_env(tmp, backend, "wayland")
+        self.env = env = env if env is not None else isolated_env(tmp, backend, "wayland")
         self.synth = shutil.which(os.environ.get("KWIN_INPUTSYNTH", "selenium-webdriver-at-spi-inputsynth"))
         if not self.synth:
             raise RuntimeError("Set KWIN_INPUTSYNTH to KDE's installed selenium-webdriver-at-spi-inputsynth")
@@ -28,6 +28,10 @@ class KWin:
                    LANG="C.UTF-8", LANGUAGE="en", GTK_A11Y="none", GIO_USE_VFS="local",
                    XDG_DATA_DIRS=str(Path(self.synth).resolve().parent.parent/"share")+":/usr/local/share:/usr/share")
         runtime = Path(env["XDG_RUNTIME_DIR"])
+        if screencast:
+            env.update(PIPEWIRE_RUNTIME_DIR=str(runtime),PIPEWIRE_REMOTE="pipewire-0",
+                       XDG_STATE_HOME=str(tmp/"state"),XDG_SESSION_TYPE="wayland",
+                       DBUS_SYSTEM_BUS_ADDRESS="unix:path="+str(runtime/"no-system-bus"))
         env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path="+str(runtime/"bus")
         (Path(env["XDG_CONFIG_HOME"])/"kdeglobals").write_text("[KDE]\nAnimationDurationFactor=0\nSingleClick=false\n")
         def log(name):
@@ -35,6 +39,10 @@ class KWin:
             return stack.enter_context((Path(dest)/(name+".log")).open("w")) if dest else sp.DEVNULL
         stack.enter_context(child(["dbus-daemon","--session","--nofork","--nopidfile","--address="+env["DBUS_SESSION_BUS_ADDRESS"]],env,stderr=log("bus")))
         wait_for("private D-Bus",lambda:(runtime/"bus").is_socket())
+        if screencast:
+            stack.enter_context(child(["pipewire"],env,stderr=log("pw")))
+            wait_for("private PipeWire",lambda:(runtime/"pipewire-0").is_socket())
+            stack.enter_context(child(["wireplumber","--profile","policy"],env,stderr=log("wp")))
         self.kw = stack.enter_context(child(["kwin_wayland","--virtual","--width","2100","--height","1000",
                                             "--socket","kwin-proof","--no-lockscreen","--no-global-shortcuts","--no-kactivities"],env))
         def ready():
@@ -48,7 +56,11 @@ class KWin:
         assert re.search(rf"\b{self.kw.pid}\b",owner), "Refusing to drive a compositor not owned by this test"
         # No XWayland server or DISPLAY is started. Both clients use kwin-proof.
         env["QT_QPA_PLATFORM"]="wayland"
-        self.native=stack.enter_context(child([root/"rust-client/target/debug/untethered-iced"],env,stderr=log("native")))
+        limit=["taskset","-c",",".join(map(str,sorted(os.sched_getaffinity(0))[:4]))] if screencast else []
+        # Only KWin and the portal can reach their ordinary PipeWire socket
+        # by name. The tested native client must use OpenPipeWireRemote's FD.
+        native_env={**env,"PIPEWIRE_REMOTE":"no-ambient-qa-remote"} if screencast else env
+        self.native=stack.enter_context(child([*limit,root/"rust-client/target/debug/untethered-iced"],native_env,stderr=log("native")))
         print(re.search(r"^KWin version: .+$",info,re.M)[0]+" · active virtual Wayland compositor · private D-Bus",flush=True)
 
     def command(self,*args,check=True):

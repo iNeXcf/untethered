@@ -81,11 +81,11 @@ rtc:
         yield secret
 
 
-def test(tmp, hs, name, jwt, root, backend, seed, http, service, *, desktop=False,incoming=False,controls=False,devices=False,reconnect=False,turn=False,group=False):
+def test(tmp, hs, name, jwt, root, backend, seed, http, service, *, desktop=False,incoming=False,controls=False,devices=False,reconnect=False,turn=False,group=False,share=False):
     if group:
         from qa_voice_room import test_group
         with call_services(tmp,name,jwt,service) as secret:
-            test_group(tmp,hs,name,root,backend,seed,http,secret)
+            test_group(tmp,hs,name,root,backend,seed,http,secret,share=share)
         return
     native,hdr=seed(tmp,hs)
     peer_dir=tmp/"peer";peer_dir.mkdir()

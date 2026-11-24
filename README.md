@@ -121,6 +121,13 @@ uses three Linux clients on the same MatrixRTC LiveKit service.
 Room permissions must allow publishing call membership and, for the first
 participant, opening the voice slot if it is not already open.
 
+In the voice-room call bar, click **Share window** and pick a window in your
+desktop's chooser. Other participants see the live window in the voice room.
+You can browse another channel and use **Stop sharing** there without
+leaving voice. Capture requires a ScreenCast portal backend, PipeWire and
+GStreamer (`gst-launch-1.0`, `pipewiresrc`, and the base video plugins).
+The share carries window pixels; microphones remain separate encrypted tracks.
+
 ![Untethered room preview in the Rust frontend](rust-client/docs/preview.png)
 
 ## Browser

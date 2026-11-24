@@ -1,12 +1,15 @@
 # Local package: build the current checkout's committed Rust frontend.
 pkgname=untethered
 pkgver=0.1.0
-pkgrel=4
+pkgrel=5
 pkgdesc='Native Rust/Iced Matrix client powered by gomuks'
 arch=('x86_64')
 url='https://github.com/koalexbear/untethered'
 license=('AGPL-3.0-or-later' 'OFL-1.1' 'MIT')
-optdepends=('xdg-desktop-portal: document portal file drops and file picker with a desktop-specific backend'
+optdepends=('xdg-desktop-portal: file pickers, portal file drops and window selection via the desktop backend'
+            'gst-plugin-pipewire: read the portal-selected window for sharing'
+            'gstreamer: gst-launch-1.0 for window capture'
+            'gst-plugins-base-libs: video conversion, scaling and framerate control for window capture'
             'libpulse: microphone capture and playback for encrypted DM calls')
 depends=('ca-certificates' 'fontconfig' 'gcc-libs' 'glibc' 'libx11' 'libxcb'
          'libxcursor' 'libxi' 'libxkbcommon-x11' 'libxrandr' 'wayland')

@@ -84,6 +84,8 @@ enum Msg {
     #[cfg(target_os = "linux")]
     ToggleDeafen,
     #[cfg(target_os = "linux")]
+    ToggleShare,
+    #[cfg(target_os = "linux")]
     AudioDevices,
     #[cfg(target_os = "linux")]
     RefreshDevices,
@@ -396,6 +398,23 @@ impl App {
     fn frame(&mut self, f: Value) {
         let data = &f["data"];
         match f["command"].as_str().unwrap_or("") {
+            #[cfg(target_os = "linux")]
+            "window_share" => {
+                if let Some(call) = &mut self.call
+                    && data["room"] == call.room
+                    && call
+                        .audio
+                        .borrow()
+                        .share
+                        .is_some_and(|id| data["request"] == id.to_string())
+                {
+                    call.share_label = rooms::string(&data["label"]);
+                    call.sharing = data["live"] == true;
+                    if !call.sharing {
+                        call.audio.send_modify(|m| m.share = None);
+                    }
+                }
+            }
             #[cfg(target_os = "linux")]
             "call_device_status" => {
                 if let Some(call) = &mut self.call
@@ -845,6 +864,28 @@ impl App {
                     && !call.cancel.is_closed()
                 {
                     call.audio.send_modify(|s| s.deafened = !s.deafened);
+                }
+            }
+            #[cfg(target_os = "linux")]
+            Msg::ToggleShare => {
+                if let Some(call) = &mut self.call
+                    && call.group
+                    && !call.cancel.is_closed()
+                {
+                    let stop = call.audio.borrow().share.is_some();
+                    call.audio.send_modify(|m| {
+                        m.share = if stop {
+                            None
+                        } else {
+                            Some(uuid::Uuid::new_v4())
+                        }
+                    });
+                    call.sharing = false;
+                    call.share_label = if stop {
+                        String::new()
+                    } else {
+                        "Choose a window in the desktop picker…".into()
+                    };
                 }
             }
             #[cfg(target_os = "linux")]

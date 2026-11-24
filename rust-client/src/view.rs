@@ -267,6 +267,22 @@ impl App {
         ]
         .spacing(8)
         .align_y(Center);
+        let controls = if call.group {
+            let label = if mode.share.is_none() {
+                "Share window"
+            } else if call.sharing {
+                "Stop sharing"
+            } else {
+                "Cancel share"
+            };
+            controls.push(
+                button(text(label).size(15).font(BOLD))
+                    .style(nav(mode.share.is_some()))
+                    .on_press_maybe(active.then_some(Msg::ToggleShare)),
+            )
+        } else {
+            controls
+        };
         let mut bar = column![
             text(format!("{} · {name}", call.label))
                 .size(13)
@@ -274,6 +290,9 @@ impl App {
             controls
         ]
         .spacing(3);
+        if !call.share_label.is_empty() {
+            bar = bar.push(text(&call.share_label).size(13));
+        }
         if call.mic_error {
             bar =
                 bar.push(text("Microphone unavailable · choose an input under Devices.").size(13));
@@ -571,6 +590,23 @@ impl App {
         #[cfg(target_os = "linux")]
         if let Some(bar) = self.call_bar() {
             chat = chat.push(bar);
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(call) = &self.call
+            && call.room == self.selected
+        {
+            for (user, frame) in call.previews.tiles() {
+                chat = chat.push(
+                    column![
+                        text(format!("Shared window · {user}")).size(13),
+                        image(frame)
+                            .height(210)
+                            .width(Fill)
+                            .content_fit(iced::ContentFit::Contain)
+                    ]
+                    .padding([4, 16]),
+                );
+            }
         }
         if !self.status.is_empty() && !self.status.starts_with("Starting") {
             chat = chat.push(

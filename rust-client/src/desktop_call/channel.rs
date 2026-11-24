@@ -118,21 +118,25 @@ impl GroupKeys {
         // not publish new frames for a departed device with the old key.
         let key = SenderKey::fresh((self.outbound.index + 1) % 255)?;
         let local = lk.local_participant().identity();
-        let cryptor = lk
-            .e2ee_manager()
-            .frame_cryptors()
-            .remove(&(local.clone(), mic.sid()))
-            .ok_or("Missing voice room microphone cryptor.")?;
-        if !cryptor.enabled()
+        let cryptors = lk.e2ee_manager().frame_cryptors();
+        if !cryptors.contains_key(&(local.clone(), mic.sid()))
             || !self
                 .provider
                 .set_key(&local, key.index.into(), key.bytes.to_vec())
         {
             return Err("Cannot rotate voice room key.");
         }
-        cryptor.set_key_index(key.index.into());
-        if cryptor.key_index() != i32::from(key.index) {
-            return Err("Cannot select voice room key.");
+        for (sid, p) in lk.local_participant().track_publications() {
+            let fc = cryptors
+                .get(&(local.clone(), sid))
+                .ok_or("Missing voice room track cryptor.")?;
+            if p.encryption_type() != EncryptionType::Gcm || !fc.enabled() {
+                return Err("Voice room track encryption unavailable.");
+            }
+            fc.set_key_index(key.index.into());
+            if fc.key_index() != i32::from(key.index) {
+                return Err("Cannot select voice room key.");
+            }
         }
         if !next.is_empty() {
             let request = key.to_devices(
@@ -181,34 +185,46 @@ impl GroupKeys {
 }
 
 #[derive(Default)]
-struct Speakers {
+struct Subscriptions {
     jobs: JoinSet<Result<()>>,
     tracks: HashMap<TrackSid, AbortHandle>,
 }
-impl Speakers {
+impl Subscriptions {
     fn sync(
         &mut self,
         lk: &Room,
         keys: &GroupKeys,
         mode: &watch::Receiver<AudioMode>,
         notices: &DeviceNotices,
+        previews: &Previews,
     ) -> Result<()> {
         let mut live = BTreeSet::new();
         for (id, p) in lk.remote_participants() {
             for (sid, publication) in p.track_publications() {
                 let wanted = keys.ready.contains(&id.0)
-                    && publication.kind() == TrackKind::Audio
-                    && publication.source() == TrackSource::Microphone;
+                    && matches!(
+                        (publication.kind(), publication.source()),
+                        (TrackKind::Audio, TrackSource::Microphone)
+                            | (TrackKind::Video, TrackSource::Screenshare)
+                    );
                 if wanted && publication.encryption_type() != EncryptionType::Gcm {
-                    return Err("Unencrypted voice room microphone.");
+                    return Err("Unencrypted voice room track.");
                 }
                 if publication.is_desired() != wanted {
                     publication.set_subscribed(wanted);
                 }
-                if wanted && let Some(RemoteTrack::Audio(track)) = publication.track() {
+                if wanted && let Some(track) = publication.track() {
                     live.insert(sid.clone());
-                    self.tracks.entry(sid).or_insert_with(|| {
-                        self.jobs.spawn(play(track, mode.clone(), notices.clone()))
+                    self.tracks.entry(sid).or_insert_with(|| match track {
+                        RemoteTrack::Audio(track) => {
+                            self.jobs.spawn(play(track, mode.clone(), notices.clone()))
+                        }
+                        RemoteTrack::Video(track) => self.jobs.spawn(window_share::display(
+                            track,
+                            keys.members[&id.0].user.clone(),
+                            previews.clone(),
+                            notices.events.clone(),
+                        )),
                     });
                 }
             }
@@ -231,7 +247,8 @@ pub(super) async fn joined(
     m: &mut Membership,
     events: &Sender<Value>,
     media: &mut Option<Room>,
-    mode: watch::Receiver<AudioMode>,
+    mut mode: watch::Receiver<AudioMode>,
+    previews: Previews,
 ) -> Result<&'static str> {
     let mut keys = GroupKeys::new(s)?;
     let (lk, mut rtc, src, mic) = publish_mic(s, &keys.provider, media, false).await?;
@@ -248,7 +265,8 @@ pub(super) async fn joined(
         mode.clone(),
         notices.clone(),
     ));
-    let mut speakers = Speakers::default();
+    let mut subscriptions = Subscriptions::default();
+    let mut share = window_share::Share::default();
     let mut heartbeat = time::interval(SECOND * 4);
     heartbeat.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
     let mut renew = Instant::now();
@@ -267,10 +285,14 @@ pub(super) async fn joined(
             }
         }
         keys.receive(w)?;
-        speakers.sync(lk, &keys, &mode, &notices)?;
+        subscriptions.sync(lk, &keys, &mode, &notices, &previews)?;
+        let requested = mode.borrow_and_update().share;
+        share.select(requested, lk).await?;
         tokio::select! {
+            changed=mode.changed()=>{changed.map_err(|_|ENDED)?;}
+            update=share.next()=>share.update(update,lk,keys.outbound.index,events,w.room,&mode).await?,
             r=input.join_next()=>return Err(r.and_then(|j|j.ok()).and_then(|v|v.err()).unwrap_or("Microphone stream ended.")),
-            job=speakers.jobs.join_next(),if !speakers.jobs.is_empty()=>match job {
+            job=subscriptions.jobs.join_next(),if !subscriptions.jobs.is_empty()=>match job {
                 Some(Ok(result))=>result?,
                 Some(Err(e)) if e.is_cancelled()=>(),
                 _=>return Err("Voice room playback failed."),

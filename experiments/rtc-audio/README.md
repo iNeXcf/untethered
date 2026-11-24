@@ -52,6 +52,27 @@ After one leaves, the remaining two must exchange newly injected tones on
 their original participant and track IDs. Final leave must clear call
 memberships and release all capture/playback streams.
 
+### Verify portal window sharing
+
+Use the three-client setup above, plus `pipewire`, `wireplumber`, `pw-dump`,
+`busctl`, GStreamer's PipeWire and base video plugins, PySide6 for the two
+test windows (`/usr/bin/python`), and the [isolated KWin prerequisites](../../scripts/kwin-element.md).
+Run `sh experiments/rtc-audio/run_element.sh --window-share` with
+`KWIN_INPUTSYNTH` pointing to the installed KDE test input helper. No Element
+Web archive is needed. Only the sharer runs on KWin; the receivers each have
+a private X display. The virtual compositor, PipeWire server and session bus
+are local to the fixture.
+
+The test cancels a real KDE picker, then selects **Prism** from a fresh picker
+with both Prism and a decoy window visible. Both receiver screenshots must
+contain the selected window's adjacent pink/teal fields at video-tile scale.
+After the sharer navigates to a text channel, the test changes the source
+to blue/orange and injects new mic tones. It checks the new pixels at both
+receivers, all six decoded audio paths, the original microphone IDs and a GCM
+`SCREEN_SHARE` publication. **Stop sharing** must remove the portal session,
+restore the PipeWire video graph to baseline, unpublish the video and clear
+both receiver tiles while the voice room stays connected.
+
 ### Verify mute and deafen
 
 Use `sh experiments/rtc-audio/run_element.sh --call-controls` with the same

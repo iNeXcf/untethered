@@ -103,7 +103,15 @@
   the SFU reported three GCM microphones, and room history had zero rings.
   After the third participant left, the other two exchanged fresh tones on
   their original tracks. Speaking indicators, per-user volume, push-to-talk,
-  camera and screen sharing remain open.
+  and camera remain open.
+- **Linux portal window sharing:** [The three-client window test](experiments/rtc-audio/README.md#verify-portal-window-sharing)
+  uses a private KDE Wayland picker and PipeWire. Cancelling creates no video
+  publication. Selecting a window publishes one GCM screen track; both other
+  desktops rendered its original and changed color pattern while the sharer
+  browsed another channel. All six audio paths stayed live on the original
+  microphone tracks. **Stop sharing** released the portal session and capture
+  nodes, unpublished the video and cleared both remote views. Camera video,
+  full-monitor capture and system-audio sharing are still unverified.
 
 ## What parity means
 

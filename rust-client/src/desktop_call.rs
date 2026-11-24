@@ -34,6 +34,8 @@ use untethered_iced::rtc_keys::{self, EVENT as KEY, SenderKey};
 use untethered_iced::rtc_membership::{EVENT_TYPE, Membership};
 use url::Url;
 mod channel;
+mod window_share;
+pub(super) use window_share::Previews;
 
 pub enum Target {
     Dm {
@@ -59,6 +61,7 @@ pub struct AudioMode {
     pub deafened: bool,
     pub mic: Route,
     pub speaker: Route,
+    pub share: Option<uuid::Uuid>,
 }
 impl AudioMode {
     fn mic_off(&self) -> bool {
@@ -78,10 +81,14 @@ pub struct ActiveCall {
     pub list_error: Option<&'static str>,
     pub mic_error: bool,
     pub speaker_error: bool,
+    pub share_label: String,
+    pub sharing: bool,
+    pub previews: Previews,
 }
 pub struct Controls {
     cancel: Receiver<()>,
     audio: watch::Receiver<AudioMode>,
+    previews: Previews,
 }
 impl crate::App {
     pub(super) fn start_voice(&mut self, room: String, target: Target) {
@@ -95,9 +102,11 @@ impl crate::App {
         };
         let (cancel, rx) = async_channel::bounded(1);
         let (audio, mode) = watch::channel(AudioMode::default());
+        let previews = Previews::default();
         let controls = Controls {
             cancel: rx,
             audio: mode,
+            previews: previews.clone(),
         };
         if self
             .commands
@@ -122,6 +131,9 @@ impl crate::App {
                 list_error: None,
                 mic_error: false,
                 speaker_error: false,
+                share_label: String::new(),
+                sharing: false,
+                previews,
             });
         } else {
             self.status = "Could not queue the voice call.".into();
@@ -436,7 +448,11 @@ pub async fn run(
     controls: Controls,
     events: &Sender<Value>,
 ) -> Result<&'static str> {
-    let Controls { cancel, audio } = controls;
+    let Controls {
+        cancel,
+        audio,
+        previews,
+    } = controls;
     let (dm_peer, incoming) = match &target {
         Target::Channel => (None, None),
         Target::Dm { peer, incoming } => (Some(peer.as_str()), incoming.as_ref()),
@@ -488,7 +504,9 @@ pub async fn run(
     let session = async {
         match dm_peer {
             Some(_) => call(&mut w, &s, &mut member, events, &mut media, incoming, audio).await,
-            None => channel::joined(&mut w, &s, &mut member, events, &mut media, audio).await,
+            None => {
+                channel::joined(&mut w, &s, &mut member, events, &mut media, audio, previews).await
+            }
         }
     };
     let result = tokio::select! {biased;_=cancel.recv()=>Ok(ENDED),r=session=>r};

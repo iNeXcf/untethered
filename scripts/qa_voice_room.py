@@ -26,9 +26,10 @@ BINS = [[cmath.exp(-1j * math.tau * hz * n / 12000) for n in range(1200)] for hz
 
 
 class Desktop:
-    def __init__(self,stack,root,env,i):
+    def __init__(self,stack,root,env,i,kde=None):
         self.env=env
         self.i=i
+        self.kde=kde
         self.tone=i
         self.windows=deque(maxlen=12)
         pcm=["--raw","--rate=48000","--channels=1","--format=s16le","--latency-msec=40"]
@@ -51,6 +52,11 @@ class Desktop:
                 amps=[2*abs(sum(v*c for v,c in zip(samples,b)))/len(samples) for b in BINS]
                 self.windows.append(amps)
         for fn in (feed,listen):threading.Thread(target=fn,daemon=True).start()
+        if kde:
+            self.client=kde.native
+            self.win=wait_for("Wayland voice window",lambda:kde.window("Untethered.*Atrium"),35)
+            kde.position(self.win,0,0,1180,850)
+            return
         # Limit per-client rendering/codec parallelism in this three-GUI fixture.
         cores=sorted(os.sched_getaffinity(0))[:4]
         binary=root/"rust-client/target/debug/untethered-iced"
@@ -66,6 +72,8 @@ class Desktop:
         return sp.run(args,env=self.env,text=True,capture_output=True,timeout=8,check=check).stdout
 
     def words(self):
+        if self.kde:
+            return [(re.sub(r"^\W+|\W+$","",w).lower(),x,y) for w,x,y in self.kde.words((0,28,1180,330))]
         shot=sp.check_output(["import","-window",self.win,"png:-"],env=self.env,timeout=8)
         im=Image.open(io.BytesIO(shot)).crop((0,0,1180,240)).resize((2360,480))
         buf=io.BytesIO();im.save(buf,"PNG")
@@ -74,9 +82,13 @@ class Desktop:
                 for line in t.stdout.decode().splitlines() if len(s:=line.split("\t"))==12 and s[0]=="5"]
 
     def click(self,label):
+        if self.kde:self.kde.command("kdotool","windowactivate",self.win)
         def locate():return next(((x,y) for word,x,y in self.words() if word==label),None)
         x,y=wait_for(label,locate,12)
-        self.cmd("xdotool","mousemove","--window",self.win,str(x),str(y),"click","1")
+        if self.kde:
+            self.kde.actions("pointer",[{"type":"pointerMove","x":x,"y":y},{"type":"pause","duration":120},
+                {"type":"pointerDown","button":0},{"type":"pause","duration":80},{"type":"pointerUp","button":0}])
+        else:self.cmd("xdotool","mousemove","--window",self.win,str(x),str(y),"click","1")
 
     def hears(self,expected):
         windows=list(self.windows)
@@ -84,7 +96,7 @@ class Desktop:
                                         for amps in windows)
 
 
-def test_group(tmp,hs,name,root,backend,seed,http,secret):
+def test_group(tmp,hs,name,root,backend,seed,http,secret,*,share=False):
     dirs=[tmp/f"p{i}" for i in range(3)]
     for p in dirs:p.mkdir()
     credentials=[seed(p,hs) for p in dirs]
@@ -131,8 +143,9 @@ def test_group(tmp,hs,name,root,backend,seed,http,secret):
     with ExitStack() as stack:
         sock=tmp/"pulse"
         for i,d in enumerate(dirs):
-            env=isolated_env(d,backend,"x11");env.update(TOKIO_WORKER_THREADS="2",RAYON_NUM_THREADS="2",GOMAXPROCS="2")
-            start_display(stack,d,env,"x11")
+            wayland=share and i==0
+            env=isolated_env(d,backend,"wayland" if wayland else "x11");env.update(TOKIO_WORKER_THREADS="2",RAYON_NUM_THREADS="2",GOMAXPROCS="2")
+            if not wayland:start_display(stack,d,env,"x11")
             env.update(PULSE_SERVER="unix:"+str(sock),PULSE_SOURCE=f"Mic{i}.monitor",PULSE_SINK=f"Out{i}")
             if i==0:
                 stack.enter_context(child(["pulseaudio","-n","--daemonize=no","--exit-idle-time=-1","--use-pid-file=no",
@@ -140,7 +153,11 @@ def test_group(tmp,hs,name,root,backend,seed,http,secret):
                     *(f"--load=module-null-sink sink_name={k}{j} channels=1 rate=48000" for j in range(3) for k in ("Mic","Out"))],env))
                 wait_for("private audio devices",lambda:sock.is_socket() and
                          "Out2" in sp.run(["pactl","list","short","sinks"],env=env,capture_output=True,text=True).stdout)
-            desks.append(Desktop(stack,root,env,i))
+            kde=None
+            if wayland:
+                from qa_kwin import KWin
+                kde=KWin(stack,d,root,backend,env=env,screencast=True)
+            desks.append(Desktop(stack,root,env,i,kde))
         try:
             def audio_counts():
                 def devices(kind):
@@ -172,6 +189,9 @@ def test_group(tmp,hs,name,root,backend,seed,http,secret):
             for i,heard in enumerate(expected):
                 print(f"Client {i+1}: sent {TONES[i]} Hz; speaker received {sorted(heard)} Hz, no self tone (12 consecutive 100 ms windows).",flush=True)
             print("Three joined devices, three GCM microphones, two playback streams per client; zero ring or other non-state events.",flush=True)
+            if share:
+                from qa_window_share import window_share
+                window_share(stack,desks,secret,tracks,publications)
             desks[2].click("leave")
             wait_for("third device left MatrixRTC",lambda:members()==sorted(users[:2]))
             remaining=wait_for("third device left SFU",lambda:publications(2))
