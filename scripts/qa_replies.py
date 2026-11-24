@@ -43,8 +43,8 @@ def test_replies(tmp,hs,root,backend,seed,http,port):
         def tile(eid):return page.locator(f'[data-event-id="{eid}"]')
         def record(body):
             return page.evaluate("""([room,body])=>window.mxMatrixClientPeg.get().getRoom(room)?.getLiveTimeline().getEvents()
-                .filter(e=>e.getContent().body?.endsWith(body)&&e.getId()?.startsWith('$'))
-                .map(e=>({id:e.getId(),target:e.getContent()['m.relates_to']?.['m.in_reply_to']?.event_id}))""",[room,body])
+                .filter(e=>e.getContent().body?.endsWith(body)&&e.getId()?.startsWith('$')&&e.replyEventId)
+                .map(e=>({id:e.getId(),target:e.replyEventId}))""",[room,body])
         env=isolated_env(tmp,backend,"x11")
         start_display(stack,tmp,env,"x11")
         native_life=stack.enter_context(ExitStack())
@@ -94,15 +94,51 @@ def test_replies(tmp,hs,root,backend,seed,http,port):
         editor.fill(ebody);editor.press("Enter")
         er=wait_for("Element confirmed outgoing reply",lambda:record(ebody))
         assert len(er)==1 and er[0]["target"]==second,er
-        # Check all 86 user messages, not only events that the clients decrypted.
+        locate("both original replies on the native timeline",lambda ws:lines(ws,"northern") and lines(ws,"southern"))
+        def edit_native(word,body):
+            def action(ws):
+                rows=lines(ws,word)
+                return rows and next(((px,y) for px,y in lines(ws,"edit") if abs(y-rows[-1][1])<6),None)
+            click(locate("native edit action for "+word,action))
+            locate("editable message",lambda ws:lines(ws,"editing"))
+            x("key","ctrl+a");x("type","--clearmodifiers",body);x("key","Return")
+            tile(nr[0]["id"]).get_by_text(body,exact=True).wait_for()
+            locate("native saved revision",lambda ws:lines(ws,body.split()[0].lower()) and not lines(ws,"editing"))
+        def replacing(eid):
+            return page.evaluate("([r,id])=>window.mxMatrixClientPeg.get().getRoom(r).findEventById(id)?.replacingEventId()",[room,eid])
+        # Both native saves must replace the stable reply, not chain edits.
+        edit_native("northern","Interim wording")
+        interim=wait_for("Element aggregated first edit",lambda:replacing(nr[0]["id"]))
+        edit_native("interim","Polar revision")
+        final=wait_for("Element aggregated second edit",lambda:(v if (v:=replacing(nr[0]["id"])) and v!=interim else None))
+        # ArrowUp in Element's empty composer edits the user's last message.
+        editor.click();editor.press("ArrowUp")
+        editbox=page.locator(".mx_EditMessageComposer [contenteditable=true]")
+        editbox.wait_for()
+        assert ebody in editbox.inner_text()
+        editbox.fill("Meridian correction")
+        page.locator(".mx_EditMessageComposer").get_by_role("button",name="Save",exact=True).click()
+        tile(er[0]["id"]).get_by_text("Meridian correction",exact=True).wait_for()
+        incoming=wait_for("Element edit confirmed",lambda:(v if (v:=replacing(er[0]["id"])) and v.startswith("$") else None))
+        def edited_rows(ws):
+            if not all(len(lines(ws,w))==1 for w in ("polar","meridian")):return False
+            if any(lines(ws,w) for w in ("northern","southern","interim")):return False
+            return all(any(abs(yy-lines(ws,w)[0][1])<7 for _,yy in lines(ws,"edited")) for w in ("polar","meridian"))
+        locate("both edited native timeline rows",edited_rows)
+        print("Live: two native saves edited the same reply; Element edited its own reply. "
+              "Both timelines show Polar revision and Meridian correction in place.",flush=True)
+        # Check every encrypted message; distinguish replacements from duplicates.
         timeline=http("GET",api+"/messages",headers=hdr,params={"dir":"b","limit":100}).json()["chunk"]
         wire=[e for e in timeline if e["type"] in ("m.room.encrypted","m.room.message")]
-        assert len(wire)==86 and len({e["event_id"] for e in wire})==86
+        assert len(wire)==89 and len({e["event_id"] for e in wire})==89
+        replacements={e["event_id"]:e["content"]["m.relates_to"]["event_id"] for e in wire
+                      if e["content"].get("m.relates_to",{}).get("rel_type")=="m.replace"}
+        assert replacements=={interim:nr[0]["id"],final:nr[0]["id"],incoming:er[0]["id"]},replacements
         assert set([first,second,nr[0]["id"],er[0]["id"],*gaps])<={e["event_id"] for e in wire}
         assert all(e["type"]=="m.room.encrypted" and e["content"]["algorithm"]=="m.megolm.v1.aes-sha2" for e in wire)
-        assert not any(t in json.dumps(wire) for t in (nbody,ebody,"Beacon original"))
+        assert not any(t in json.dumps(wire) for t in (nbody,ebody,"Beacon original","Polar revision","Meridian correction","Interim wording"))
         print(f"Element decrypted Untethered's reply → {first}; Element replied to the look-alike → {second}. "
-              "All 86 room messages are distinct Megolm events on Synapse.",flush=True)
+              "Synapse: 89 distinct Megolm messages, including 3 replacements targeting the 2 reply IDs.",flush=True)
         def jump_above(body):
             def find(ws):
                 b=lines(ws,body)
@@ -116,27 +152,34 @@ def test_replies(tmp,hs,root,backend,seed,http,port):
                    any(0<y-lines(ws,"beacon")[0][1]<54 for _,y in lines(ws,marker)))
         def latest():
             click(locate("return to recent timeline",lambda ws:next(iter(lines(ws,"latest")),None)))
-            locate("reply timeline restored",lambda ws:lines(ws,"southern") and lines(ws,"northern"))
+            locate("reply timeline restored",edited_rows)
         paths.clear()
-        jump_above("southern");check_marker("amber");latest()
+        jump_above("meridian");check_marker("amber");latest()
         assert not paths,"loaded original should not require a context request"
         # End the native transport AND UI, then reopen its existing device profile.
         native_life.close()
         page.reload()
         tile(nr[0]["id"]).wait_for()
         win=launch()
-        locate("both replies on cold native timeline",lambda ws:lines(ws,"northern") and lines(ws,"southern"))
+        locate("both edited replies on cold native timeline",edited_rows)
         live=page.evaluate("r=>window.mxMatrixClientPeg.get().getRoom(r).getLiveTimeline().getEvents().map(e=>e.getId())",room)
         assert first not in live and second not in live,(len(live),live.index(first) if first in live else None)
-        assert record(nbody)==nr and record(ebody)==er
-        # Click the quoted text inside the native reply as rendered by Element.
-        tile(nr[0]["id"]).locator("blockquote").get_by_text("Beacon original",exact=True).click()
-        page.wait_for_function("""id=>{const el=document.querySelector('[data-event-id="'+CSS.escape(id)+'"]');
-            if(!el || !(el.className.includes('stateHighlighted') || el.className.includes('stateSelected') ||
-                decodeURIComponent(location.hash).endsWith('/'+id)))return false;
-            const r=el.getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight}""",arg=first)
-        print(f"Reloaded Element: original absent from {len(live)} live events; jump brought {first} into view.",flush=True)
-        for body,target,marker in [("southern",second,"amber"),("northern",first,"cobalt")]:
+        for eid,body in ((nr[0]["id"],"Polar revision"),(er[0]["id"],"Meridian correction")):
+            tile(eid).get_by_text(body,exact=True).wait_for()
+        assert record("Polar revision")==nr and record("Meridian correction")==er
+        print("Cold restart: both clients rendered the two final texts on the original reply IDs; both reply targets unchanged.",flush=True)
+        # Drive the rendered quote, not a permalink to the answer. For the
+        # second click navigate back to the *reply*, not its distant original.
+        for reply,target in [(nr[0],first),(er[0],second)]:
+            if target==second:page.goto(web+"/#/room/"+room+"/"+quote(reply["id"],safe=""))
+            tile(reply["id"]).locator("blockquote").get_by_text("Beacon original",exact=True).click()
+            page.wait_for_function("""id=>{const el=document.querySelector('[data-event-id="'+CSS.escape(id)+'"]');
+                if(!el || !(el.className.includes('stateHighlighted') || el.className.includes('stateSelected') ||
+                    decodeURIComponent(location.hash).endsWith('/'+id)))return false;
+                const r=el.getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight}""",arg=target)
+            print(f"Reloaded Element: edited reply {reply['id']} highlighted {target}; "
+                  f"original absent from initial {len(live)} live events.",flush=True)
+        for body,target,marker in [("meridian",second,"amber"),("polar",first,"cobalt")]:
             paths.clear()
             jump_above(body)
             check_marker(marker)

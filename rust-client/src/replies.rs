@@ -34,6 +34,7 @@ impl App {
     }
     pub fn close_original(&mut self) {
         self.original = None;
+        self.editing = None;
         self.pending
             .retain(|_, r| !matches!(r, Request::Context(..)));
     }
@@ -78,6 +79,7 @@ impl App {
         {
             slice.insert(e);
         }
+        slice.related_events(&room, data);
         self.status.clear();
         self.original = Some(Original {
             room,

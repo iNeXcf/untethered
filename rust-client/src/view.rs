@@ -835,12 +835,26 @@ impl App {
                         .on_press(Msg::Jump(target.clone())),
                 );
             }
-            let mut line = row![text(&p.body).size(16).width(Fill)]
+            let mut line = row![text(p.text()).size(16).width(Fill)]
                 .align_y(Center)
                 .spacing(6);
+            if p.revision.is_some() {
+                line = line.push(text("edited").size(11).color(DIM));
+            }
             if self.logged_in
                 && let Some(id) = &p.event_id
             {
+                if p.may_edit(&self.matrix_id) && r.has_metadata && r.encrypted == p.encrypted {
+                    line = line.push(
+                        button(text("Edit").size(12))
+                            .padding([1, 6])
+                            .style(nav(false))
+                            .on_press_maybe(
+                                (self.connected && self.editing.is_none())
+                                    .then(|| Msg::Edit(id.clone())),
+                            ),
+                    );
+                }
                 line = line.push(
                     button(text("Reply").size(12))
                         .padding([1, 6])
@@ -848,7 +862,56 @@ impl App {
                         .on_press(Msg::Reply(id.clone())),
                 );
             }
-            message = message.push(line);
+            if let Some(edit) = self
+                .editing
+                .as_ref()
+                .filter(|d| d.room == self.selected && Some(&d.event) == p.event_id.as_ref())
+            {
+                let input = text_editor(&edit.input)
+                    .id("message-edit")
+                    .on_action(Msg::ChangeEdit)
+                    .key_binding(|press| {
+                        if matches!(press.status, text_editor::Status::Focused { .. }) {
+                            if press.key == keyboard::Key::Named(keyboard::key::Named::Escape) {
+                                return Some(text_editor::Binding::Custom(Msg::CancelEdit));
+                            }
+                            if press.key == keyboard::Key::Named(keyboard::key::Named::Enter)
+                                && press.modifiers.is_empty()
+                            {
+                                return Some(text_editor::Binding::Custom(Msg::SaveEdit));
+                            }
+                        }
+                        text_editor::Binding::from_key_press(press)
+                    })
+                    .padding(7)
+                    .height(Length::Shrink)
+                    .max_height(120);
+                let draft = edit.input.text();
+                message = message
+                    .push(text("Editing message").size(13).font(BOLD).color(MUTED))
+                    .push(input)
+                    .push(
+                        row![
+                            button(if edit.pending.is_some() {
+                                "Saving…"
+                            } else {
+                                "Save edit"
+                            })
+                            .on_press_maybe(
+                                (self.connected
+                                    && edit.pending.is_none()
+                                    && !draft.trim().is_empty()
+                                    && draft != p.text())
+                                .then_some(Msg::SaveEdit)
+                            ),
+                            button("Cancel")
+                                .on_press_maybe(edit.pending.is_none().then_some(Msg::CancelEdit))
+                        ]
+                        .spacing(6),
+                    );
+            } else {
+                message = message.push(line);
+            }
             if original.is_some_and(|c| Some(&c.event) == p.event_id.as_ref()) {
                 feed = feed.push(
                     text("Original message")

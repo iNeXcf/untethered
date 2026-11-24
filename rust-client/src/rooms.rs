@@ -40,6 +40,7 @@ pub struct Room {
     pub history: BTreeMap<i64, Post>,
     pub(super) event_rows: BTreeMap<String, i64>,
     pub(super) related: BTreeMap<String, Quote>,
+    pub(super) edits: crate::edits::Replacements,
 }
 #[derive(Clone, PartialEq, Eq)]
 pub struct Quote {
@@ -54,6 +55,10 @@ impl Quote {
     }
 }
 pub struct Post {
+    pub(super) text_message: bool,
+    pub(super) encrypted: bool,
+    pub(super) mentions: Value,
+    pub revision: Option<std::sync::Arc<crate::edits::Revision>>,
     pub event_id: Option<String>,
     pub reply: Option<String>,
     pub media: Option<crate::media::Media>,
@@ -63,7 +68,7 @@ pub struct Post {
 }
 impl Post {
     pub fn quote(&self) -> Option<Quote> {
-        let mut chars = self.body.trim().chars();
+        let mut chars = self.text().trim().chars();
         let mut excerpt: String = chars
             .by_ref()
             .take(72)
@@ -144,14 +149,24 @@ impl Room {
         };
         // An opaque encrypted row can later decrypt to a reaction, call signal
         // or edit. It must not remain an independent, replyable message.
+        let edit = crate::edits::is_replacement(e);
         if e["type"] == "m.room.encrypted"
             && e["decrypted_type"]
                 .as_str()
                 .is_some_and(|ty| !matches!(ty, "m.room.message" | "m.sticker"))
-            || e["relation_type"] == "m.replace"
+            || edit
         {
             if let Some(old) = self.history.remove(&row).and_then(|p| p.event_id) {
                 self.event_rows.remove(&old);
+            }
+            if edit
+                && let Some(target) = self.edits.ingest(e)
+                && let Some(p) = self
+                    .event_rows
+                    .get(&target)
+                    .and_then(|row| self.history.get_mut(row))
+            {
+                self.edits.apply(p);
             }
             return;
         }
@@ -205,30 +220,54 @@ impl Room {
         if let Some(id) = &event_id {
             self.event_rows.insert(id.clone(), row);
         }
-        self.history.insert(
-            row,
-            Post {
-                event_id,
-                reply,
-                media: if redacted {
-                    None
-                } else {
-                    crate::media::Media::parse(content)
-                },
-                sender: string(&e["sender"]),
-                body,
-                time: e["timestamp"].as_i64().unwrap_or(0),
+        let mut post = Post {
+            text_message: !redacted
+                && e["state_key"].is_null()
+                && content["msgtype"] == "m.text"
+                && content["body"].is_string()
+                && (e["type"] == "m.room.message" || e["decrypted_type"] == "m.room.message"),
+            encrypted: e["type"] == "m.room.encrypted",
+            mentions: content["m.mentions"].clone(),
+            revision: None,
+            event_id,
+            reply,
+            media: if redacted {
+                None
+            } else {
+                crate::media::Media::parse(content)
             },
-        );
+            sender: string(&e["sender"]),
+            body,
+            time: e["timestamp"].as_i64().unwrap_or(0),
+        };
+        self.edits.apply(&mut post);
+        self.history.insert(row, post);
     }
-    pub fn page(&mut self, data: &Value) {
+    pub fn related_events(&mut self, room: &str, data: &Value) {
+        let mut quotes = Room::default();
+        for e in items(&data["related_events"]).filter(|e| e["room_id"] == room) {
+            if crate::edits::is_replacement(e) {
+                self.insert(e);
+            } else {
+                quotes.insert(e);
+            }
+        }
+        for p in quotes.history.values_mut() {
+            self.edits.apply(p);
+            if let Some(q) = p.quote() {
+                self.related.insert(q.id.clone(), q);
+            }
+        }
+    }
+    pub fn page(&mut self, room: &str, data: &Value) {
         let old = self.cursor;
-        for e in items(&data["events"]) {
+        for e in items(&data["events"]).filter(|e| e["room_id"] == room) {
             if let Some(t) = e["timeline_rowid"].as_i64().filter(|&x| x != 0) {
                 self.cursor = Some(self.cursor.map_or(t, |v| v.min(t)));
             }
             self.insert(e);
         }
+        self.related_events(room, data);
         self.end = data["has_more"] != true || self.cursor == old;
     }
     pub fn posts(&self) -> Vec<&Post> {
@@ -286,6 +325,7 @@ impl Rooms {
                 room.history.clear();
                 room.event_rows.clear();
                 room.related.clear();
+                room.edits = Default::default();
                 room.cursor = None;
                 room.end = false;
             }
@@ -293,6 +333,9 @@ impl Rooms {
                 .filter_map(|t| t["event_rowid"].as_i64())
                 .collect();
             for e in items(&delta["events"]) {
+                if e["room_id"].as_str().is_some_and(|room| room != id) {
+                    continue;
+                }
                 #[cfg(target_os = "linux")]
                 if let Some(key) = e["state_key"].as_str()
                     && delta["state"][untethered_iced::rtc_membership::EVENT_TYPE][key]
@@ -307,7 +350,12 @@ impl Rooms {
                 {
                     room.members.insert(user.into(), name.into());
                 }
-                if timeline.contains(&e["rowid"].as_i64().unwrap_or(0)) {
+                if timeline.contains(&e["rowid"].as_i64().unwrap_or(0))
+                    || crate::edits::is_replacement(e)
+                    || e["event_id"]
+                        .as_str()
+                        .is_some_and(|id| room.by_id(id).is_some())
+                {
                     room.insert(e);
                 }
             }
@@ -401,7 +449,7 @@ mod tests {
         rooms.event(&Value::Null, &decrypted);
         decrypted["timeline_rowid"] = json!(-3);
         let r = rooms.list.get_mut("!r").unwrap();
-        r.page(&json!({"events":[decrypted],"has_more":true}));
+        r.page("!r", &json!({"events":[decrypted],"has_more":true}));
         assert_eq!(r.history.len(), 1);
         assert_eq!(r.history[&4].body, "hello");
         assert_eq!(r.cursor, Some(-3));

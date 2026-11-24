@@ -1,4 +1,4 @@
-# Verify encrypted replies with Element
+# Verify encrypted replies and edits with Element
 
 Build the native debug client. Use a local copy of Element Web (tested with
 1.12.35), Chromium, Xvfb, xdotool, ImageMagick, Tesseract and the Python QA
@@ -15,14 +15,18 @@ The runner creates a loopback Synapse, two verified Matrix accounts, a fresh
 Chromium context and a private X display. Element sends two identical
 originals, each followed by a different marker. The test selects the first
 using Untethered’s **Reply** control and the second using Element’s. It inserts
-80 real encrypted filler messages before sending either reply, checks the
-decrypted `m.in_reply_to.event_id` values in Element, then checks the
-homeserver’s encrypted event types and distinct IDs.
+80 real encrypted filler messages before sending either reply and checks the
+decrypted `m.in_reply_to.event_id` values in Element. Using the native inline
+editor, it edits the first reply twice. Using Element’s editor, it edits the
+second once. Synapse must have exactly 89 distinct Megolm events, including
+three replacements. Both native edits must target the first reply’s ID rather
+than the preceding edit, and the Element edit must target the other reply.
 
 A native jump while the timeline is still loaded must use no `/context`
 request. After the native client and gomuks restart and Element reloads,
-neither original may be in Element’s live timeline. Clicking Element’s quote
-must highlight the exact original. Each native **View original** click must
+both clients must display the two final texts on the original reply rows, and
+neither original may be in Element’s initial live timeline. Clicking each
+edited quote in Element must highlight the exact original. Each native **View original** click must
 make a room-scoped GET for the corresponding event ID and show that original
 with the correct neighboring text. The fixture also drives **Preceding
 messages** and **Back to latest**.

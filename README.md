@@ -47,6 +47,11 @@ is outside the loaded timeline, Untethered loads that part of the room’s
 history through gomuks. **Preceding messages** shows what led up to it, and
 **Back to latest** returns to the conversation.
 
+**Edits:** Click **Edit** on one of your sent text messages or replies. Press
+Enter or **Save edit** to update it in place; **Cancel** or Escape discards
+the change. Editing leaves your unsent composer draft alone. An edited reply
+keeps its **View original** link.
+
 **Files:** Drop files onto a room or click **+** to stage them, optionally type
 a caption for the first attachment, then press **Send**. A local preview strip
 shows image thumbnails or file-type cards; use **×** to remove a file. PNG,

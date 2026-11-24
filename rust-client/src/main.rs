@@ -7,6 +7,7 @@ mod browser_verification;
 mod call_devices;
 #[cfg(target_os = "linux")]
 mod desktop_call;
+mod edits;
 #[cfg(not(target_arch = "wasm32"))]
 mod fonts;
 #[cfg(target_os = "linux")]
@@ -115,6 +116,10 @@ enum Msg {
     Draft(text_editor::Action),
     Send,
     Reply(String),
+    Edit(String),
+    ChangeEdit(text_editor::Action),
+    SaveEdit,
+    CancelEdit,
     CancelReply,
     Jump(String),
     Latest,
@@ -166,6 +171,7 @@ enum Request {
     Members(String),
     Send(String, String, Option<rooms::Quote>),
     Context(String, String),
+    Edit(String, String),
 }
 struct App {
     #[cfg(target_os = "linux")]
@@ -196,6 +202,7 @@ struct App {
     drafts: BTreeMap<String, String>,
     reply_drafts: BTreeMap<String, rooms::Quote>,
     original: Option<replies::Original>,
+    editing: Option<edits::Editing>,
     editor: text_editor::Content,
     loaded: BTreeSet<String>,
     connected: bool,
@@ -261,6 +268,7 @@ impl App {
             drafts: Default::default(),
             reply_drafts: Default::default(),
             original: None,
+            editing: None,
             editor: text_editor::Content::new(),
             loaded: Default::default(),
             connected: false,
@@ -348,6 +356,7 @@ impl App {
             return;
         }
         self.close_original();
+        self.editing = None;
         self.drafts
             .insert(self.selected.clone(), self.editor.text());
         self.editor =
@@ -521,6 +530,7 @@ impl App {
                     self.pending.retain(|_, p| matches!(p, Request::Login));
                     self.drafts.clear();
                     self.reply_drafts.clear();
+                    self.editing = None;
                     self.close_original();
                     self.editor = text_editor::Content::new();
                     self.loaded.clear();
@@ -555,6 +565,15 @@ impl App {
                 self.live.sync(data);
                 if let Some(rooms) = data["rooms"].as_object() {
                     for (room, delta) in rooms {
+                        if let Some(c) = self
+                            .original
+                            .as_mut()
+                            .filter(|c| c.room == *room && c.slice.is_some())
+                        {
+                            for e in items(&delta["events"]) {
+                                c.refresh(room, e);
+                            }
+                        }
                         #[cfg(target_os = "linux")]
                         if data["clear_state"] != true && data["catchup"] != true {
                             self.ring_events(room, delta, false);
@@ -593,6 +612,11 @@ impl App {
                 }
                 for e in items(&data["events"]) {
                     self.live.event(&data["room_id"], e);
+                    if let Some(c) = &mut self.original
+                        && let Some(room) = data["room_id"].as_str()
+                    {
+                        c.refresh(room, e);
+                    }
                 }
             }
             "send_complete" => {
@@ -649,6 +673,7 @@ impl App {
                         Request::Members(_) => "Could not load room members.",
                         Request::Send(..) => "Could not send. Your draft has been kept.",
                         Request::Context(..)=>"Could not load the original message. Try again from the reply.",
+                        Request::Edit(room,id)=>{self.finish_edit(f["request_id"].as_i64().unwrap(),&room,&id,&Value::Null);return}
                     }
                     .into();
                     return;
@@ -684,6 +709,9 @@ impl App {
                         };
                     }
                     Request::Context(room, id) => self.show_context(room, id, data),
+                    Request::Edit(room, id) => {
+                        self.finish_edit(f["request_id"].as_i64().unwrap(), &room, &id, data)
+                    }
                     Request::Send(id, sent, reply) => {
                         if let Some(r) = self.live.list.get_mut(&id) {
                             r.insert(data);
@@ -702,14 +730,7 @@ impl App {
                     }
                     Request::Page(id) => {
                         if let Some(r) = self.live.list.get_mut(&id) {
-                            r.page(data);
-                            let mut related = rooms::Room::default();
-                            for e in items(&data["related_events"]).filter(|e| e["room_id"] == id) {
-                                related.insert(e);
-                            }
-                            for q in related.history.values().filter_map(rooms::Post::quote) {
-                                r.related.insert(q.id.clone(), q);
-                            }
+                            r.page(&id, data);
                         }
                     }
                     Request::Members(id) => {
@@ -815,6 +836,9 @@ impl App {
                 self.stopped = true;
                 self.connected = false;
                 self.pending.clear();
+                if let Some(d) = &mut self.editing {
+                    d.pending = None;
+                }
                 self.batch = None;
                 for q in self.outbox.rooms.values_mut() {
                     for a in q {
@@ -1248,6 +1272,24 @@ impl App {
                 }
             }
             Msg::Draft(a) => self.editor.perform(a),
+            Msg::Edit(id) => {
+                if self.start_edit(id) {
+                    return operation::focus("message-edit");
+                }
+            }
+            Msg::ChangeEdit(a) => {
+                if let Some(d) = &mut self.editing
+                    && d.pending.is_none()
+                {
+                    d.input.perform(a);
+                }
+            }
+            Msg::SaveEdit => self.save_edit(),
+            Msg::CancelEdit => {
+                if self.editing.as_ref().is_some_and(|d| d.pending.is_none()) {
+                    self.editing = None;
+                }
+            }
             Msg::Latest => {
                 self.close_original();
                 return self.anchor_history();
@@ -1324,7 +1366,7 @@ impl App {
                     let text = r
                         .posts()
                         .iter()
-                        .map(|p| format!("{}: {}", r.display(&p.sender), p.body))
+                        .map(|p| format!("{}: {}", r.display(&p.sender), p.text()))
                         .collect::<Vec<_>>()
                         .join("\n");
                     #[cfg(not(target_arch = "wasm32"))]

@@ -142,8 +142,14 @@
   After reload, Element highlighted the correct original outside its restored
   live timeline. After restarting the native client, both reply links fetched
   their distinct original event IDs through `/context` and rendered the
-  matching neighboring messages. Edits, reactions and the remaining daily-chat
-  workflows still need their own acceptance evidence.
+  matching neighboring messages.
+- **Editing encrypted replies:** The [extended interop test](scripts/replies-element.md)
+  edited one reply twice in Untethered and the other once in Element. All
+  three edits were Megolm `m.replace` events targeting the two reply IDs.
+  After restart/reload, both timelines displayed *Polar revision* and
+  *Meridian correction* in place. Each client’s two links still opened the
+  correct original despite identical original text. Reactions and the rest
+  of the everyday messaging milestone remain open.
 
 ## What parity means
 
