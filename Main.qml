@@ -960,7 +960,7 @@ ApplicationWindow {
                             Accessible.name: checked ? "Unmute microphone" : "Mute microphone"
                             ToolTip.text: window.callOpen ? Accessible.name : "No active call"
                             ToolTip.visible: hovered
-                            onClicked: callPane.item?.readMicrophone(true)
+                            onClicked: callPane.item?.updateControls("incall_mute")
                         }
                         ProfileButton {
                             symbol: "call"
@@ -1064,27 +1064,44 @@ ApplicationWindow {
                         id: callContent
                         spacing: 0
                         property string audioSettingsError: ""
-                        property bool microphoneAvailable: false
-                        property bool microphoneMuted: false
-                        property bool microphoneRequestPending: false
+                        property var controls: ({})
+                        readonly property bool microphoneAvailable: controls.microphone?.available ?? false
+                        readonly property bool microphoneMuted: controls.microphone?.active === false
+                        property bool controlsRequestPending: false
 
-                        function readMicrophone(toggle) {
-                            if (microphoneRequestPending || !callView.pageReady)
+                        function updateControls(action = "") {
+                            if (controlsRequestPending || !callView.pageReady)
                                 return
-                            microphoneRequestPending = true
+                            controlsRequestPending = true
                             callView.runJavaScript(`
                                 (() => {
                                     const frame = document.querySelector(".right-panel-content.element-call iframe");
-                                    const button = frame?.contentDocument?.querySelector('[data-testid="incall_mute"]');
-                                    const active = button?.getAttribute("aria-checked");
-                                    if (active !== "true" && active !== "false") return null;
-                                    if (${toggle} && !button.disabled) button.click();
-                                    return { muted: active === "false", available: !button.disabled };
+                                    const widget = frame?.contentDocument;
+                                    const ids = {
+                                        microphone: "incall_mute",
+                                        camera: "incall_videomute",
+                                        join: "lobby_joinCall",
+                                        leave: "incall_leave"
+                                    };
+                                    const buttonFor = id => widget?.querySelector('[data-testid="' + id + '"]');
+                                    const action = ${JSON.stringify(action)};
+                                    if (action) {
+                                        const button = buttonFor(action);
+                                        if (button && !button.disabled) button.click();
+                                    }
+                                    const controls = {};
+                                    for (const [name, id] of Object.entries(ids)) {
+                                        const button = buttonFor(id);
+                                        if (button) controls[name] = {
+                                            active: button.getAttribute("aria-checked") === "true",
+                                            available: !button.disabled
+                                        };
+                                    }
+                                    return controls;
                                 })()
                             `, WebEngineScript.ApplicationWorld, state => {
-                                microphoneAvailable = state?.available ?? false
-                                microphoneMuted = state?.muted ?? false
-                                microphoneRequestPending = false
+                                controls = state ?? ({})
+                                controlsRequestPending = false
                             })
                         }
 
@@ -1092,7 +1109,7 @@ ApplicationWindow {
                             interval: 400
                             repeat: true
                             running: window.callOpen && callView.pageReady && callView.loadError === ""
-                            onTriggered: callContent.readMicrophone(false)
+                            onTriggered: callContent.updateControls()
                         }
 
                         Timer {
@@ -1155,10 +1172,6 @@ ApplicationWindow {
                                 text: "Audio Settings"
                                 enabled: !window.audioSettingsPending && callView.loadError === ""
                                 onClicked: window.openCallAudioSettings()
-                            }
-                            Button {
-                                text: "Close call"
-                                onClicked: chat.closeCall()
                             }
                         }
 
@@ -1295,6 +1308,52 @@ ApplicationWindow {
                                 anchors.centerIn: parent
                                 color: window.muted
                                 text: callView.loadError || "Opening Element Call…"
+                            }
+                        }
+                        Rectangle {
+                            Layout.fillWidth: true
+                            Layout.leftMargin: 12
+                            Layout.rightMargin: 12
+                            Layout.bottomMargin: 12
+                            implicitHeight: callToolbar.implicitHeight + 16
+                            radius: 12
+                            color: window.fieldSurface
+                            border.color: window.divider
+
+                            RowLayout {
+                                id: callToolbar
+                                anchors.centerIn: parent
+                                spacing: 8
+                                NavigationButton {
+                                    text: callContent.microphoneMuted ? "Unmute" : "Mute"
+                                    Accessible.name: callContent.microphoneMuted ? "Unmute microphone" : "Mute microphone"
+                                    highlighted: callContent.microphoneMuted
+                                    enabled: callContent.microphoneAvailable
+                                    onClicked: callContent.updateControls("incall_mute")
+                                }
+                                NavigationButton {
+                                    text: callContent.controls.camera?.active ? "Camera off" : "Camera on"
+                                    highlighted: callContent.controls.camera?.active ?? false
+                                    enabled: callContent.controls.camera?.available ?? false
+                                    onClicked: callContent.updateControls("incall_videomute")
+                                }
+                                NavigationButton {
+                                    visible: !!callContent.controls.join
+                                    text: "Join call"
+                                    highlighted: true
+                                    enabled: callContent.controls.join?.available ?? false
+                                    onClicked: callContent.updateControls("lobby_joinCall")
+                                }
+                                NavigationButton {
+                                    text: callContent.controls.leave ? "Leave call" : "Close"
+                                    enabled: callContent.controls.leave?.available ?? true
+                                    onClicked: {
+                                        if (callContent.controls.leave)
+                                            callContent.updateControls("incall_leave")
+                                        else
+                                            chat.closeCall()
+                                    }
+                                }
                             }
                         }
                     }
