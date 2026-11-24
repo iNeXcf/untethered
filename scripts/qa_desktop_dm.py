@@ -44,46 +44,48 @@ def sfu_audio(secret):
     return result
 
 
-def desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,*,incoming=False,controls=False):
+def desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,*,incoming=False,controls=False,devices=False):
     env=isolated_env(tmp,backend,"x11")
     start_display(stack,tmp,env,"x11",1280,900)
     sock=Path(env["XDG_RUNTIME_DIR"])/"qa-pulse"
     env.update(PULSE_SERVER="unix:"+str(sock),PULSE_SOURCE="QAMic.monitor",PULSE_SINK="QASpeaker")
     def cmd(*args,**kw):
         return sp.run(args,env=env,capture_output=True,timeout=8,**kw)
+    ports=[("QAMic","Amber"),("QASpeaker","Harbor")]
+    if devices:ports.extend([("QAMicB","Cobalt"),("QASpeakerB","Grove")])
     pulse=stack.enter_context(child(["pulseaudio","-n","--daemonize=no","--exit-idle-time=-1","--use-pid-file=no",
         "--load=module-native-protocol-unix socket="+str(sock)+" auth-anonymous=1",
-        "--load=module-null-sink sink_name=QAMic rate=48000 channels=1",
-        "--load=module-null-sink sink_name=QASpeaker rate=48000 channels=1"],env))
+        *(f"--load=module-null-sink sink_name={name} sink_properties=device.description={label} rate=48000 channels=1" for name,label in ports)],env))
     def ready():
         assert pulse.poll() is None,"private audio server exited"
         return sock.is_socket() and "QASpeaker" in cmd("pactl","list","short","sinks",text=True).stdout
     wait_for("private PulseAudio sinks",ready)
+    if devices:
+        # A removable source backed by mic B, independently of its tone generator.
+        spare=cmd("pactl","load-module","module-remap-source","master=QAMicB.monitor","source_name=QASpare",
+                  "source_properties=device.description=Spare",text=True,check=True).stdout.strip()
+        # PulseAudio prefers a non-monitor source by default; removing Spare
+        # must not itself move the fixture's default during the assertion.
+        cmd("pactl","set-default-source","QAMic.monitor",check=True)
+        cmd("pactl","set-default-sink","QASpeaker",check=True)
     # Play only into the null mic sink; monitor only the separate speaker sink.
     args=["--raw","--rate=48000","--channels=1","--format=s16le","--latency-msec=40"]
-    feed=sp.Popen(["pacat","--playback","--device=QAMic",*args],stdin=sp.PIPE,env=env,stderr=sp.DEVNULL)
-    monitor=sp.Popen(["pacat","--record","--device=QASpeaker.monitor",*args],stdout=sp.PIPE,env=env,stderr=sp.DEVNULL)
-    def end():
-        for p in (feed,monitor):
-            p.terminate();p.wait(timeout=5)
-    stack.callback(end)
-    tone=array.array("h",(round(9000*math.sin(i*math.tau*480/48000)) for i in range(4800))).tobytes()
-    def inject():
+    def inject(feed,hz):
+        tone=array.array("h",(round(9000*math.sin(i*math.tau*hz/48000)) for i in range(4800))).tobytes()
         try:
             while True:feed.stdin.write(tone)
         except (OSError,ValueError):pass
     received=threading.Event()
     chime=threading.Event()
-    speaker=(0,0,0)  # completed 100ms windows, consecutive 960 Hz windows, consecutive silent windows
-    def observe():
-        nonlocal speaker
+    speakers=[(0,0,0),(0,0,0)]  # completed 100ms windows, consecutive 960 Hz windows, consecutive silent windows
+    def observe(monitor,idx):
         good=quiet=0
         while data:=monitor.stdout.read(9600):
             pcm=array.array("h");pcm.frombytes(data)
             hz=sum(a<=0<b for a,b in zip(pcm,pcm[1:]))*48000/len(pcm)
             good=good+1 if abs(hz-960)<35 and max(pcm)>500 else 0
             quiet=quiet+1 if max(abs(min(pcm)),abs(max(pcm)))<32 else 0
-            speaker=(speaker[0]+1,good,quiet)
+            speakers[idx]=(speakers[idx][0]+1,good,quiet)
             if good>=6:received.set()
             if incoming and max(pcm)>500:
                 # Both ringtone partials must actually be playing on the private sink.
@@ -91,7 +93,15 @@ def desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,*,incoming=Fa
                     return 2*abs(sum(v*complex(math.cos(k*freq),math.sin(k*freq))
                         for k,v in enumerate(pcm[::4])))/len(pcm[::4])
                 if all(amplitude(math.tau*hz/12000)>600 for hz in (440,620)):chime.set()
-    for fun in (inject,observe):threading.Thread(target=fun,daemon=True).start()
+    def end(p):
+        p.terminate();p.wait(timeout=5)
+    for idx,suffix in enumerate(["","B"] if devices else [""]):
+        feed=sp.Popen(["pacat","--playback","--device=QAMic"+suffix,*args],stdin=sp.PIPE,bufsize=0,env=env,stderr=sp.DEVNULL)
+        stack.callback(end,feed)
+        monitor=sp.Popen(["pacat","--record","--device=QASpeaker"+suffix+".monitor",*args],stdout=sp.PIPE,env=env,stderr=sp.DEVNULL)
+        stack.callback(end,monitor)
+        threading.Thread(target=inject,args=(feed,(480,730)[idx]),daemon=True).start()
+        threading.Thread(target=observe,args=(monitor,idx),daemon=True).start()
     client=stack.enter_context(child([root/"rust-client/target/debug/untethered-iced"],env))
     def window():
         assert client.poll() is None,"desktop exited"
@@ -100,7 +110,8 @@ def desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,*,incoming=Fa
     cmd("xdotool","windowmove",win,"0","0",check=True)
     cmd("xdotool","windowsize",win,"1180","760",check=True)
     def words():
-        im=Image.open(io.BytesIO(cmd("import","-window",win,"png:-",check=True).stdout)).crop((0,0,1180,190)).resize((2360,380))
+        h=480 if devices else 190
+        im=Image.open(io.BytesIO(cmd("import","-window",win,"png:-",check=True).stdout)).crop((0,0,1180,h)).resize((2360,h*2))
         buf=io.BytesIO();im.save(buf,"PNG")
         data=sp.run(["tesseract","stdin","stdout","--psm","11","tsv"],input=buf.getvalue(),capture_output=True,check=True).stdout.decode()
         return [(s[11],(int(s[6])+int(s[8])//2)//2,(int(s[7])+int(s[9])//2)//2) for line in data.splitlines()
@@ -124,7 +135,7 @@ def desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,*,incoming=Fa
         ring_started=threading.Event()
         page.on("console",lambda m:ring_started.set() if "LegacyCallHandler.play(ringAudio): playing audio successfully" in m.text else None)
         sockets=[]
-        if controls:
+        if controls or devices:
             page.on("websocket",lambda ws:sockets.append(ws) if urlsplit(ws.url).netloc=="127.0.0.1:18820" else None)
         click("Voice")
         toast=page.locator(".mx_IncomingCallToast_content")
@@ -148,13 +159,27 @@ def desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,*,incoming=Fa
         assert len(tracks)==2 and all(v==["GCM"] for v in tracks.values()) and {p.rsplit(":",1)[0] for p in tracks}=={alice,bob}, tracks
         print("Element accepted; Element measured 480 Hz on received WebRTC audio, desktop speaker monitor measured 960 Hz for 600 ms.",flush=True)
         print("LiveKit independently reports GCM on both microphone publications.",flush=True)
-        if controls:
+        if devices:
+            def select(port,option):
+                # Click the actual pick list next to the label; then click a
+                # matching item in its overlay (not the other closed pick list).
+                x,y=wait_for(port+" picker",lambda:next(((x,y) for t,x,y in reversed(words())
+                                                         if t.lower()==port.lower()),None))
+                cmd("xdotool","mousemove","--window",win,str(x+160),str(y),"click","1",check=True)
+                def item():
+                    return next(((px,py) for t,px,py in words() if t.strip(".,:|[]").lower()==option.lower()
+                                 and px>x+45 and py>y+12),None)
+                px,py=wait_for(option+" in "+port+" menu",item,8)
+                cmd("xdotool","mousemove","--window",win,str(px),str(py),"click","1",check=True)
+            click("Devices")
+            device_switch(widget,select,click,speakers,streams,cmd,secret,sockets,alice,bob,spare)
+        elif controls:
             def change_room():
                 click("Sidechat")
                 wait_for("browsing another room",lambda:"Sidechat" in cmd("xdotool","getwindowname",win,text=True).stdout)
                 assert set(roster())=={alice,bob}
                 print("Switched the desktop to Sidechat during mute; DM call bar remained active.",flush=True)
-            audio_controls(widget,click,lambda:speaker,streams,secret,sockets,alice,bob,change_room)
+            audio_controls(widget,click,lambda:speakers[0],streams,secret,sockets,alice,bob,change_room)
             # Return to the DM so the final assertion checks its Voice call button.
             x,y=wait_for("original DM sidebar entry",lambda:next(((x,y) for t,x,y in words() if "media-proof" in t.lower() and x<265),None))
             cmd("xdotool","mousemove","--window",win,str(x),str(y),"click","1",check=True)
@@ -170,11 +195,12 @@ def desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,*,incoming=Fa
             received.clear()
             assert received.wait(3)
             print("Both tones still present past the original 60-second membership expiry.",flush=True)
-        click("Hang")
+        if devices:widget.get_by_role("button",name="End call",exact=True).click(timeout=8000)
+        else:click("Hang")
         wait_for("desktop and Element left DM call",lambda:roster()==[],22)
         wait_for("desktop released both audio devices",lambda:not streams("source-outputs") and not streams("sink-inputs"))
-        assert find("Voice")
-        print("Desktop Hang up → empty Element call roster, 0 desktop capture/playback streams; call control available again.",flush=True)
+        wait_for("desktop ready to call again",lambda:find("Voice"),8)
+        print("Hangup → empty Element call roster, 0 desktop capture/playback streams; call control available again.",flush=True)
     except Exception:
         print("Desktop visible labels:", " ".join(t for t,_,_ in words()),flush=True)
         print("Element roster:",roster(),"incoming toast:",page.locator(".mx_IncomingCallToast_content").all_text_contents(),flush=True)
@@ -188,10 +214,8 @@ def desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,*,incoming=Fa
         raise
 
 
-def audio_controls(widget,click,speaker,streams,secret,sockets,alice,bob,change_room):
-    """Use fresh PCM after every click; an old 'tone seen' latch can't pass."""
-    def stats():return widget.evaluate("window.qaAudioStats()")
-    initial=stats()
+def continuity(widget,secret,sockets,alice,bob):
+    initial=widget.evaluate("window.qaAudioStats()")
     original_sockets=tuple(sockets)
     assert initial["ssrc"] and initial["state"]=="connected" and original_sockets
     def publications():
@@ -202,18 +226,78 @@ def audio_controls(widget,click,speaker,streams,secret,sockets,alice,bob,change_
         return ids,mutes
     original,mutes=publications()
     assert mutes=={alice:False,bob:False}
+    def stats():
+        s=widget.evaluate("window.qaAudioStats()")
+        assert s["state"]=="connected" and all(s[k]==initial[k] for k in ("receiverId","trackId","ssrc","peerConnections","losses"))
+        assert tuple(sockets)==original_sockets and all(not ws.is_closed() for ws in sockets)
+        return s
+    def check_tracks(mic_on):
+        ids,mutes=publications()
+        assert ids==original and mutes=={alice:not mic_on,bob:False}, "encrypted track, participant or mute state changed"
+    return stats,check_tracks
+
+
+def device_switch(widget,select,click,speakers,streams,cmd,secret,sockets,alice,bob,spare):
+    stats,check_tracks=continuity(widget,secret,sockets,alice,bob)
+    def server_defaults():
+        return tuple(cmd("env","-u","PULSE_SOURCE","-u","PULSE_SINK","pactl","get-default-"+kind,check=True).stdout
+                     for kind in ("source","sink"))
+    defaults=server_defaults()
+    assert tuple(x.strip() for x in defaults)==(b"QAMic.monitor",b"QASpeaker")
+    def indices(kind):
+        return {v["name"]:int(v["index"]) for v in json.loads(cmd("pactl","-f","json","list",kind,check=True).stdout)}
+    sources,sinks=indices("sources"),indices("sinks")
+    def check(mic_b,speaker_b):
+        spec=stats()["spectra"];start=[m[0] for m in speakers]
+        def match():
+            s=stats()
+            return min(s["spectra"]-spec,s["run730" if mic_b else "run480"],
+                       *(min(m[0]-start[i],m[1 if i==speaker_b else 2]) for i,m in enumerate(speakers)))>=12
+        wait_for("fresh microphone and both sink measurements",match,12)
+        src,=streams("source-outputs");out,=streams("sink-inputs")
+        assert int(src["source"])==sources["QAMic"+("B" if mic_b else "")+".monitor"]
+        assert int(out["sink"])==sinks["QASpeaker"+("B" if speaker_b else "")]
+        check_tracks(True)
+        print(f"Device route: Element received {730 if mic_b else 480} Hz; "
+              f"{'Grove' if speaker_b else 'Harbor'} played 960 Hz, {'Harbor' if speaker_b else 'Grove'} silent "
+              "(12 fresh 100 ms windows at all three measurement points).",flush=True)
+    check(False,False)
+    select("Microphone","Cobalt");check(True,False)
+    select("Speaker","Grove");check(True,True)
+    select("Microphone","Amber");check(False,True)
+    select("Speaker","default");check(False,False)
+    assert server_defaults()==defaults,"switching live call routes changed server defaults"
+    def mic_closed():
+        first=stats()["spectra"];start=speakers[0][0]
+        def silent():
+            s=stats();n,tone,_=speakers[0]
+            return min(s["quiet"],s["spectra"]-first,tone,n-start)>=12
+        wait_for("unavailable or muted mic stays silent while playback continues",silent,12)
+        assert not streams("source-outputs")
+        check_tracks(False)
+    click("Mute")
+    select("Microphone","Spare");mic_closed()
+    cmd("pactl","unload-module",spare,check=True)
+    click("Refresh")
+    click("Unmute");mic_closed()
+    print("Removed the selected mic while muted: no fallback capture after Unmute; Element silent, speaker still at 960 Hz.",flush=True)
+    select("Microphone","default");check(False,False)
+    assert server_defaults()==defaults,"call selection changed system audio defaults"
+    print("Device switches kept both GCM track SIDs, participant SIDs, browser receiver, SSRC and SFU signaling sockets.",flush=True)
+
+
+def audio_controls(widget,click,speaker,streams,secret,sockets,alice,bob,change_room):
+    """Use fresh PCM after every click; an old 'tone seen' latch can't pass."""
+    stats,check_tracks=continuity(widget,secret,sockets,alice,bob)
     def phase(button,mic_on,output_on):
         click(button)
         first=stats()["spectra"]
         start=speaker()[0]
         def match():
             s=stats(); n,tone,quiet=speaker()
-            assert s["state"]=="connected" and all(s[k]==initial[k] for k in ("receiverId","trackId","ssrc","peerConnections","losses"))
-            assert tuple(sockets)==original_sockets and all(not ws.is_closed() for ws in sockets)
             return min(s["spectra"]-first,n-start,s["run480"] if mic_on else s["quiet"],tone if output_on else quiet)>=12
         wait_for(button+" measured at both clients",match,12)
-        ids,mutes=publications()
-        assert ids==original and mutes=={alice:not mic_on,bob:False},f"unexpected publications after {button}"
+        check_tracks(mic_on)
         assert len(streams("source-outputs"))==int(mic_on),"capture did not follow effective mute state"
         print(f"{button}: Element {'480 Hz' if mic_on else 'silent (< -65 dB FFT peak)'}; "
               f"desktop {'960 Hz' if output_on else 'silent (< 32 PCM peak)'} for 12 fresh 100 ms windows.",flush=True)

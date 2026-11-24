@@ -227,8 +227,10 @@ fn rail_button<'a>(glyph: String, hint: &'a str, active: bool, msg: Msg) -> El<'
 impl App {
     #[cfg(target_os = "linux")]
     fn call_bar(&self) -> Option<El<'_>> {
+        use crate::call_devices::Port;
+        use iced::widget::pick_list;
         let call = self.call.as_ref()?;
-        let mode = *call.audio.borrow();
+        let mode = call.audio.borrow();
         let name = self
             .live
             .list
@@ -253,25 +255,72 @@ impl App {
             )
             .style(nav(mode.deafened))
             .on_press_maybe(active.then_some(Msg::ToggleDeafen)),
+            button(text("Devices").size(15).font(BOLD))
+                .style(nav(call.picker))
+                .on_press_maybe(active.then_some(Msg::AudioDevices)),
             button(text("Hang up").size(15).font(BOLD))
                 .on_press_maybe(active.then_some(Msg::EndCall))
         ]
         .spacing(8)
         .align_y(Center);
-        Some(
-            container(
-                column![
-                    text(format!("{} · {name}", call.label))
-                        .size(13)
-                        .color(TEXT),
-                    controls
-                ]
-                .spacing(3),
+        let mut bar = column![
+            text(format!("{} · {name}", call.label))
+                .size(13)
+                .color(TEXT),
+            controls
+        ]
+        .spacing(3);
+        if call.mic_error {
+            bar =
+                bar.push(text("Microphone unavailable · choose an input under Devices.").size(13));
+        }
+        if call.speaker_error {
+            bar = bar.push(text("Speaker unavailable · choose an output under Devices.").size(13));
+        }
+        if call.picker {
+            for (label, port, route) in [
+                ("Microphone", Port::Mic, &mode.mic),
+                ("Speaker", Port::Speaker, &mode.speaker),
+            ] {
+                bar = bar.push(
+                    row![
+                        text(label).width(90).size(14),
+                        pick_list(
+                            call.devices.list(port),
+                            Some(call.devices.selected(port, route)),
+                            move |choice| Msg::SelectDevice(port, choice)
+                        )
+                        .width(Fill)
+                        .text_size(14)
+                        .padding([5, 9])
+                    ]
+                    .align_y(Center)
+                    .spacing(8),
+                );
+            }
+            let refresh = button(
+                text(if call.loading {
+                    "Loading…"
+                } else {
+                    "Refresh devices"
+                })
+                .size(14)
+                .font(BOLD),
             )
-            .width(Fill)
-            .padding([6, 12])
-            .style(|_| surface(TRAY, 4.))
-            .into(),
+            .style(nav(false))
+            .on_press_maybe((active && !call.loading).then_some(Msg::RefreshDevices));
+            bar = bar.push(
+                row![refresh, text(call.list_error.unwrap_or("")).size(13)]
+                    .align_y(Center)
+                    .spacing(8),
+            );
+        }
+        Some(
+            container(bar)
+                .width(Fill)
+                .padding([6, 12])
+                .style(|_| surface(TRAY, 4.))
+                .into(),
         )
     }
     #[cfg(target_os = "linux")]

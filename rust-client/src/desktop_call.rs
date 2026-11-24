@@ -1,5 +1,6 @@
 //! Linux one-to-one voice. Matrix state/Olm stay in the existing gomuks device;
 //! only the media and audio streams live here, for the lifetime of a call.
+use crate::call_devices::{Catalog, Port, Route};
 use async_channel::{Receiver, Sender};
 use futures_util::{SinkExt, StreamExt};
 use livekit::{
@@ -40,14 +41,16 @@ const SLOT_ID: &str = "m.call#ROOM";
 const ENDED: &str = "Call ended.";
 const SECOND: Duration = Duration::from_secs(1);
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub struct AudioMode {
     // Deafen is an overlay: lifting it must not undo a manual mute.
     pub muted: bool,
     pub deafened: bool,
+    pub mic: Route,
+    pub speaker: Route,
 }
 impl AudioMode {
-    fn mic_off(self) -> bool {
+    fn mic_off(&self) -> bool {
         self.muted || self.deafened
     }
 }
@@ -56,6 +59,13 @@ pub struct ActiveCall {
     pub label: String,
     pub cancel: Sender<()>,
     pub audio: watch::Sender<AudioMode>,
+    pub id: uuid::Uuid,
+    pub devices: Catalog,
+    pub picker: bool,
+    pub loading: bool,
+    pub list_error: Option<&'static str>,
+    pub mic_error: bool,
+    pub speaker_error: bool,
 }
 pub struct Controls {
     cancel: Receiver<()>,
@@ -95,6 +105,13 @@ impl crate::App {
                 label: label.into(),
                 cancel,
                 audio,
+                id: uuid::Uuid::new_v4(),
+                devices: Catalog::default(),
+                picker: false,
+                loading: false,
+                list_error: None,
+                mic_error: false,
+                speaker_error: false,
             });
         } else {
             self.status = "Could not queue the voice call.".into();
@@ -551,7 +568,16 @@ async fn call(
         return Err("Microphone encryption unavailable.");
     }
     let mut audio = JoinSet::new();
-    audio.spawn(controlled_capture(src, publication, mode.clone()));
+    let notices = DeviceNotices {
+        events: events.clone(),
+        room: w.room.to_owned(),
+    };
+    audio.spawn(controlled_capture(
+        src,
+        publication,
+        mode.clone(),
+        notices.clone(),
+    ));
     let mut playing = false;
     loop {
         install(w, &provider, &peer_device, &peer_member, &peer_id)?;
@@ -571,7 +597,7 @@ async fn call(
             event=rtc.recv()=>match event {
                 Some(RoomEvent::TrackSubscribed{track:RemoteTrack::Audio(track),participant,publication,..}) if participant.identity().0==peer_id && !playing=>{
                     if publication.encryption_type()!=EncryptionType::Gcm{return Err("Peer did not encrypt audio.")}
-                    audio.spawn(play(track,mode.clone()));playing=true;status(events,w.room,"Connected").await;
+                    audio.spawn(play(track,mode.clone(),notices.clone()));playing=true;status(events,w.room,"Connected").await;
                 }
                 Some(RoomEvent::ParticipantDisconnected(p)) if p.identity().0==peer_id=>return Ok(ENDED),
                 None|Some(RoomEvent::Disconnected{..}|RoomEvent::Reconnecting)=>return Err("Call connection lost."),
@@ -581,10 +607,27 @@ async fn call(
     }
 }
 
+#[derive(Clone)]
+struct DeviceNotices {
+    events: Sender<Value>,
+    room: String,
+}
+impl DeviceNotices {
+    async fn report(&self, port: Port, revision: u64, failed: bool) {
+        let _ = self
+            .events
+            .send(json!({"command":"call_device_status","data":{
+                "room":self.room,"mic":port==Port::Mic,"revision":revision,"failed":failed
+            }}))
+            .await;
+    }
+}
+
 async fn controlled_capture(
     src: NativeAudioSource,
     publication: LocalTrackPublication,
     mut mode: watch::Receiver<AudioMode>,
+    notices: DeviceNotices,
 ) -> Result<()> {
     loop {
         if mode.borrow_and_update().mic_off() {
@@ -592,21 +635,26 @@ async fn controlled_capture(
                 publication.mute();
             }
             mode.wait_for(|s| !s.mic_off()).await.map_err(|_| ENDED)?;
+            continue;
         }
-        if publication.is_muted() {
-            publication.unmute();
-        }
-        // Dropping capture also closes its pacat child, so buffered microphone
-        // input from the muted interval cannot be sent after unmuting.
+        let route = mode.borrow().mic.clone();
+        let changed = |s: &AudioMode| s.mic_off() || s.mic.revision != route.revision;
+        // Drop only this local input on mute or a mic switch. The LiveKit
+        // publication, its source and frame cryptor outlive every pacat child.
         tokio::select! {
             biased;
-            change=mode.wait_for(|s| s.mic_off())=>{change.map_err(|_| ENDED)?;}
-            result=capture(src.clone())=>return result,
+            change=mode.wait_for(changed)=>{change.map_err(|_| ENDED)?;continue;}
+            result=capture(&src,&publication,&route,&notices)=>result?,
         }
+        if !publication.is_muted() {
+            publication.mute();
+        }
+        notices.report(Port::Mic, route.revision, true).await;
+        mode.wait_for(changed).await.map_err(|_| ENDED)?;
     }
 }
 
-fn audio_process(record: bool) -> Result<tokio::process::Child> {
+fn audio_process(record: bool, device: Option<&str>) -> Result<tokio::process::Child> {
     let mut p = Command::new("pacat");
     p.args([
         if record { "--record" } else { "--playback" },
@@ -620,6 +668,9 @@ fn audio_process(record: bool) -> Result<tokio::process::Child> {
     ])
     .kill_on_drop(true)
     .stderr(Stdio::null());
+    if let Some(device) = device {
+        p.arg("--device").arg(device);
+    }
     if record {
         p.stdin(Stdio::null()).stdout(Stdio::piped());
     } else {
@@ -628,15 +679,31 @@ fn audio_process(record: bool) -> Result<tokio::process::Child> {
     p.spawn()
         .map_err(|_| "Cannot open audio. Install the PulseAudio client tools.")
 }
-async fn capture(src: NativeAudioSource) -> Result<()> {
-    let mut child = audio_process(true)?;
+// A local device failure is recoverable by choosing another input. An error
+// submitting PCM to the network source remains a call-level error.
+async fn capture(
+    src: &NativeAudioSource,
+    publication: &LocalTrackPublication,
+    route: &Route,
+    notices: &DeviceNotices,
+) -> Result<()> {
+    let Ok(mut child) = audio_process(true, route.name.as_deref()) else {
+        return Ok(());
+    };
     let mut input = child.stdout.take().unwrap();
     let mut buf = [0u8; 960];
+    let mut first = true;
     loop {
-        input
-            .read_exact(&mut buf)
-            .await
-            .map_err(|_| "Microphone unavailable.")?;
+        if input.read_exact(&mut buf).await.is_err() {
+            return Ok(());
+        }
+        if first {
+            first = false;
+            if publication.is_muted() {
+                publication.unmute();
+            }
+            notices.report(Port::Mic, route.revision, false).await;
+        }
         let pcm: Vec<_> = buf
             .as_chunks::<2>()
             .0
@@ -654,24 +721,49 @@ async fn capture(src: NativeAudioSource) -> Result<()> {
         .map_err(|_| "Microphone capture failed.")?;
     }
 }
-async fn play(track: RemoteAudioTrack, mode: watch::Receiver<AudioMode>) -> Result<()> {
-    let mut child = audio_process(false)?;
-    let mut out = child.stdin.take().unwrap();
+async fn play(
+    track: RemoteAudioTrack,
+    mut mode: watch::Receiver<AudioMode>,
+    notices: DeviceNotices,
+) -> Result<()> {
     let mut stream = NativeAudioStream::new(track.rtc_track(), 48000, 1);
     let mut bytes = Vec::new();
-    while let Some(frame) = stream.next().await {
-        bytes.clear();
-        if mode.borrow().deafened {
-            // Keep consuming the live subscription; never queue deafened speech.
-            bytes.resize(frame.data.len() * 2, 0);
-        } else {
-            bytes.extend(frame.data.iter().flat_map(|s| s.to_le_bytes()));
+    loop {
+        let route = mode.borrow_and_update().speaker.clone();
+        let changed = |s: &AudioMode| s.speaker.revision != route.revision;
+        let mut child = audio_process(false, route.name.as_deref()).ok();
+        if child.is_none() {
+            notices.report(Port::Speaker, route.revision, true).await;
         }
-        out.write_all(&bytes)
-            .await
-            .map_err(|_| "Speaker unavailable.")?;
+        loop {
+            let frame = tokio::select! {
+                biased;
+                change=mode.wait_for(changed)=>{change.map_err(|_|ENDED)?;break;}
+                frame=stream.next()=>match frame {Some(f)=>f,None=>return Ok(())}
+            };
+            // Drain a failed output rather than falling back to a different speaker
+            // or replaying old speech when a working device is selected.
+            let Some(out) = child.as_mut().and_then(|c| c.stdin.as_mut()) else {
+                continue;
+            };
+            bytes.clear();
+            if mode.borrow().deafened {
+                // Keep consuming the live subscription; never queue deafened speech.
+                bytes.resize(frame.data.len() * 2, 0);
+            } else {
+                bytes.extend(frame.data.iter().flat_map(|s| s.to_le_bytes()));
+            }
+            let written = tokio::select! {
+                biased;
+                change=mode.wait_for(changed)=>{change.map_err(|_|ENDED)?;break;}
+                written=out.write_all(&bytes)=>written,
+            };
+            if written.is_err() {
+                child = None;
+                notices.report(Port::Speaker, route.revision, true).await;
+            }
+        }
     }
-    Ok(())
 }
 
 #[cfg(test)]

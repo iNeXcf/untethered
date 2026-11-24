@@ -74,8 +74,14 @@
   Element while the 960 Hz return tone continued. Deafening silenced both;
   undeafening preserved an explicit mute and restored an open mic when it
   had been on. Both original GCM track IDs and the connection survived all
-  six transitions. Device selection, physical hardware, recovery after
-  disconnect and TURN-only calls remain open.
+  six transitions.
+- **Linux device selection:** In `run_element.sh --call-devices`, Element heard
+  480 → 730 → 480 Hz on the same desktop audio track when the microphone
+  changed. Moving its 960 Hz return audio between two speaker sinks silenced
+  the unselected output. Both encrypted track IDs and the connection stayed
+  intact; the system defaults were unchanged. Removing a selected mic while
+  muted left capture closed on unmute; selecting a working input restored it.
+  Physical hardware, recovery after disconnect and TURN-only calls remain open.
 
 ## What parity means
 

@@ -4,6 +4,8 @@ mod backend;
 #[cfg(target_arch = "wasm32")]
 mod browser_verification;
 #[cfg(target_os = "linux")]
+mod call_devices;
+#[cfg(target_os = "linux")]
 mod desktop_call;
 #[cfg(not(target_arch = "wasm32"))]
 mod fonts;
@@ -79,6 +81,14 @@ enum Msg {
     ToggleMic,
     #[cfg(target_os = "linux")]
     ToggleDeafen,
+    #[cfg(target_os = "linux")]
+    AudioDevices,
+    #[cfg(target_os = "linux")]
+    RefreshDevices,
+    #[cfg(target_os = "linux")]
+    DevicesListed(uuid::Uuid, Result<call_devices::Catalog, &'static str>),
+    #[cfg(target_os = "linux")]
+    SelectDevice(call_devices::Port, call_devices::Choice),
     #[cfg(target_os = "linux")]
     DecideRing(String, bool),
     #[cfg(target_os = "linux")]
@@ -384,6 +394,21 @@ impl App {
     fn frame(&mut self, f: Value) {
         let data = &f["data"];
         match f["command"].as_str().unwrap_or("") {
+            #[cfg(target_os = "linux")]
+            "call_device_status" => {
+                if let Some(call) = &mut self.call
+                    && data["room"] == call.room
+                {
+                    let mode = call.audio.borrow();
+                    let failed = data["failed"] == true;
+                    if data["mic"] == true && data["revision"] == mode.mic.revision {
+                        call.mic_error = failed;
+                    }
+                    if data["mic"] == false && data["revision"] == mode.speaker.revision {
+                        call.speaker_error = failed;
+                    }
+                }
+            }
             #[cfg(target_os = "linux")]
             "desktop_call" => {
                 if let Some(call) = &mut self.call
@@ -792,6 +817,58 @@ impl App {
                     && !call.cancel.is_closed()
                 {
                     call.audio.send_modify(|s| s.deafened = !s.deafened);
+                }
+            }
+            #[cfg(target_os = "linux")]
+            Msg::AudioDevices | Msg::RefreshDevices => {
+                if let Some(call) = &mut self.call
+                    && !call.cancel.is_closed()
+                {
+                    if matches!(msg, Msg::AudioDevices) {
+                        call.picker = !call.picker;
+                    }
+                    if call.picker && !call.loading {
+                        call.loading = true;
+                        let id = call.id;
+                        return Task::perform(call_devices::Catalog::read(), move |r| {
+                            Msg::DevicesListed(id, r)
+                        });
+                    }
+                }
+            }
+            #[cfg(target_os = "linux")]
+            Msg::DevicesListed(id, result) => {
+                if let Some(call) = &mut self.call
+                    && call.id == id
+                {
+                    call.loading = false;
+                    match result {
+                        Ok(devices) => {
+                            call.devices = devices;
+                            call.list_error = None;
+                        }
+                        Err(e) => call.list_error = Some(e),
+                    }
+                }
+            }
+            #[cfg(target_os = "linux")]
+            Msg::SelectDevice(port, device) => {
+                if let Some(call) = &mut self.call
+                    && !call.cancel.is_closed()
+                    && call.devices.list(port).contains(&device)
+                {
+                    call.audio.send_modify(|s| {
+                        let route = match port {
+                            call_devices::Port::Mic => &mut s.mic,
+                            call_devices::Port::Speaker => &mut s.speaker,
+                        };
+                        route.name = device.name;
+                        route.revision += 1;
+                    });
+                    match port {
+                        call_devices::Port::Mic => call.mic_error = false,
+                        call_devices::Port::Speaker => call.speaker_error = false,
+                    }
                 }
             }
             Msg::CheckCalls

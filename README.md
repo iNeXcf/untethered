@@ -95,9 +95,13 @@ releases your microphone and leaves the other person audible. **Deafen**
 silences playback and also mutes your microphone. **Undeafen** restores
 playback and your previous mute setting.
 
+Open **Devices** in the call bar to choose a **Microphone** and **Speaker**
+independently. Each starts on **System default**. Switching affects only this
+call, keeps its encrypted tracks connected, and preserves mute/deafen.
+**Refresh devices** updates the list after plugging in or removing a device.
+
 The [desktop call tests](experiments/rtc-audio/README.md) drive both clients'
 actual call controls and measure audio through isolated Linux devices.
-Device selection and relay-only connections are separate milestones.
 
 ![Untethered room preview in the Rust frontend](rust-client/docs/preview.png)
 

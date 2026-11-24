@@ -43,6 +43,21 @@ count and the SFU mute flags. Throughout the test the browser receiver, track,
 SSRC and signaling sockets stay the same, and both participants keep their
 original GCM publications on the SFU.
 
+### Verify microphone and speaker selection
+
+Run `sh experiments/rtc-audio/run_element.sh --call-devices` with the same
+setup. Two virtual microphones continuously supply **480 Hz** and **730 Hz**,
+and both virtual speaker outputs are monitored for Element's **960 Hz**.
+The test clicks the Iced **Devices** selectors. After each switch it requires
+12 fresh 100 ms windows at Element and at each speaker: the chosen mic tone,
+the return tone at the chosen output, and silence at the other. It checks
+PulseAudio stream routes, unchanged server defaults, the original two GCM
+publication IDs and participant IDs, and browser media/signaling continuity.
+
+It also selects a spare mic while muted and removes it before unmuting.
+There must be no fallback capture: Element stays silent, playback continues,
+and explicitly choosing a working mic restores audio on the same track.
+
 ## Replay the Element ↔ Rust encrypted audio test
 
 From the checkout, with Chromium, OpenSSL, iproute2, the pinned gomuks backend,
@@ -140,5 +155,5 @@ sentinel, so a roster entry does not demonstrate a media connection.
 ## What comes next
 
 Element and Untethered can each initiate DM calls while both apps are open.
-Next implement device selection. Verify reconnect and
-relay-required audio separately. Windows runtime testing is deferred.
+Next verify reconnect and relay-required audio. Physical hot-unplug behavior
+and Windows runtime testing are not covered by the virtual-device tests.
