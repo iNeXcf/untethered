@@ -48,6 +48,14 @@ must contain the other two frequencies and exclude its own for twelve
 consecutive 100 ms windows. The test checks two local playback streams per
 client, three GCM microphone publications, the names under the channel, and
 the room history (no non-state timeline messages, including encrypted rings).
+With all three mics still active, the test opens Alice’s **Mixer** and drives
+the rendered sliders. It measures each sender’s frequency at every receiver’s
+speaker monitor for twelve fresh 100 ms windows per setting. At 25%, only
+Bruno’s tone at Alice should drop to one quarter of baseline. Boosting Clara
+to 150% on Alice must leave Bruno there at 25% and both other listeners
+unchanged. Setting Bruno to zero must silence only him for Alice; **Reset**
+must restore the baseline mix. The three GCM microphone track IDs must survive.
+
 It then feeds one microphone at a time, with silence between speakers. On
 each of the three rendered sidebars, the **Speaking** label must line up with
 the correct name and disappear during silence, while the participants and

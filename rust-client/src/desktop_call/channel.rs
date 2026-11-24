@@ -229,9 +229,12 @@ impl Subscriptions {
                     }
                     live.insert(sid.clone());
                     self.tracks.entry(sid).or_insert_with(|| match track {
-                        RemoteTrack::Audio(track) => {
-                            self.jobs.spawn(play(track, mode.clone(), notices.clone()))
-                        }
+                        RemoteTrack::Audio(track) => self.jobs.spawn(play(
+                            track,
+                            Some(keys.members[&id.0].user.clone()),
+                            mode.clone(),
+                            notices.clone(),
+                        )),
                         RemoteTrack::Video(track) => self.jobs.spawn(room_video::display(
                             track,
                             format!(

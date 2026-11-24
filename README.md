@@ -123,6 +123,11 @@ uses three Linux clients on the same MatrixRTC LiveKit service.
 Room permissions must allow publishing call membership and, for the first
 participant, opening the voice slot if it is not already open.
 
+Open **Mixer** in the voice-room call bar to change how loud each person
+sounds to you for this call. Drag their slider from **0%** (silent for you)
+to **200%**, or click **Reset** to return to **100%**. Other listeners keep
+their own mixes.
+
 In the voice-room call bar, click **Share window** and pick a window in your
 desktop's chooser. Other participants see the live window in the voice room.
 You can browse another channel and use **Stop sharing** there without

@@ -269,6 +269,11 @@ impl App {
         .align_y(Center);
         let mut controls = controls;
         if call.group {
+            controls = controls.push(
+                button(text("Mixer").size(15).font(BOLD))
+                    .style(nav(call.mixer))
+                    .on_press_maybe(active.then_some(Msg::ToggleMixer)),
+            );
             for input in crate::desktop_call::VideoInput::ALL {
                 let slot = input as usize;
                 let requested = mode.video[slot].is_some();
@@ -298,6 +303,49 @@ impl App {
         }
         if call.speaker_error {
             bar = bar.push(text("Speaker unavailable · choose an output under Devices.").size(13));
+        }
+        if call.mixer
+            && let Some(room) = self.live.list.get(&call.room)
+        {
+            let id = call.id;
+            let mut rows = Column::new().spacing(4);
+            let mut peers = room.voice_users();
+            peers.remove(self.matrix_id.as_str());
+            for &user in &peers {
+                let gain = mode.volume(user);
+                rows = rows.push(
+                    row![
+                        container(tooltip(
+                            text(room.display(user)).size(14),
+                            text(user).size(13),
+                            tooltip::Position::Bottom
+                        ))
+                        .width(Length::FillPortion(1)),
+                        text(format!("{gain}%")).size(13).width(44),
+                        iced::widget::slider(0..=200u8, gain, move |v| Msg::PeerVolume(
+                            id,
+                            user.into(),
+                            v
+                        ))
+                        .default(100u8)
+                        .step(5u8)
+                        .shift_step(1u8)
+                        .width(Length::FillPortion(2)),
+                        button(text("Reset").size(13))
+                            .padding([2, 8])
+                            .style(nav(false))
+                            .on_press(Msg::PeerVolume(id, user.into(), 100))
+                    ]
+                    .spacing(8)
+                    .align_y(Center),
+                );
+            }
+            bar = bar.push(label("LOCAL PLAYBACK VOLUME"));
+            if peers.is_empty() {
+                bar = bar.push(text("No other participants in voice.").size(13));
+            } else {
+                bar = bar.push(container(scrollable(rows)).max_height(132).width(Fill));
+            }
         }
         if call.picker {
             for (label, port, route) in [
@@ -458,18 +506,12 @@ impl App {
             );
             #[cfg(target_os = "linux")]
             if r.voice {
-                let participants: std::collections::BTreeSet<_> = r
-                    .voice_members
-                    .values()
-                    .filter(|(_, expires)| *expires > crate::desktop_call::now())
-                    .map(|(user, _)| user)
-                    .collect();
                 let speakers = self
                     .call
                     .as_ref()
                     .filter(|c| c.group && c.room == *id)
                     .map(|c| c.speaking.borrow());
-                for user in participants {
+                for user in r.voice_users() {
                     let speaking = speakers.as_ref().is_some_and(|s| s.contains(user));
                     let mut line = row![
                         text(r.display(user))

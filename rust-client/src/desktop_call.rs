@@ -61,9 +61,27 @@ pub struct AudioMode {
     pub deafened: bool,
     pub mic: Route,
     pub speaker: Route,
+    // Receiver-local gain, keyed by Matrix user rather than a device/track
+    // SID. Replacement microphones inherit the same setting for this call.
+    volumes: std::collections::BTreeMap<String, u8>,
     pub video: [Option<uuid::Uuid>; 2],
 }
 impl AudioMode {
+    pub(super) fn volume(&self, user: &str) -> u8 {
+        self.volumes.get(user).copied().unwrap_or(100)
+    }
+    pub(super) fn set_volume(&mut self, user: String, percent: u8) -> bool {
+        let percent = percent.min(200);
+        if self.volume(&user) == percent {
+            return false;
+        }
+        if percent == 100 {
+            self.volumes.remove(&user);
+        } else {
+            self.volumes.insert(user, percent);
+        }
+        true
+    }
     fn mic_off(&self) -> bool {
         self.muted || self.deafened
     }
@@ -77,6 +95,7 @@ pub struct ActiveCall {
     pub id: uuid::Uuid,
     pub devices: Catalog,
     pub picker: bool,
+    pub mixer: bool,
     pub loading: bool,
     pub list_error: Option<&'static str>,
     pub mic_error: bool,
@@ -135,6 +154,7 @@ impl crate::App {
                 id: uuid::Uuid::new_v4(),
                 devices: Catalog::default(),
                 picker: false,
+                mixer: false,
                 loading: false,
                 list_error: None,
                 mic_error: false,
@@ -621,7 +641,7 @@ async fn call(
     let mut audio = JoinSet::new();
     let capture =
         |publication| controlled_capture(src.clone(), publication, mode.clone(), notices.clone());
-    let playback = |track| play(track, mode.clone(), notices.clone());
+    let playback = |track| play(track, None, mode.clone(), notices.clone());
     audio.spawn(capture(publication));
     let mut playing = false;
     let mut recovering: Option<Instant> = None;
@@ -1021,6 +1041,7 @@ async fn capture(
 }
 async fn play(
     track: RemoteAudioTrack,
+    user: Option<String>,
     mut mode: watch::Receiver<AudioMode>,
     notices: DeviceNotices,
 ) -> Result<()> {
@@ -1044,13 +1065,15 @@ async fn play(
             let Some(out) = child.as_mut().and_then(|c| c.stdin.as_mut()) else {
                 continue;
             };
-            bytes.clear();
-            if mode.borrow().deafened {
-                // Keep consuming the live subscription; never queue deafened speech.
-                bytes.resize(frame.data.len() * 2, 0);
-            } else {
-                bytes.extend(frame.data.iter().flat_map(|s| s.to_le_bytes()));
-            }
+            let gain = {
+                let settings = mode.borrow();
+                if settings.deafened {
+                    0
+                } else {
+                    user.as_ref().map_or(100, |u| settings.volume(u))
+                }
+            };
+            playback_pcm(&frame.data, gain, &mut bytes);
             let written = tokio::select! {
                 biased;
                 change=mode.wait_for(changed)=>{change.map_err(|_|ENDED)?;break;}
@@ -1064,9 +1087,36 @@ async fn play(
     }
 }
 
+fn playback_pcm(samples: &[i16], gain: u8, bytes: &mut Vec<u8>) {
+    bytes.clear();
+    match gain {
+        // Keep draining the stream at 0% and while deafened.
+        0 => bytes.resize(samples.len() * 2, 0),
+        100 => bytes.extend(samples.iter().flat_map(|s| s.to_le_bytes())),
+        _ => bytes.extend(samples.iter().flat_map(|&s| {
+            let amplified = i32::from(s) * i32::from(gain) / 100;
+            (amplified.clamp(i16::MIN.into(), i16::MAX.into()) as i16).to_le_bytes()
+        })),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn boosted_playback_clips_peaks_without_inverting_them() {
+        let mut bytes = Vec::new();
+        playback_pcm(&[-20_000, -10_000, 0, 10_000, 20_000], 200, &mut bytes);
+        let pcm: Vec<_> = bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .copied()
+            .map(i16::from_le_bytes)
+            .collect();
+        assert_eq!(pcm, [i16::MIN, -20_000, 0, 20_000, i16::MAX]);
+    }
 
     #[test]
     fn recovery_accepts_lease_renewal_but_not_a_new_call_from_the_same_device() {

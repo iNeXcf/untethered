@@ -225,6 +225,9 @@ def test_group(tmp,hs,name,root,backend,seed,http,secret,*,share=False,camera=Fa
                 print(f"Client {i+1}: sent {TONES[i]} Hz; speaker received {sorted(heard)} Hz, no self tone (12 consecutive 100 ms windows).",flush=True)
             print("Three joined devices, three GCM microphones, two playback streams per client; zero ring or other non-state events.",flush=True)
             if not share and not camera:
+                from qa_room_volume import check_volume
+                check_volume(desks)
+                assert publications(3)==tracks and audio_counts()==[(1,2)]*3
                 check_speaking(desks,names)
                 assert publications(3)==tracks
             if share:

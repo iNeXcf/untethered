@@ -62,6 +62,15 @@ pub fn real_send_error(e: &Value) -> bool {
 }
 impl Room {
     #[cfg(target_os = "linux")]
+    pub fn voice_users(&self) -> BTreeSet<&str> {
+        let now = crate::desktop_call::now();
+        self.voice_members
+            .values()
+            .filter(|(_, expires)| *expires > now)
+            .map(|(user, _)| user.as_str())
+            .collect()
+    }
+    #[cfg(target_os = "linux")]
     pub fn voice_state(&mut self, e: &Value) {
         if !self.voice || e["type"] != untethered_iced::rtc_membership::EVENT_TYPE {
             return;

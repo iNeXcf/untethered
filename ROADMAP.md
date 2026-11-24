@@ -105,7 +105,11 @@
   their original tracks. On all three rendered rosters the **Speaking** label
   followed each mic in turn and cleared after silence. Two simultaneous
   speakers showed two labels; silencing one left the other highlighted.
-  Per-user volume and push-to-talk remain open.
+  **Mixer** adjusts each person's playback level locally. Setting Bruno to
+  25% on Alice's client reduced his decoded tone from 6,994 to 1,748; Clara's
+  tone on Alice stayed at 6,987, and both other listeners' mixes stayed at
+  baseline. Local silence, independent 150% boost and reset also passed.
+  Push-to-talk remains open.
 - **Linux portal window sharing:** [The three-client window test](experiments/rtc-audio/README.md#verify-portal-window-sharing)
   uses a private KDE Wayland picker and PipeWire. Cancelling creates no video
   publication. Selecting a window publishes one GCM screen track; both other

@@ -88,6 +88,10 @@ enum Msg {
     #[cfg(target_os = "linux")]
     AudioDevices,
     #[cfg(target_os = "linux")]
+    ToggleMixer,
+    #[cfg(target_os = "linux")]
+    PeerVolume(uuid::Uuid, String, u8),
+    #[cfg(target_os = "linux")]
     RefreshDevices,
     #[cfg(target_os = "linux")]
     DevicesListed(uuid::Uuid, Result<call_devices::Catalog, &'static str>),
@@ -892,12 +896,38 @@ impl App {
                 }
             }
             #[cfg(target_os = "linux")]
+            Msg::ToggleMixer => {
+                if let Some(call) = &mut self.call
+                    && call.group
+                    && !call.cancel.is_closed()
+                {
+                    call.mixer = !call.mixer;
+                    if call.mixer {
+                        call.picker = false;
+                    }
+                }
+            }
+            #[cfg(target_os = "linux")]
+            Msg::PeerVolume(id, user, percent) => {
+                if let Some(call) = &self.call
+                    && call.group
+                    && call.id == id
+                    && !call.cancel.is_closed()
+                    && user != self.matrix_id
+                {
+                    call.audio.send_if_modified(|s| s.set_volume(user, percent));
+                }
+            }
+            #[cfg(target_os = "linux")]
             Msg::AudioDevices | Msg::RefreshDevices => {
                 if let Some(call) = &mut self.call
                     && !call.cancel.is_closed()
                 {
                     if matches!(msg, Msg::AudioDevices) {
                         call.picker = !call.picker;
+                        if call.picker {
+                            call.mixer = false;
+                        }
                     }
                     if call.picker && !call.loading {
                         call.loading = true;
