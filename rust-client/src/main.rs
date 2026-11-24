@@ -16,6 +16,7 @@ mod inline;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod live_test;
 mod media;
+mod mentions;
 mod moderation;
 #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
 mod notifications;
@@ -134,6 +135,9 @@ enum Msg {
     Stopped(String),
     Section(Section),
     Open(String),
+    OpenMentions,
+    MoreMentions,
+    MentionHit(String, String),
     Draft(text_editor::Action),
     Send,
     Reply(String),
@@ -222,6 +226,7 @@ enum Request {
     Reaction(reactions::Toggle),
     Report,
     Search(String, search::Page),
+    Mentions(mentions::Page),
 }
 struct App {
     #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
@@ -255,6 +260,7 @@ struct App {
     reply_drafts: BTreeMap<String, rooms::Quote>,
     original: Option<replies::Original>,
     search: Option<search::Search>,
+    mentions: Option<mentions::Inbox>,
     editing: Option<edits::Editing>,
     reporting: Option<reports::Draft>,
     reaction_picker: Option<reactions::Picker>,
@@ -333,6 +339,7 @@ impl App {
             reply_drafts: Default::default(),
             original: None,
             search: None,
+            mentions: None,
             editing: None,
             reporting: None,
             reaction_picker: None,
@@ -595,7 +602,11 @@ impl App {
                     .or(data["user_id"].as_str())
                     .unwrap_or("")
                     .into();
-                self.matrix_id = rooms::string(&data["user_id"]);
+                let user = rooms::string(&data["user_id"]);
+                if self.matrix_id != user || !self.verified || !self.logged_in {
+                    self.close_mentions();
+                }
+                self.matrix_id = user;
                 if was != self.logged_in {
                     #[cfg(target_os = "linux")]
                     {
@@ -638,6 +649,7 @@ impl App {
             }
             "sync_complete" => {
                 if data["clear_state"] == true {
+                    self.close_mentions();
                     self.reset_directory();
                     self.leave_permission_panel();
                     self.close_original();
@@ -650,6 +662,14 @@ impl App {
                         .retain(|_, p| !matches!(p, Request::Members(_) | Request::Page(_)));
                 }
                 self.live.sync(data);
+                if self.mentions.is_some()
+                    && (items(&data["left_rooms"]).next().is_some()
+                        || data["rooms"]
+                            .as_object()
+                            .is_some_and(|rs| rs.values().any(|d| self.mention_delta(d))))
+                {
+                    self.refresh_mentions();
+                }
                 #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
                 self.notifications_sync(data);
                 if let Some(rooms) = data["rooms"].as_object() {
@@ -698,6 +718,9 @@ impl App {
                 self.reconcile();
             }
             "events_decrypted" => {
+                if self.mentions.is_some() && self.mention_delta(data) {
+                    self.refresh_mentions();
+                }
                 #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
                 if let Some(room) = data["room_id"].as_str() {
                     self.room_alerts(room, data, true);
@@ -771,10 +794,11 @@ impl App {
                         Request::Membership(f)=>{self.membership_error(f);return}
                         Request::Report=>{self.report_result(false);return}
                         Request::Send(..) => "Could not send. Your draft has been kept.",
-                        Request::Context(..)=>"Could not load the original message. Try again from the reply.",
+                        Request::Context(..)=>"Could not load the selected message. Try opening it again.",
                         Request::Edit(room,id)=>{self.finish_edit(f["request_id"].as_i64().unwrap(),&room,&id,&Value::Null);return}
                         Request::Reaction(op)=>{self.finish_reaction(op,&Value::Null);return}
                         Request::Search(room,kind)=>{self.fail_search(&room,kind);return}
+                        Request::Mentions(_)=>{self.mentions_failed();return}
                     }
                     .into();
                     return;
@@ -817,6 +841,7 @@ impl App {
                     Request::Report => self.report_result(true),
                     Request::Reaction(op) => self.finish_reaction(op, data),
                     Request::Search(room, kind) => self.search_response(room, kind, data),
+                    Request::Mentions(kind) => self.mentions_page(kind, data),
                     Request::Edit(room, id) => {
                         self.finish_edit(f["request_id"].as_i64().unwrap(), &room, &id, data)
                     }
@@ -927,6 +952,7 @@ impl App {
                     && self.live.list.contains_key(&room) =>
             {
                 self.account = false;
+                self.close_mentions();
                 self.section = Section::All;
                 self.clear_search();
                 self.close_original();
@@ -982,6 +1008,7 @@ impl App {
                 self.stopped = true;
                 self.connected = false;
                 self.pending.clear();
+                self.mentions_failed();
                 if let Some(d) = &mut self.editing {
                     d.pending = None;
                 }
@@ -1377,10 +1404,25 @@ impl App {
                 }
             }
             Msg::Section(s) => {
+                self.close_mentions();
                 self.section = s;
                 self.reconcile();
             }
-            Msg::Open(id) => self.open(id),
+            Msg::Open(id) => {
+                self.close_mentions();
+                self.open(id);
+            }
+            Msg::OpenMentions => self.open_mentions(),
+            Msg::MoreMentions => {
+                if let Some(i) = &mut self.mentions {
+                    i.shown = i.shown.saturating_add(50);
+                }
+            }
+            Msg::MentionHit(room, id) => {
+                if self.open_mention(room, id) && self.original.is_some() {
+                    return self.anchor_history();
+                }
+            }
             Msg::TogglePeople => {
                 self.people = !self.people;
                 self.reset_directory();
@@ -1399,7 +1441,10 @@ impl App {
                 self.read_directory(None);
             }
             Msg::Moderate(c) => self.moderate(c),
-            Msg::Account => self.account = true,
+            Msg::Account => {
+                self.close_mentions();
+                self.account = true;
+            }
             Msg::Back => self.account = false,
             Msg::Server(s) => self.server = s,
             Msg::Username(s) => self.username = s,
@@ -1688,6 +1733,8 @@ impl App {
     fn title(&self) -> String {
         let page = if self.account || self.logged_in && !self.verified {
             "Account"
+        } else if self.mentions.is_some() {
+            "Mentions"
         } else {
             self.rooms()
                 .list

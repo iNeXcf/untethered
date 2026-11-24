@@ -23,7 +23,7 @@ def screen_words(raw):
             for line in t.decode().splitlines() if len(s:=line.split("\t"))==12 and s[0]=="5"]
 
 
-def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False,room_search=False,alerts=False,permissions=False,ban=False,kick=False,report=False,report_web=None,peer_hs=None):
+def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False,room_search=False,alerts=False,permissions=False,ban=False,kick=False,report=False,client_web=None,mentions=False,peer_hs=None):
     paths=[]
     def observe(method,path):
         if room_search or method=="GET" and "/context/" in path:paths.append(unquote(path))
@@ -49,7 +49,7 @@ def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False,room_searc
         member_api=(peer_hs or hs)+"/_matrix/client/v3/rooms/"+quote(room,safe="")
         if not report:http("POST",member_api+"/join",headers=bh,json={})
         web=stack.enter_context(element_server(peer_hs or hs,server_name=uid.split(":",1)[1]));pw=stack.enter_context(sync_playwright())
-        flags=["--enable-unsafe-swiftshader","--ignore-gpu-blocklist"] if report_web else []
+        flags=["--enable-unsafe-swiftshader","--ignore-gpu-blocklist"] if client_web else []
         browser=pw.chromium.launch(executable_path=os.environ.get("CHROMIUM") or shutil.which("chromium"),
                                    args=["--disable-dev-shm-usage",*flags]);stack.callback(browser.close)
         ctx=browser.new_context(viewport={"width":1280,"height":920},locale="en-US")
@@ -70,13 +70,23 @@ def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False,room_searc
             try:return wait_for(what,lambda:fn(words()),15)
             except RuntimeError:
                 print("Client visible words:",[w for w,_,_ in words()],flush=True);raise
-        if report_web:
+        if client_web:
             from qa_message_report import check_reports
             from qa_web_login import login_client
             reporter_ctx=browser.new_context(viewport={"width":1180,"height":760})
             client=reporter_ctx.new_page()
-            login_client(client,report_web,native)
+            login_client(client,client_web,native)
             def words():return screen_words(client.screenshot())
+            if mentions:
+                from qa_mentions_inbox import check_inbox
+                def restart():
+                    nonlocal client
+                    client.close()
+                    client=reporter_ctx.new_page()
+                    client.goto(client_web,wait_until="commit")
+                    client.wait_for_function("document.title.includes('media-proof')",timeout=45000)
+                check_inbox(hs,page,room,hdr,http,restart,locate,lambda pos:client.mouse.click(*pos),paths)
+                return
             def enter(n=1):
                 for _ in range(n):client.keyboard.press("Enter")
             check_reports(tmp,hs,api,room,page,hdr,http,messages,locate,lambda pos:client.mouse.click(*pos),
@@ -104,6 +114,14 @@ def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False,room_searc
             return screen_words(sp.check_output(["import","-window",win,"png:-"],env=env,timeout=6))
         def click(pos):x("mousemove","--window",win,*map(str,pos),"click","1")
         def lines(words,label):return [(x,y) for v,x,y in words if v==label and x>280]
+        if mentions:
+            from qa_mentions_inbox import check_inbox
+            def restart():
+                nonlocal win
+                native_life.close()
+                win=launch()
+            check_inbox(hs,page,room,hdr,http,restart,locate,click,paths)
+            return
         if report:
             from qa_message_report import check_reports
             check_reports(tmp,hs,api,room,page,hdr,http,messages,locate,click,lambda s:x("type","--clearmodifiers",s),

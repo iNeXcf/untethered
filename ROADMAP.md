@@ -207,6 +207,15 @@
   event. No message was removed or report posted in chat. In-client
   moderation history and the wider community workflows remain open.
 
+- **Cross-room mentions inbox:** [Two-account tests on Linux and Chromium](scripts/mentions-inbox.md)
+  opened two encrypted rooms with identical mention text. After restarting
+  the native client or closing and reopening the browser tab, the inbox
+  showed each direct mention once and one added by an edit. Ordinary,
+  room-wide, other-recipient and edit-removed mentions were excluded.
+  With 70 readable messages per room, all three selections fetched the exact
+  room/event and displayed its neighboring message. Leaving a room removed
+  only its two entries from the open inbox.
+
 ## What parity means
 
 A small community should be able to move its everyday conversations here: find a server and its channels, talk in DMs, drop a screenshot, join friends in voice, share a screen, catch up on mentions, and moderate its space. Test those workflows side by side with Discord. A button that looks right but doesn't work with another Matrix client isn't parity.

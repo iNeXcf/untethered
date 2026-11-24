@@ -55,6 +55,13 @@ Matrix account. While Untethered is running, alerts go to the desktop
 notification service; the room you’re currently viewing in a focused
 window doesn’t also show a popup.
 
+**Mentions inbox:** Choose **Mentions** in the sidebar to see messages that
+address your Matrix ID across joined rooms. Select an entry to open that
+exact message in context. The inbox uses history readable on this device,
+including encrypted messages, and survives restart. It updates while open;
+a room-wide ping or a message that only spells out your ID is not a direct
+mention. [Verified on Linux desktop and Chromium](scripts/mentions-inbox.md).
+
 **Report a message:** Select **Report** beside someone else’s message, enter
 a reason, and choose **Submit report**. The report goes to your homeserver
 administrator. In an encrypted room, the administrator can read your reason;

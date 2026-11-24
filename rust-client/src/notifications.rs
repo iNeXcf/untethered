@@ -308,6 +308,7 @@ impl App {
             let reading = focused
                 && self.selected == id
                 && !self.account
+                && self.mentions.is_none()
                 && self.search.is_none()
                 && self.original.is_none();
             self.alerts

@@ -1,4 +1,5 @@
 use super::{App, Msg, Request, Section, rooms::Room};
+mod mentions;
 mod reaction_bar;
 mod room_people;
 mod room_search;
@@ -513,7 +514,7 @@ impl App {
             } else {
                 "#"
             };
-            let active = id == &self.selected;
+            let active = self.mentions.is_none() && id == &self.selected;
             let entry = row![
                 text(prefix).size(22).color(DIM),
                 text(&r.name)
@@ -586,21 +587,47 @@ impl App {
         .width(Fill)
         .on_press(Msg::Account)
         .style(nav(false));
-        let side = container(column![
-            head,
-            rule::horizontal(1),
-            container(label(if self.section == Section::Direct {
-                "DIRECT MESSAGES"
-            } else {
-                "CHANNELS"
-            }))
-            .padding([14, 16]),
-            scrollable(links).height(Fill),
-            container(user).width(Fill).style(|_| surface(TRAY, 0.))
-        ])
+        let mut sidebar = column![head, rule::horizontal(1)];
+        if self.logged_in && self.verified {
+            sidebar = sidebar.push(
+                button(text("Mentions").size(15))
+                    .width(Fill)
+                    .padding([7, 16])
+                    .style(nav(self.mentions.is_some()))
+                    .on_press(Msg::OpenMentions),
+            );
+        }
+        let side = container(
+            sidebar
+                .push(
+                    container(label(if self.section == Section::Direct {
+                        "DIRECT MESSAGES"
+                    } else {
+                        "CHANNELS"
+                    }))
+                    .padding([14, 16]),
+                )
+                .push(scrollable(links).height(Fill))
+                .push(container(user).width(Fill).style(|_| surface(TRAY, 0.))),
+        )
         .width(211)
         .height(Fill)
         .style(|_| surface(SIDE, 0.));
+        if let Some(i) = &self.mentions {
+            let panel = Column::new();
+            #[cfg(target_os = "linux")]
+            let panel = panel.extend(self.incoming_banner()).extend(self.call_bar());
+            return row![
+                rail,
+                side,
+                container(panel.push(mentions::view(self, i)))
+                    .width(Fill)
+                    .height(Fill)
+                    .style(|_| surface(CHAT, 0.))
+            ]
+            .height(Fill)
+            .into();
+        }
         let room = store.list.get(&self.selected);
         let channel = room.map(|r| r.name.as_str()).unwrap_or("Rooms");
         let header = row![

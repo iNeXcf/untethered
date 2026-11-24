@@ -97,6 +97,11 @@ impl Replacements {
     }
 }
 impl Post {
+    pub fn current_mentions(&self) -> &Value {
+        self.revision
+            .as_ref()
+            .map_or(&self.mentions, |r| &r.mentions)
+    }
     pub fn text(&self) -> &str {
         self.revision.as_ref().map_or(&self.body, |r| &r.body)
     }
@@ -166,10 +171,7 @@ impl App {
         if body.trim().is_empty() || body == post.text() {
             return;
         }
-        let mentions = post
-            .revision
-            .as_ref()
-            .map_or(&post.mentions, |r| &r.mentions);
+        let mentions = post.current_mentions();
         let mut new = json!({"body":body,"msgtype":"m.text"});
         if mentions.is_object() {
             new["m.mentions"] = mentions.clone();

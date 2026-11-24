@@ -45,7 +45,12 @@ impl InlineImages {
 
 impl App {
     pub fn schedule_inline(&mut self) -> Task<Msg> {
-        if !self.logged_in || !self.verified || self.account || !self.connected {
+        if !self.logged_in
+            || !self.verified
+            || self.account
+            || self.mentions.is_some()
+            || !self.connected
+        {
             return Task::none();
         }
         let Some(room) = self.live.list.get(&self.selected) else {

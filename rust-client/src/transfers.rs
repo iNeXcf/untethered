@@ -35,7 +35,10 @@ impl App {
         }))
     }
     pub fn can_stage(&self) -> bool {
-        !self.account && !self.selected.is_empty() && (!self.logged_in || self.verified)
+        !self.account
+            && self.mentions.is_none()
+            && !self.selected.is_empty()
+            && (!self.logged_in || self.verified)
     }
     pub fn send_files(&mut self, room: String, caption: String) {
         if !self.can_stage() || self.batch.is_some() {
