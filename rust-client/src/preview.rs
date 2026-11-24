@@ -40,15 +40,18 @@ pub async fn load(file: LocalFile) -> Option<Handle> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn native_thumbnail(source: &LocalFile) -> Option<Handle> {
-    use image::{DynamicImage, ImageDecoder, ImageReader, Limits};
     let f = std::fs::File::open(&source.path).ok()?;
     let meta = f.metadata().ok()?;
     if !meta.is_file() || meta.len() != source.size || meta.len() > MAX_SOURCE_BYTES {
         return None;
     }
-    let mut reader = ImageReader::new(std::io::BufReader::new(f))
-        .with_guessed_format()
-        .ok()?;
+    decode(std::io::BufReader::new(f), WIDTH, HEIGHT)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn decode(input: impl std::io::BufRead + std::io::Seek, width: u32, height: u32) -> Option<Handle> {
+    use image::{DynamicImage, ImageDecoder, ImageReader, Limits};
+    let mut reader = ImageReader::new(input).with_guessed_format().ok()?;
     let mut limits = Limits::default();
     limits.max_image_width = Some(16_384);
     limits.max_image_height = Some(16_384);
@@ -64,8 +67,8 @@ fn native_thumbnail(source: &LocalFile) -> Option<Handle> {
     if let Some(o) = orientation {
         img.apply_orientation(o);
     }
-    let small = if img.width() > WIDTH || img.height() > HEIGHT {
-        img.thumbnail(WIDTH, HEIGHT)
+    let small = if img.width() > width || img.height() > height {
+        img.thumbnail(width, height)
     } else {
         img
     }
@@ -77,24 +80,42 @@ fn native_thumbnail(source: &LocalFile) -> Option<Handle> {
     ))
 }
 
+pub const INLINE_WIDTH: u32 = 400;
+pub const INLINE_HEIGHT: u32 = 260;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn inline(bytes: Vec<u8>) -> Option<Handle> {
+    let _permit = DECODERS.acquire().await;
+    tokio::task::spawn_blocking(move || {
+        decode(std::io::Cursor::new(bytes), INLINE_WIDTH, INLINE_HEIGHT)
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
 #[cfg(target_arch = "wasm32")]
 async fn browser_thumbnail(source: &LocalFile) -> Option<Handle> {
+    blob_thumbnail(&source.file, WIDTH, HEIGHT).await
+}
+#[cfg(target_arch = "wasm32")]
+pub async fn blob_thumbnail(source: &web_sys::Blob, width: u32, height: u32) -> Option<Handle> {
     use wasm_bindgen_futures::JsFuture;
     // Read only the header before letting the browser decode the raster. In
     // particular a renamed SVG or a huge raster never enters the drawing path.
-    let head = source.file.slice_with_f64_and_f64(0., 262144.).ok()?;
+    let head = source.slice_with_f64_and_f64(0., 262144.).ok()?;
     let bytes = js_sys::Uint8Array::new(&JsFuture::from(head.array_buffer()).await.ok()?).to_vec();
     let dims = imagesize::blob_size(&bytes).ok()?;
     if !valid_size(dims.width.try_into().ok()?, dims.height.try_into().ok()?) {
         return None;
     }
-    let pixels = crate::web_files::thumbnail(&source.file, WIDTH, HEIGHT)
+    let pixels = crate::web_files::thumbnail(source, width, height)
         .await
         .ok()?;
-    if pixels.length() != WIDTH * HEIGHT * 4 {
+    if pixels.length() != width * height * 4 {
         return None;
     }
-    Some(Handle::from_rgba(WIDTH, HEIGHT, pixels.to_vec()))
+    Some(Handle::from_rgba(width, height, pixels.to_vec()))
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

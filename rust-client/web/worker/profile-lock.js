@@ -11,7 +11,9 @@ export async function withProfileLock(start) {
         if (!port) return;
         const fail=()=>{port.postMessage(null);port.close();};
         try {
-            self.meowDownloadMedia(event.data.path,"?encrypted="+Boolean(event.data.encrypted),{
+            const query = new URLSearchParams({encrypted: String(Boolean(event.data.encrypted))});
+            if (event.data.limit) query.set("untethered_preview", "true");
+            self.meowDownloadMedia(event.data.path,query.toString(),{
                 resolve: ({buffer})=>{port.postMessage(buffer,[buffer.buffer]);port.close();},
                 reject: fail,
             });

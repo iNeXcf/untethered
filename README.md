@@ -50,6 +50,12 @@ Uploads are sequential, with up to 10 staged files per room and a 64 MiB/file ca
 (lower if the homeserver advertises a smaller limit). Click **Save** on a received
 attachment. Preview mode simulates a send locally; it never uploads.
 
+Received images show an inline thumbnail in the active conversation. The client
+uses encrypted Matrix thumbnails when available, or decodes a small original
+(up to 4 MiB) via gomuks. **Save** still downloads the original. The repeatable
+`scripts/test-media-interop.py` test checks actual pixels in an independent browser
+device after both login and reload against a disposable Synapse.
+
 **Calls (experimental):** Open your account via the bottom-left profile button and
 choose **Check call server support** to query gomuks for MatrixRTC transports.
 This checks discovery only; it doesn't ring anyone or open a microphone.

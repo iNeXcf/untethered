@@ -103,7 +103,15 @@ pub struct Media {
     pub size: Option<u64>,
     pub mxc: String,
     pub encrypted: bool,
+    pub preview: Option<PreviewRef>,
 }
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct PreviewRef {
+    pub mxc: String,
+    pub encrypted: bool,
+}
+// Cap the bytes read, not just the size claimed in the Matrix event.
+pub const INLINE_BYTES: usize = 4 * 1024 * 1024;
 impl Media {
     pub fn parse(content: &Value) -> Option<Self> {
         if !matches!(
@@ -120,6 +128,37 @@ impl Media {
         }
         .as_str()?;
         media_path(mxc)?;
+        let info = &content["info"];
+        let size = info["size"].as_u64();
+        let preview = (content["msgtype"] == "m.image")
+            .then(|| {
+                let thumbnail = info["thumbnail_file"]["url"]
+                    .as_str()
+                    .map(|s| (s, true))
+                    .or_else(|| {
+                        if encrypted {
+                            None
+                        } else {
+                            info["thumbnail_url"].as_str().map(|s| (s, false))
+                        }
+                    });
+                let picked = thumbnail
+                    .filter(|(s, _)| {
+                        media_path(s).is_some()
+                            && info["thumbnail_info"]["size"]
+                                .as_u64()
+                                .is_none_or(|n| n <= INLINE_BYTES as u64)
+                    })
+                    .or_else(|| {
+                        size.filter(|n| *n <= INLINE_BYTES as u64)
+                            .map(|_| (mxc, encrypted))
+                    })?;
+                Some(PreviewRef {
+                    mxc: picked.0.to_owned(),
+                    encrypted: picked.1,
+                })
+            })
+            .flatten();
         // Never use a sender-supplied path as a save destination.
         let name = content["filename"]
             .as_str()
@@ -135,7 +174,8 @@ impl Media {
             .collect::<String>();
         Some(Self {
             name,
-            size: content["info"]["size"].as_u64(),
+            size,
+            preview,
             mxc: mxc.into(),
             encrypted,
         })
@@ -191,5 +231,31 @@ mod tests {
                 "/tmp/c.pdf".into()
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn encrypted_image_prefers_encrypted_thumbnail_and_never_uses_unencrypted_sidecar() {
+        let mut data = json!({"msgtype":"m.image","file":{"url":"mxc://s/original"},"info":{
+            "size":12345,"thumbnail_file":{"url":"mxc://s/small"},"thumbnail_url":"mxc://s/plain"}});
+        let preview = Media::parse(&data).unwrap().preview.unwrap();
+        assert_eq!(
+            (preview.mxc.as_str(), preview.encrypted),
+            ("mxc://s/small", true)
+        );
+        data["info"]
+            .as_object_mut()
+            .unwrap()
+            .remove("thumbnail_file");
+        assert_eq!(
+            Media::parse(&data).unwrap().preview.unwrap().mxc,
+            "mxc://s/original"
+        );
+        data["info"]["size"] = json!(INLINE_BYTES + 1);
+        assert!(Media::parse(&data).unwrap().preview.is_none());
     }
 }

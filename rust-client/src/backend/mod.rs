@@ -12,6 +12,10 @@ pub use web::run;
 
 pub enum Command {
     Rpc(Value),
+    Inline {
+        source: crate::media::PreviewRef,
+        result: Sender<Option<iced::widget::image::Handle>>,
+    },
     Upload {
         id: i64,
         file: crate::media::LocalFile,

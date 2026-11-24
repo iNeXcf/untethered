@@ -157,13 +157,20 @@ pub async fn run(commands: Commands, events: Events) -> Result<(), String> {
             }
             cmd = commands.recv() => match cmd {
                 Ok(Operation::Rpc(v))=>v,
+                Ok(Operation::Inline{source,result})=>{
+                    let http=http.clone();let cookie=cookie.clone();
+                    transfers.spawn(async move{
+                        let image=inline(&http,addr,&cookie,source).await;
+                        let _=result.send(image).await;
+                    });continue
+                }
                 Ok(op)=>{
                     let http=http.clone();let cookie=cookie.clone();let events=events.clone();
                     transfers.spawn(async move {
                         let (id,result)=match op {
                             Operation::Upload{id,file,encrypt,limit} => (id,upload(&http,addr,&cookie,file,encrypt,limit).await),
                             Operation::Download{id,media,destination} => (id,download(&http,addr,&cookie,media,destination).await),
-                            Operation::Rpc(_)=>unreachable!(),
+                            Operation::Rpc(_) | Operation::Inline{..}=>unreachable!(),
                         };
                         let (cmd,data)=match result {Ok(v)=>("response",v),Err(why)=>("error",json!(why))};
                         let _=events.send(json!({"command":cmd,"request_id":id,"data":data})).await;
@@ -200,6 +207,40 @@ pub async fn run(commands: Commands, events: Events) -> Result<(), String> {
     }
     let _ = child.kill().await;
     Ok(())
+}
+
+async fn inline(
+    http: &reqwest::Client,
+    addr: SocketAddr,
+    cookie: &str,
+    source: crate::media::PreviewRef,
+) -> Option<iced::widget::image::Handle> {
+    use crate::media::{INLINE_BYTES, media_path};
+    let path = media_path(&source.mxc)?;
+    let mut resp = http
+        .get(format!("http://{addr}{path}"))
+        .header("Cookie", cookie)
+        .query(&[("encrypted", source.encrypted)])
+        .timeout(Duration::from_secs(30))
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?;
+    if resp
+        .content_length()
+        .is_some_and(|n| n > INLINE_BYTES as u64)
+    {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = resp.chunk().await.ok()? {
+        if chunk.len() > INLINE_BYTES - bytes.len() {
+            return None;
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    crate::preview::inline(bytes).await
 }
 
 async fn upload(

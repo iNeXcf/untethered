@@ -43,16 +43,22 @@ export async function thumbnail(file, width, height) {
         return new Uint8Array(ctx.getImageData(0,0,width,height).data.buffer);
     } finally { bitmap.close(); }
 }
-export async function save_media(worker, path, encrypted, name) {
+async function mediaBytes(worker, path, encrypted, limit) {
     const channel = new MessageChannel();
-    const bytes = await new Promise((resolve, reject) => {
+    return await new Promise((resolve, reject) => {
         const timer = setTimeout(() => {channel.port1.close(); reject(new Error("Download timed out"));},120000);
         channel.port1.onmessage = ({data}) => {
             clearTimeout(timer); channel.port1.close();
-            if (data instanceof Uint8Array) resolve(data); else reject(new Error("Download failed"));
+            if (data instanceof Uint8Array && (!limit || data.length <= limit)) resolve(data); else reject(new Error("Download failed"));
         };
-        worker.postMessage({command:"untethered-download",path,encrypted},[channel.port2]);
+        worker.postMessage({command:"untethered-download",path,encrypted,limit},[channel.port2]);
     });
+}
+export async function inline_blob(worker,path,encrypted,limit) {
+    return new Blob([await mediaBytes(worker,path,encrypted,limit)]);
+}
+export async function save_media(worker, path, encrypted, name) {
+    const bytes=await mediaBytes(worker,path,encrypted,0);
     const url = URL.createObjectURL(new Blob([bytes],{type:"application/octet-stream"}));
     const link=document.createElement("a");link.href=url;link.download=name || "attachment";
     document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);

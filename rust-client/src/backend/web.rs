@@ -94,6 +94,17 @@ pub async fn run(commands: Commands, events: Events) -> Result<(), String> {
                     let Ok(command) = command else { return Ok(()) };
                     let command=match command {
                         super::Command::Rpc(value)=>value,
+                        super::Command::Inline{source,result}=>{
+                            let worker=worker.clone();
+                            wasm_bindgen_futures::spawn_local(async move{
+                                let image=async{
+                                    let path=crate::media::media_path(&source.mxc)?;
+                                    let blob=crate::web_files::inline_blob(&worker,&path,source.encrypted,crate::media::INLINE_BYTES as u32).await.ok()?;
+                                    crate::preview::blob_thumbnail(&blob,crate::preview::INLINE_WIDTH,crate::preview::INLINE_HEIGHT).await
+                                }.await;
+                                let _=result.send(image).await;
+                            });continue;
+                        }
                         super::Command::Upload{id,file,encrypt,limit}=>{
                             let worker=worker.clone();let events=events.clone();
                             wasm_bindgen_futures::spawn_local(async move{

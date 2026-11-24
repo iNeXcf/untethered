@@ -5,6 +5,7 @@ mod backend;
 mod browser_verification;
 #[cfg(not(target_arch = "wasm32"))]
 mod fonts;
+mod inline;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod live_test;
 mod media;
@@ -48,6 +49,8 @@ enum Msg {
     PickFiles,
     RemoveFile(u64),
     SaveFile(media::Media),
+    InlineReady(u64, media::PreviewRef, Option<iced::widget::image::Handle>),
+    ShowInline(media::PreviewRef),
     #[cfg(not(target_arch = "wasm32"))]
     SaveTo(media::Media, Option<std::path::PathBuf>),
     CheckCalls,
@@ -103,6 +106,7 @@ enum Request {
 struct App {
     commands: Sender<backend::Command>,
     outbox: media::Outbox,
+    inline: inline::InlineImages,
     batch: Option<transfers::Batch>,
     hover_files: bool,
     media_limit: u64,
@@ -153,6 +157,7 @@ impl App {
         Self {
             commands,
             outbox: Default::default(),
+            inline: Default::default(),
             batch: None,
             hover_files: false,
             media_limit: media::MAX_BYTES,
@@ -361,6 +366,7 @@ impl App {
                     self.section = Section::All;
                     self.account = !self.logged_in;
                     self.outbox.rooms.clear();
+                    self.inline.reset();
                     self.batch = None;
                     self.rtc_status.clear();
                     self.media_limit = media::MAX_BYTES;
@@ -532,7 +538,27 @@ impl App {
         }
     }
     fn update(&mut self, msg: Msg) -> Task<Msg> {
+        let refresh_inline = match &msg {
+            Msg::Frame(f) => matches!(
+                f["command"].as_str(),
+                Some(
+                    "response"
+                        | "sync_complete"
+                        | "events_decrypted"
+                        | "client_state"
+                        | "send_complete"
+                )
+            ),
+            Msg::Open(_)
+            | Msg::Section(_)
+            | Msg::Back
+            | Msg::InlineReady(..)
+            | Msg::ShowInline(_) => true,
+            _ => false,
+        };
         match msg {
+            Msg::InlineReady(epoch, key, img) => self.inline.complete(epoch, key, img),
+            Msg::ShowInline(key) => self.inline.request(key),
             Msg::Frame(f) => self.frame(f),
             Msg::Stopped(s) => {
                 self.stopped = true;
@@ -849,7 +875,11 @@ impl App {
                 doc.set_title(&title);
             }
         }
-        Task::none()
+        if refresh_inline {
+            self.schedule_inline()
+        } else {
+            Task::none()
+        }
     }
     fn title(&self) -> String {
         let page = if self.account || self.logged_in && !self.verified {

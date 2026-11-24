@@ -11,10 +11,17 @@ extern "C" {
     pub fn pick(room: &str);
     #[wasm_bindgen(catch)]
     pub async fn thumbnail(
-        file: &web_sys::File,
+        file: &web_sys::Blob,
         width: u32,
         height: u32,
     ) -> Result<js_sys::Uint8Array, JsValue>;
+    #[wasm_bindgen(catch)]
+    pub async fn inline_blob(
+        worker: &Worker,
+        path: &str,
+        encrypted: bool,
+        limit: u32,
+    ) -> Result<web_sys::Blob, JsValue>;
     #[wasm_bindgen(catch)]
     pub async fn post_upload(
         worker: &Worker,

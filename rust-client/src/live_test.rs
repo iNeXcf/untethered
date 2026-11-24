@@ -137,6 +137,71 @@ async fn encrypted_round_trip_and_restart() {
     })
     .await;
     assert_eq!(std::fs::read(saved).unwrap(), original);
+    // Send a recognizable image, then read it through the same encrypted
+    // preview path used by the timeline. A second browser device checks the
+    // rendered pixels independently in scripts/test-media-interop.py.
+    let path = dir.path().join("inline-proof.png");
+    image::RgbImage::from_fn(640, 240, |x, _| {
+        image::Rgb(if x < 320 {
+            [226, 36, 139]
+        } else {
+            [12, 217, 174]
+        })
+    })
+    .save(&path)
+    .unwrap();
+    let _ = app.update(Msg::Files(
+        id.into(),
+        vec![media::LocalFile::from_path(path).unwrap()],
+    ));
+    let _ = app.update(Msg::Send);
+    wait(&mut app, &rx, "confirmed encrypted image", |a| {
+        a.batch.is_none()
+            && a.outbox.rooms.is_empty()
+            && a.live.list[id].history.values().any(|p| {
+                p.media
+                    .as_ref()
+                    .is_some_and(|m| m.name == "inline-proof.png")
+            })
+    })
+    .await;
+    let source = app.live.list[id]
+        .history
+        .values()
+        .filter_map(|p| p.media.as_ref())
+        .find(|m| m.name == "inline-proof.png")
+        .unwrap()
+        .preview
+        .clone()
+        .unwrap();
+    assert!(source.encrypted);
+    let (result, received) = async_channel::bounded(1);
+    assert!(
+        app.commands
+            .send(backend::Command::Inline { source, result })
+            .await
+            .is_ok()
+    );
+    let handle = tokio::time::timeout(Duration::from_secs(35), received.recv())
+        .await
+        .unwrap()
+        .unwrap()
+        .expect("native encrypted thumbnail");
+    let iced::widget::image::Handle::Rgba {
+        width,
+        height,
+        pixels,
+        ..
+    } = handle
+    else {
+        panic!("not a thumbnail")
+    };
+    assert_eq!((width, height), (400, 150));
+    assert_eq!(&pixels[..3], &[226, 36, 139]);
+    assert_eq!(&pixels[(width as usize - 1) * 4..][..3], &[12, 217, 174]);
+    println!(
+        "Native: confirmed encrypted upload, byte-identical file save and verified 400x150 two-colour thumbnail."
+    );
     app.commands.close();
     engine.await.unwrap().unwrap();
 }

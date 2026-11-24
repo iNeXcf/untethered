@@ -521,6 +521,31 @@ impl App {
             }
             prev = Some((&p.sender, p.time, day));
             if let Some(file) = &p.media {
+                if let Some(source) = &file.preview {
+                    let preview: El = if let Some(handle) = self.inline.ready(source) {
+                        image(handle)
+                            .width(320)
+                            .height(208)
+                            .content_fit(iced::ContentFit::Contain)
+                            .border_radius(8)
+                            .into()
+                    } else if self.inline.pending(source) {
+                        text("Loading image…").size(12).color(DIM).into()
+                    } else {
+                        button(
+                            text(if self.inline.failed(source) {
+                                "Retry image preview"
+                            } else {
+                                "Show image preview"
+                            })
+                            .size(12),
+                        )
+                        .on_press(Msg::ShowInline(source.clone()))
+                        .style(nav(false))
+                        .into()
+                    };
+                    feed = feed.push(row![Space::new().width(36), preview].spacing(13));
+                }
                 feed = feed.push(
                     row![
                         Space::new().width(36),

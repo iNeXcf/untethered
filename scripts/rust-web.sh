@@ -11,9 +11,12 @@ if [[ ! -d "$src" ]]; then
     git clone --depth=1 --branch "v$GOMUKS_VERSION" https://github.com/gomuks/gomuks.git "$src"
 fi
 [[ $(git -C "$src" rev-parse HEAD) == "$GOMUKS_COMMIT" ]] || { echo 'Unexpected gomuks checkout' >&2; exit 1; }
+cp "$src/cmd/wasmuks/media.go" "$stage/media.go"
+patch --batch --fuzz=0 "$stage/media.go" < rust-client/web/worker/media-limit.patch
+node -e 'const [src,stage]=process.argv.slice(1); process.stdout.write(JSON.stringify({Replace:{[src+"/cmd/wasmuks/media.go"]:stage+"/media.go"}}))' "$src" "$stage" > "$stage/overlay.json"
 (
     cd "$src/web"
-    GOMAXPROCS=3 GOFLAGS=-p=3 sh build-wasm.sh
+    GOMAXPROCS=3 GOFLAGS="-p=3 '-overlay=$stage/overlay.json'" sh build-wasm.sh
 )
 cp "$src/web/src/api/wasm/"{wasmuks.ts,sqlite_bridge.ts,_gomuks.wasm} "$stage/"
 cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" "$stage/go_wasm_exec.js"
