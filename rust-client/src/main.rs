@@ -3,6 +3,8 @@ mod account;
 mod backend;
 #[cfg(target_arch = "wasm32")]
 mod browser_verification;
+#[cfg(not(target_arch = "wasm32"))]
+mod fonts;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod live_test;
 mod rooms;
@@ -603,6 +605,8 @@ impl App {
     }
 }
 fn main() -> iced::Result {
+    #[cfg(not(target_arch = "wasm32"))]
+    fonts::configure();
     iced::application(App::boot, App::update, App::view)
         .title(App::title)
         .font(include_bytes!("../assets/LiberationSans-Regular.ttf").as_slice())
