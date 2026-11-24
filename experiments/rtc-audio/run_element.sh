@@ -10,5 +10,5 @@ exec unshare -Urn sh -ec '
     ip link add rtc-test type dummy
     ip addr add 192.0.2.2/24 dev rtc-test
     ip link set rtc-test up
-    exec "${PYTHON:-python3}" scripts/test-media-interop.py --rtc-audio
-'
+    exec "${PYTHON:-python3}" scripts/test-media-interop.py "${1:---rtc-audio}"
+' rtc "$@"

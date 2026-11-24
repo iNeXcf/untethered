@@ -2,16 +2,9 @@
 //! never from the browser observer or the runner's SFU signing secret.
 use super::{publish, receive};
 use anyhow::{Context, Result, bail, ensure};
-use base64::{
-    Engine as _,
-    engine::general_purpose::{STANDARD, STANDARD_NO_PAD},
-};
 use futures_util::{SinkExt, StreamExt};
 use livekit::{
-    e2ee::{
-        E2eeOptions, EncryptionType,
-        key_provider::{KeyDerivationAlgorithm, KeyProvider, KeyProviderOptions},
-    },
+    e2ee::{E2eeOptions, EncryptionType},
     prelude::*,
 };
 use serde_json::{Value, json};
@@ -22,21 +15,12 @@ use tokio_tungstenite::{
     tungstenite::{Message, client::IntoClientRequest},
 };
 
+#[path = "../../../rust-client/src/rtc_keys.rs"]
+mod keys;
 #[path = "../../../rust-client/src/rtc_membership.rs"]
 mod membership;
-
-const KEY: &str = "io.element.call.encryption_keys";
-struct SenderKey {
-    index: u8,
-    bytes: [u8; 32],
-}
+use keys::{EVENT as KEY, SenderKey};
 impl SenderKey {
-    fn fresh(index: u8) -> Result<Self> {
-        let mut bytes = [0; 32];
-        getrandom::fill(&mut bytes).map_err(|_| anyhow::anyhow!("OS randomness unavailable"))?;
-        Ok(Self { index, bytes })
-    }
-
     async fn share(
         &self,
         rpc: &mut Rpc,
@@ -46,11 +30,9 @@ impl SenderKey {
         peer: &str,
         peer_device: &str,
     ) -> Result<()> {
-        let key = json!({"index":self.index,"key":STANDARD.encode(self.bytes)});
-        let content = json!({"room_id":room,"member_id":member,"member":{"id":member,"claimed_device_id":device},"media_key":key,"keys":key});
         rpc.call(
             "send_to_device",
-            json!({"event_type":KEY,"encrypted":true,"messages":{peer:{peer_device:content}}}),
+            self.to_device(room, member, device, peer, peer_device),
         )
         .await?;
         Ok(())
@@ -201,31 +183,20 @@ pub async fn run() -> Result<()> {
     ensure!(url == "ws://127.0.0.1:18820", "unexpected test SFU");
     let jwt = authorization["jwt"].as_str().context("missing SFU token")?;
     println!("Native: obtained SFU authorization with the verified gomuks device's OpenID token.");
-    let mine = SenderKey::fresh(0)?;
+    let mine = SenderKey::fresh(0).map_err(anyhow::Error::msg)?;
     let (index, theirs) = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             for e in rpc.keys.drain(..) {
                 let c = &e["content"];
-                if e["sender"] != peer
-                    || c["room_id"] != room
-                    || c["member"]["claimed_device_id"] != peer_device
-                    || c.get("member_id").unwrap_or(&c["member"]["id"]) != peer_member
-                {
+                if e["sender"] != peer || c["room_id"] != room {
                     continue;
                 }
-                let key = c.get("media_key").unwrap_or(&c["keys"]);
-                let idx = key["index"].as_u64().context("bad key index")?;
-                ensure!(idx < 255, "native keyring does not support this index");
-                let encoded = key["key"].as_str().context("missing key")?;
-                let bytes = STANDARD
-                    .decode(encoded)
-                    .or_else(|_| STANDARD_NO_PAD.decode(encoded))?;
-                ensure!(
-                    matches!(bytes.len(), 16 | 32) && bytes != mine.bytes,
-                    "invalid remote sender key length: {}",
-                    bytes.len()
-                );
-                return Ok::<_, anyhow::Error>((idx as i32, bytes));
+                if let Some((idx, bytes)) =
+                    keys::receive(c, peer_device, peer_member).map_err(anyhow::Error::msg)?
+                {
+                    ensure!(bytes != mine.bytes, "sender keys must be distinct");
+                    return Ok::<_, anyhow::Error>((idx, bytes));
+                }
             }
             rpc.frame().await?;
         }
@@ -235,12 +206,7 @@ pub async fn run() -> Result<()> {
     println!(
         "Native: received Element's distinct sender key from gomuks via Olm at index {index}."
     );
-    let provider = KeyProvider::new(KeyProviderOptions {
-        key_derivation_algorithm: KeyDerivationAlgorithm::HKDF,
-        ratchet_window_size: 10,
-        key_ring_size: 255,
-        ..Default::default()
-    });
+    let provider = keys::provider();
     ensure!(
         provider.set_key(&peer_id.clone().into(), index, theirs)
             && provider.set_key(&my_id.clone().into(), 0, mine.bytes.to_vec())
@@ -295,7 +261,7 @@ pub async fn run() -> Result<()> {
             && cryptor.key_index() == 0
             && lk.connection_state() == ConnectionState::Connected
     );
-    let next = SenderKey::fresh(1)?;
+    let next = SenderKey::fresh(1).map_err(anyhow::Error::msg)?;
     ensure!(next.bytes != mine.bytes);
     // Adding a key to the provider alone doesn't select it for an existing RTP sender.
     ensure!(provider.set_key(&local, i32::from(next.index), next.bytes.to_vec()));

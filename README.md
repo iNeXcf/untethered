@@ -76,11 +76,19 @@ The [KWin/Element acceptance test](scripts/kwin-element.md) exercises a real
 Dolphin multi-file drag, room switching during upload, and byte-for-byte PNG/PDF
 downloads in both directions using the two clients’ visible controls.
 
-**Calls (experimental):** Open your account via the bottom-left profile button and
-choose **Check call server support** to query gomuks for MatrixRTC transports.
-This checks discovery only; it doesn't ring anyone or open a microphone.
-The [Linux audio interoperability test](experiments/rtc-audio/README.md) has
-verified two-way encrypted audio between the Rust media probe and Element Call.
+**Linux DM calls (experimental):** Open an encrypted direct message with one
+other joined user and click **Voice call**. Element rings; when the recipient
+accepts, Untethered uses the default microphone and output through `pacat`
+(PulseAudio or PipeWire-Pulse). **Hang up** releases both streams. Calling
+needs a verified Matrix device and a homeserver advertising a LiveKit
+`livekit_service_url` with OpenID authorization. Source builds need Clang for
+the LiveKit SDK. **Account → Check call server support** queries the gomuks
+transport-discovery RPC; legacy deployments can also advertise in `.well-known`.
+
+The [desktop call test](experiments/rtc-audio/README.md) drives both clients'
+actual call controls and measures audio through isolated Linux devices.
+Starting calls from Element into Untethered, device selection, and relay-only
+connections are separate milestones.
 
 ![Untethered room preview in the Rust frontend](rust-client/docs/preview.png)
 

@@ -51,7 +51,7 @@ extra_well_known_client_content:
     return name,listen,settings,jwt
 
 
-def test(tmp, hs, name, jwt, root, backend, seed, http, service):
+def test(tmp, hs, name, jwt, root, backend, seed, http, service, *, desktop=False):
     native,hdr=seed(tmp,hs)
     peer_dir=tmp/"peer";peer_dir.mkdir()
     peer,ph=seed(peer_dir,hs)
@@ -60,9 +60,14 @@ def test(tmp, hs, name, jwt, root, backend, seed, http, service):
     bob="@"+peer["username"]+":"+name
     http("POST",api+"/invite",headers=hdr,json={"user_id":bob})
     http("POST",api+"/join",headers=ph,json={})
+    if desktop:
+        alice="@"+native["username"]+":"+name
+        for me,them,auth_header in ((alice,bob,hdr),(bob,alice,ph)):
+            http("PUT",hs+"/_matrix/client/v3/user/"+quote(me,safe="")+"/account_data/m.direct",
+                 headers=auth_header,json={them:[room]})
     power=http("GET",api+"/state/m.room.power_levels",headers=hdr).json()
     power["events"]["org.matrix.msc3401.call.member"]=0
-    power["events"]["org.matrix.msc4171.rtc.notification"]=0
+    power["events"]["org.matrix.msc4075.rtc.notification"]=0
     http("PUT",api+"/state/m.room.power_levels",headers=hdr,json=power)
     assert http("GET",api+"/state/m.room.encryption",headers=ph).json()["algorithm"]=="m.megolm.v1.aes-sha2"
     secret=secrets.token_hex(32)
@@ -103,6 +108,10 @@ rtc:
         ctx=browser.new_context(permissions=["microphone","camera"])
         ctx.add_init_script(path=root/"scripts/qa_rtc_pcm.js")
         page=login_element(ctx,web,peer,room)
+        if desktop:
+            from qa_desktop_dm import desktop_call
+            desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret)
+            return
         sockets=[]
         def watch_sfu(ws):
             if urlsplit(ws.url).netloc=="127.0.0.1:18820":

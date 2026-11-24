@@ -25,6 +25,8 @@ pub struct Room {
     pub topic: String,
     pub space: bool,
     pub dm: bool,
+    #[cfg(target_os = "linux")]
+    pub dm_peer: Option<String>,
     pub unread: bool,
     pub encrypted: bool,
     pub has_metadata: bool,
@@ -159,6 +161,13 @@ impl Rooms {
                 room.space =
                     meta["creation_content"]["type"] == "m.space" || self.children.contains_key(id);
                 room.dm = meta["dm_user_id"].is_string();
+                #[cfg(target_os = "linux")]
+                {
+                    room.dm_peer = meta["dm_user_id"]
+                        .as_str()
+                        .filter(|v| v.starts_with('@'))
+                        .map(str::to_owned);
+                }
                 room.unread = meta["marked_unread"] == true
                     || meta["unread_messages"].as_u64().unwrap_or(0) > 0;
                 room.encrypted = meta["encryption_event"].is_object();

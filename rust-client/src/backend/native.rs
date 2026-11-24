@@ -157,6 +157,14 @@ pub async fn run(commands: Commands, events: Events) -> Result<(), String> {
             }
             cmd = commands.recv() => match cmd {
                 Ok(Operation::Rpc(v))=>v,
+                #[cfg(target_os = "linux")]
+                Ok(Operation::Voice{room,peer,cancel})=>{
+                    let cookie=cookie.clone(); let events=events.clone();
+                    transfers.spawn(async move {
+                        let result=crate::desktop_call::run(addr,&cookie,&room,&peer,cancel,&events).await;
+                        let _=events.send(json!({"command":"desktop_call","data":{"room":room,"ended":true,"label":result.unwrap_or_else(|e| e)}})).await;
+                    });continue
+                }
                 Ok(Operation::Inline{source,result})=>{
                     let http=http.clone();let cookie=cookie.clone();
                     transfers.spawn(async move{
@@ -180,6 +188,8 @@ pub async fn run(commands: Commands, events: Events) -> Result<(), String> {
                             }
                             Operation::Download{id,media,destination} => (id,download(&http,addr,&cookie,media,destination).await),
                             Operation::Rpc(_) | Operation::Inline{..}=>unreachable!(),
+                            #[cfg(target_os = "linux")]
+                            Operation::Voice{..}=>unreachable!(),
                         };
                         let (cmd,data)=match result {Ok(v)=>("response",v),Err(why)=>("error",json!(why))};
                         let _=events.send(json!({"command":cmd,"request_id":id,"data":data})).await;

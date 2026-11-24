@@ -50,9 +50,18 @@
   arrived, then measured it on the inbound track. The Rust probe also rotated
   its sender key mid-call: Element received 92 further RTP packets with no new
   tone before key 1 arrived, then measured 726.6 Hz for the 730 Hz test tone
-  on the same track and SSRC, without reconnecting. Element-initiated rotation,
-  real capture/playback, ringing, relay-required connectivity and Iced call
-  controls remain open.
+  on the same track and SSRC, without reconnecting.
+- **Outgoing Linux desktop DM call:** Clicking **Voice call** in Iced rings
+  Element Web 1.12.35. Element displayed the incoming DM and started its
+  ringtone; desktop capture stayed closed until acceptance. After **Join**,
+  Element measured the desktop microphone's 480 Hz and the desktop speaker
+  monitor measured Element's 960 Hz. The SFU independently reported GCM on
+  both microphone tracks. Audio survived the first 60-second membership lease.
+  Clicking **Hang up** in Iced emptied the Element roster and released both
+  audio streams. Replay with `run_element.sh --desktop-dm` in
+  [the RTC test guide](experiments/rtc-audio/README.md). Input/output were
+  private PulseAudio devices. Element-initiated calls into Iced, physical
+  hardware, mute/deafen, device selection and TURN-only calls are still open.
 
 ## What parity means
 

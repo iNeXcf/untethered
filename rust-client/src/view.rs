@@ -363,6 +363,25 @@ impl App {
         ]
         .spacing(9)
         .align_y(Center);
+        #[cfg(target_os = "linux")]
+        let header = if let Some((id, state, _)) = &self.call {
+            let name = self
+                .live
+                .list
+                .get(id)
+                .map(|r| r.name.as_str())
+                .unwrap_or("DM");
+            header
+                .push(text(format!("{state} · {name}")).size(13))
+                .push(button("Hang up").on_press(Msg::EndCall))
+        } else if self.verified
+            && self.connected
+            && room.is_some_and(|r| r.encrypted && r.dm_peer.is_some())
+        {
+            header.push(button("Voice call").on_press(Msg::VoiceCall))
+        } else {
+            header
+        };
         let banner = if !self.logged_in {
             Some(
                 container(
@@ -706,6 +725,16 @@ impl App {
         let mut form = column![label("UNTETHERED  /  ACCOUNT")]
             .spacing(14)
             .width(362);
+        #[cfg(target_os = "linux")]
+        if let Some((_, state, _)) = &self.call {
+            form = form.push(
+                row![
+                    text(state).width(Fill),
+                    button("Hang up").on_press(Msg::EndCall)
+                ]
+                .align_y(Center),
+            );
+        }
         if !self.logged_in {
             form = form
                 .push(text("Welcome back").size(32).font(BOLD))

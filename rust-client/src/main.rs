@@ -3,6 +3,8 @@ mod account;
 mod backend;
 #[cfg(target_arch = "wasm32")]
 mod browser_verification;
+#[cfg(target_os = "linux")]
+mod desktop_call;
 #[cfg(not(target_arch = "wasm32"))]
 mod fonts;
 mod inline;
@@ -67,6 +69,10 @@ enum Msg {
     #[cfg(not(target_arch = "wasm32"))]
     SaveTo(media::Media, Option<std::path::PathBuf>),
     CheckCalls,
+    #[cfg(target_os = "linux")]
+    VoiceCall,
+    #[cfg(target_os = "linux")]
+    EndCall,
     Frame(Value),
     Stopped(String),
     Section(Section),
@@ -117,6 +123,8 @@ enum Request {
     Send(String, String),
 }
 struct App {
+    #[cfg(target_os = "linux")]
+    call: Option<(String, String, Sender<()>)>,
     #[cfg(target_os = "linux")]
     drop_epoch: u64,
     #[cfg(not(target_arch = "wasm32"))]
@@ -174,6 +182,8 @@ impl App {
     }
     fn new(commands: Sender<backend::Command>) -> Self {
         Self {
+            #[cfg(target_os = "linux")]
+            call: None,
             #[cfg(target_os = "linux")]
             drop_epoch: 0,
             #[cfg(not(target_arch = "wasm32"))]
@@ -356,6 +366,21 @@ impl App {
     fn frame(&mut self, f: Value) {
         let data = &f["data"];
         match f["command"].as_str().unwrap_or("") {
+            #[cfg(target_os = "linux")]
+            "desktop_call" => {
+                if let Some((room, label, _)) = &mut self.call
+                    && data["room"] == *room
+                {
+                    *label = rooms::string(&data["label"]);
+                    if data["ended"] == true {
+                        self.status = label.clone();
+                        self.call = None;
+                        if self.closing {
+                            self.commands.close();
+                        }
+                    }
+                }
+            }
             "upload_progress" => {
                 if let (Some(id), Some(fraction)) = (f["request_id"].as_i64(), data.as_f64()) {
                     self.upload_progress(id, fraction);
@@ -629,6 +654,10 @@ impl App {
             Msg::ShowInline(key) => self.inline.request(key),
             Msg::Frame(f) => self.frame(f),
             Msg::Stopped(s) => {
+                #[cfg(target_os = "linux")]
+                {
+                    self.call = None;
+                }
                 self.stopped = true;
                 self.connected = false;
                 self.pending.clear();
@@ -646,9 +675,46 @@ impl App {
             }
             Msg::Close => {
                 self.closing = true;
+                #[cfg(target_os = "linux")]
+                if let Some((_, _, cancel)) = &self.call {
+                    cancel.close();
+                    return Task::none();
+                }
                 self.commands.close();
                 if self.stopped {
                     return iced::exit();
+                }
+            }
+            #[cfg(target_os = "linux")]
+            Msg::VoiceCall if self.call.is_none() && self.verified && self.connected => {
+                if let Some(peer) = self
+                    .live
+                    .list
+                    .get(&self.selected)
+                    .filter(|r| r.encrypted)
+                    .and_then(|r| r.dm_peer.clone())
+                {
+                    let (cancel, rx) = async_channel::bounded(1);
+                    let room = self.selected.clone();
+                    if self
+                        .commands
+                        .try_send(backend::Command::Voice {
+                            room: room.clone(),
+                            peer,
+                            cancel: rx,
+                        })
+                        .is_ok()
+                    {
+                        self.status.clear();
+                        self.call = Some((room, "Starting call…".into(), cancel));
+                    }
+                }
+            }
+            #[cfg(target_os = "linux")]
+            Msg::EndCall => {
+                if let Some((_, label, cancel)) = &mut self.call {
+                    cancel.close();
+                    *label = "Ending call…".into();
                 }
             }
             Msg::CheckCalls

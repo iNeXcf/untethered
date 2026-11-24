@@ -11,6 +11,12 @@ mod web;
 pub use web::run;
 
 pub enum Command {
+    #[cfg(target_os = "linux")]
+    Voice {
+        room: String,
+        peer: String,
+        cancel: Receiver<()>,
+    },
     Rpc(Value),
     Inline {
         source: crate::media::PreviewRef,

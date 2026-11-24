@@ -1,9 +1,26 @@
 # CALL-01: native encrypted audio probe
 
-This standalone crate tests the media path before adding WebRTC to the chat
-client. The Linux interoperability test uses **one Rust participant and one
+This standalone crate tests the media path alongside the Linux desktop client.
+The interoperability tests use **one Rust participant and one
 unmodified Element Call widget**. The older two-Rust-peer test remains useful
 for diagnosing transport problems independently of Matrix.
+
+## Replay the Linux desktop DM call
+
+Build the actual Iced app with `cargo build --locked -j2 --manifest-path
+rust-client/Cargo.toml`, then run `sh experiments/rtc-audio/run_element.sh
+--desktop-dm` with the environment variables shown below. In addition to
+the common requirements, install Xvfb, xdpyinfo, xdotool, ImageMagick,
+Tesseract, and PulseAudio (`pulseaudio`, `pacat`, and `pactl`). The test starts
+a private X display and a private audio server with two null sinks. It clicks
+**Voice call** in a live encrypted DM in Untethered, waits for Element's
+incoming-call toast and ringtone, then accepts. It checks the 480 Hz desktop
+mic at Element and the 960 Hz Element mic at the desktop speaker monitor,
+checks both GCM publications at the SFU, waits past the first 60-second
+membership expiry, confirms renewed membership and continuing audio, then
+clicks the desktop **Hang up**.
+It requires an empty remote call roster and no remaining desktop audio
+streams. Neither test client needs physical audio hardware.
 
 ## Replay the Element ↔ Rust encrypted audio test
 
@@ -95,13 +112,12 @@ Element sees the roster empty and Synapse confirms the empty state event.
 
 The probe implements the MSC3401 session membership that this Element release
 accepts in numbered room versions. It has a one-minute upper bound, even if the
-client dies before arming the delayed leave. A long call will also need to
-refresh the membership itself. The advertised transport in this check is a
+client dies before arming the delayed leave. The desktop renews the lease on
+longer calls. The advertised transport in this membership-only check is a
 sentinel, so a roster entry does not demonstrate a media connection.
 
 ## What comes next
 
-Move the proven signaling and media path into the desktop client. Keep the
-active call independent of navigation; handle incoming key changes, microphone
-and output devices, mute/deafen, DM ringing and hangup. Verify relay-required
-audio separately. Windows runtime testing is deferred.
+The desktop can initiate calls to Element. Next implement the reverse incoming
+call flow in Iced, mute/deafen and device selection. Verify reconnect and
+relay-required audio separately. Windows runtime testing is deferred.
