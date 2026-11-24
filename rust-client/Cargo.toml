@@ -14,16 +14,24 @@ url = "2"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 iced = { version = "0.14", default-features = false, features = ["tiny-skia", "tokio", "x11", "wayland", "advanced"] }
-tokio = { version = "1", features = ["process", "io-util", "time", "macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["process", "io-util", "time", "macros", "rt-multi-thread", "fs"] }
 tokio-tungstenite = "0.28"
-reqwest = { version = "0.12", default-features = false }
+reqwest = { version = "0.12", default-features = false, features = ["stream", "json"] }
+rfd = { version = "0.15.4", default-features = false, features = ["xdg-portal", "tokio"] }
+tempfile = "3"
 uuid = { version = "1", features = ["v4"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+smithay-clipboard = "0.7.3"
+
+[patch.crates-io]
+smithay-clipboard = { path = "vendor/smithay-clipboard" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 iced = { version = "0.14", default-features = false, features = ["wgpu", "webgl", "fira-sans", "advanced"] }
 wasm-bindgen = "=0.2.130"
 wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["Worker", "WorkerOptions", "WorkerType", "ErrorEvent", "MessageEvent", "Document", "Window", "Navigator", "Clipboard"] }
+web-sys = { version = "0.3", features = ["Worker", "WorkerOptions", "WorkerType", "ErrorEvent", "MessageEvent", "Document", "Window", "Navigator", "Clipboard", "File", "FileList"] }
 js-sys = "0.3"
 
 [profile.dev]

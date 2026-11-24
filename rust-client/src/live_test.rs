@@ -96,6 +96,37 @@ async fn encrypted_round_trip_and_restart() {
                 .is_some_and(|r| r.history.values().any(|p| p.body == body))
     })
     .await;
+    let dir = tempfile::tempdir().unwrap();
+    let original = b"Untethered attachment integrity fixture\n\x00\x01\xfe\xff";
+    let path = dir.path().join("round trip.bin");
+    std::fs::write(&path, original).unwrap();
+    let _ = app.update(Msg::Files(
+        id.into(),
+        vec![media::LocalFile::from_path(path).unwrap()],
+    ));
+    app.editor = text_editor::Content::with_text("desktop attachment");
+    let _ = app.update(Msg::Send);
+    wait(&mut app, &rx, "encrypted media event", |a| {
+        a.batch.is_none()
+            && a.live.list[id].history.values().any(|p| {
+                p.media
+                    .as_ref()
+                    .is_some_and(|m| m.name == "round trip.bin" && m.encrypted)
+            })
+    })
+    .await;
+    let file = app.live.list[id]
+        .history
+        .values()
+        .find_map(|p| p.media.clone())
+        .unwrap();
+    let saved = dir.path().join("saved.bin");
+    let _ = app.update(Msg::SaveTo(file, Some(saved.clone())));
+    wait(&mut app, &rx, "decrypt and save attachment", |a| {
+        !a.pending.values().any(|p| matches!(p, Request::Download))
+    })
+    .await;
+    assert_eq!(std::fs::read(saved).unwrap(), original);
     app.commands.close();
     engine.await.unwrap().unwrap();
 }

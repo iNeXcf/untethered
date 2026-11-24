@@ -1,4 +1,4 @@
-use super::{Commands, Events};
+use super::{Command as Operation, Commands, Events};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use std::{env, fs, net::SocketAddr, path::PathBuf, process::Stdio, time::Duration};
@@ -121,7 +121,8 @@ pub async fn run(commands: Commands, events: Events) -> Result<(), String> {
         .iter()
         .filter_map(|h| h.to_str().ok()?.split(';').next())
         .find(|s| s.starts_with("gomuks_auth="))
-        .ok_or("Missing gomuks session cookie.")?;
+        .ok_or("Missing gomuks session cookie.")?
+        .to_owned();
     let mut request = format!("ws://{addr}/_gomuks/websocket")
         .into_client_request()
         .unwrap();
@@ -138,6 +139,7 @@ pub async fn run(commands: Commands, events: Events) -> Result<(), String> {
     let mut heartbeat = time::interval(Duration::from_secs(15));
     let mut last_received = 0;
     let mut last_frame = time::Instant::now();
+    let mut transfers = tokio::task::JoinSet::new();
     loop {
         let outgoing = tokio::select! {
             frame = ws.next() => {
@@ -153,7 +155,24 @@ pub async fn run(commands: Commands, events: Events) -> Result<(), String> {
                 }
                 continue;
             }
-            cmd = commands.recv() => match cmd { Ok(v) => v, Err(_) => break },
+            cmd = commands.recv() => match cmd {
+                Ok(Operation::Rpc(v))=>v,
+                Ok(op)=>{
+                    let http=http.clone();let cookie=cookie.clone();let events=events.clone();
+                    transfers.spawn(async move {
+                        let (id,result)=match op {
+                            Operation::Upload{id,file,encrypt,limit} => (id,upload(&http,addr,&cookie,file,encrypt,limit).await),
+                            Operation::Download{id,media,destination} => (id,download(&http,addr,&cookie,media,destination).await),
+                            Operation::Rpc(_)=>unreachable!(),
+                        };
+                        let (cmd,data)=match result {Ok(v)=>("response",v),Err(why)=>("error",json!(why))};
+                        let _=events.send(json!({"command":cmd,"request_id":id,"data":data})).await;
+                    });
+                    continue;
+                },
+                Err(_) => break
+            },
+            Some(_) = transfers.join_next(), if !transfers.is_empty() => continue,
             _ = heartbeat.tick() => {
                 if last_frame.elapsed() > Duration::from_secs(75) { return Err("gomuks stopped responding.".into()); }
                 json!({"command":"ping","request_id":0,"data":{"last_received_id":last_received}})
@@ -181,4 +200,72 @@ pub async fn run(commands: Commands, events: Events) -> Result<(), String> {
     }
     let _ = child.kill().await;
     Ok(())
+}
+
+async fn upload(
+    http: &reqwest::Client,
+    addr: SocketAddr,
+    cookie: &str,
+    file: crate::media::LocalFile,
+    encrypt: bool,
+    limit: u64,
+) -> Result<Value, &'static str> {
+    let f = tokio::fs::File::open(file.path)
+        .await
+        .map_err(|_| "File cannot be opened.")?;
+    let meta = f.metadata().await.map_err(|_| "Cannot read file size.")?;
+    if !meta.is_file() || meta.len() != file.size || meta.len() > limit {
+        return Err("File changed or exceeds the upload limit. Remove and attach it again.");
+    }
+    let reply = http
+        .post(format!("http://{addr}/_gomuks/upload"))
+        .header("Cookie", cookie)
+        .header("Content-Length", file.size)
+        .query(&[
+            ("filename", file.name.as_str()),
+            ("encrypt", if encrypt { "true" } else { "false" }),
+        ])
+        .timeout(Duration::from_secs(600))
+        .body(reqwest::Body::from(f))
+        .send()
+        .await
+        .map_err(|_| "Upload interrupted.")?;
+    if !reply.status().is_success() {
+        return Err("gomuks rejected the upload.");
+    }
+    reply.json().await.map_err(|_| "Invalid upload response.")
+}
+async fn download(
+    http: &reqwest::Client,
+    addr: SocketAddr,
+    cookie: &str,
+    media: crate::media::Media,
+    destination: PathBuf,
+) -> Result<Value, &'static str> {
+    let path = crate::media::media_path(&media.mxc).ok_or("Invalid media address.")?;
+    let mut resp = http
+        .get(format!("http://{addr}{path}"))
+        .header("Cookie", cookie)
+        .query(&[("encrypted", media.encrypted)])
+        .timeout(Duration::from_secs(600))
+        .send()
+        .await
+        .map_err(|_| "Could not download attachment.")?
+        .error_for_status()
+        .map_err(|_| "gomuks rejected the download.")?;
+    let tmp = tempfile::NamedTempFile::new_in(destination.parent().ok_or("Invalid destination.")?)
+        .map_err(|_| "Cannot create download.")?;
+    let (file, tmp) = tmp.into_parts();
+    let mut file = tokio::fs::File::from_std(file);
+    use tokio::io::AsyncWriteExt;
+    while let Some(bytes) = resp.chunk().await.map_err(|_| "Download interrupted.")? {
+        file.write_all(&bytes)
+            .await
+            .map_err(|_| "Cannot save download.")?;
+    }
+    file.flush().await.map_err(|_| "Cannot save download.")?;
+    drop(file);
+    tmp.persist(destination)
+        .map_err(|_| "Cannot finish saving download.")?;
+    Ok(Value::Null)
 }

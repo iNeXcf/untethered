@@ -3,6 +3,8 @@
 Untethered’s frontend is written in Rust using Iced. The Matrix engine is the
 upstream [gomuks](https://github.com/gomuks/gomuks) project, written in Go.
 
+See the [Discord-parity roadmap and milestone checks](ROADMAP.md).
+
 ## Desktop
 
 Try the native Discord-style frontend from the checkout:
@@ -37,6 +39,17 @@ SSO and first-time encryption setup aren’t implemented. Emoji comparison (SAS)
 needs support from the client engine; the pinned gomuks release does not expose
 that flow through its frontend API. Room sync, encryption, history, and sends use the upstream
 gomuks engine. The UI currently renders plain text and initial-based avatars.
+
+**Files:** Drop files onto a room or click **+** to stage them, optionally type
+a caption for the first attachment, then press **Send**. Each file is a standard
+Matrix media event. Draft attachments stay in their original room when you switch.
+Uploads are sequential, with up to 10 staged files per room and a 64 MiB/file cap
+(lower if the homeserver advertises a smaller limit). Click **Save** on a received
+attachment. Preview mode simulates a send locally; it never uploads.
+
+**Calls (experimental):** Open your account via the bottom-left profile button and
+choose **Check call server support** to query gomuks for MatrixRTC transports.
+This checks discovery only; it doesn't ring anyone or open a microphone.
 
 ![Untethered room preview in the Rust frontend](rust-client/docs/preview.png)
 

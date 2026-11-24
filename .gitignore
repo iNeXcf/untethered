@@ -7,4 +7,5 @@
 
 /.dev/
 /rust-client/target/
+/experiments/rtc-audio/target/
 /rust-client/web/dist/

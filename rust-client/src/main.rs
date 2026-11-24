@@ -7,8 +7,12 @@ mod browser_verification;
 mod fonts;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod live_test;
+mod media;
 mod rooms;
+mod transfers;
 mod view;
+#[cfg(target_arch = "wasm32")]
+mod web_files;
 
 use async_channel::Sender;
 use iced::{
@@ -35,6 +39,16 @@ enum Field {
 }
 #[derive(Clone)]
 enum Msg {
+    HoverFiles(bool),
+    #[cfg(not(target_arch = "wasm32"))]
+    DropPaths(Vec<std::path::PathBuf>),
+    Files(String, Vec<media::LocalFile>),
+    PickFiles,
+    RemoveFile(u64),
+    SaveFile(media::Media),
+    #[cfg(not(target_arch = "wasm32"))]
+    SaveTo(media::Media, Option<std::path::PathBuf>),
+    CheckCalls,
     Frame(Value),
     Stopped(String),
     Section(Section),
@@ -72,6 +86,11 @@ impl std::fmt::Debug for Msg {
     }
 }
 enum Request {
+    Upload(String, u64),
+    MediaSend(String, u64),
+    Download,
+    MediaConfig,
+    RtcDiscovery,
     Login,
     Verify(account::RecoveryFormat),
     VerifyState,
@@ -80,7 +99,12 @@ enum Request {
     Send(String, String),
 }
 struct App {
-    commands: Sender<Value>,
+    commands: Sender<backend::Command>,
+    outbox: media::Outbox,
+    batch: Option<transfers::Batch>,
+    hover_files: bool,
+    media_limit: u64,
+    rtc_status: String,
     pending: BTreeMap<i64, Request>,
     seq: i64,
     live: Rooms,
@@ -118,12 +142,19 @@ impl App {
             Task::run(events, Msg::Frame),
         ]);
         #[cfg(target_arch = "wasm32")]
-        let task = Task::batch([task, browser_verification::listen()]);
+        let task = Task::batch([task, browser_verification::listen(), web_files::listen()]);
+        #[cfg(target_os = "linux")]
+        let task = Task::batch([task, transfers::wayland_drops()]);
         (Self::new(commands), task)
     }
-    fn new(commands: Sender<Value>) -> Self {
+    fn new(commands: Sender<backend::Command>) -> Self {
         Self {
             commands,
+            outbox: Default::default(),
+            batch: None,
+            hover_files: false,
+            media_limit: media::MAX_BYTES,
+            rtc_status: String::new(),
             pending: Default::default(),
             seq: 0,
             live: Default::default(),
@@ -183,7 +214,9 @@ impl App {
         if self.connected
             && self
                 .commands
-                .try_send(json!({"command":cmd,"request_id":self.seq,"data":data}))
+                .try_send(backend::Command::Rpc(
+                    json!({"command":cmd,"request_id":self.seq,"data":data}),
+                ))
                 .is_ok()
         {
             self.pending.insert(self.seq, req);
@@ -301,6 +334,7 @@ impl App {
             }
             "client_state" => {
                 let was = self.logged_in;
+                let was_verified = self.verified;
                 self.connected = true;
                 self.logged_in = data["is_logged_in"] == true;
                 self.verified = data["is_verified"] == true;
@@ -324,9 +358,16 @@ impl App {
                     self.selected.clear();
                     self.section = Section::All;
                     self.account = !self.logged_in;
+                    self.outbox = Default::default();
+                    self.batch = None;
+                    self.rtc_status.clear();
+                    self.media_limit = media::MAX_BYTES;
                     if !self.logged_in {
                         self.live = Rooms::default();
                     }
+                }
+                if self.logged_in && self.verified && !was_verified {
+                    self.rpc("get_media_config", json!({}), Request::MediaConfig);
                 }
                 self.status.clear();
                 self.reconcile();
@@ -339,6 +380,12 @@ impl App {
                         .retain(|_, p| !matches!(p, Request::Members(_) | Request::Page(_)));
                 }
                 self.live.sync(data);
+                for left in items(&data["left_rooms"]).filter_map(Value::as_str) {
+                    self.outbox.rooms.remove(left);
+                    if self.batch.as_ref().is_some_and(|b| b.room == left) {
+                        self.batch = None;
+                    }
+                }
                 self.reconcile();
             }
             "events_decrypted" => {
@@ -348,6 +395,7 @@ impl App {
             }
             "send_complete" => {
                 self.live.event(&Value::Null, &data["event"]);
+                self.media_delivery(data);
                 if !data["error"].is_null() {
                     self.status = "Message delivery failed.".into();
                 }
@@ -358,6 +406,12 @@ impl App {
                 };
                 if f["command"] == "error" {
                     self.status = match p {
+                        Request::Upload(room,id) | Request::MediaSend(room,id) => {
+                            self.fail_file(&room,id,"Transfer failed. Retry or remove the attachment.");return
+                        }
+                        Request::MediaConfig=>return,
+                        Request::Download=>"Could not save the attachment.",
+                        Request::RtcDiscovery=>{self.rtc_status="MatrixRTC discovery failed or is unsupported on this homeserver.".into();return}
                         Request::Login => {
                             "Sign-in failed. Check your homeserver, username, and password."
                         }
@@ -379,6 +433,33 @@ impl App {
                     return;
                 }
                 match p {
+                    Request::MediaConfig => {
+                        if let Some(n) = data["m.upload.size"].as_u64().filter(|n| *n > 0) {
+                            self.media_limit = media::MAX_BYTES.min(n);
+                        }
+                    }
+                    Request::Upload(room, id) => self.uploaded(&room, id, data),
+                    Request::MediaSend(room, id) => self.file_sent(&room, id, data),
+                    Request::Download => self.status = "Attachment saved.".into(),
+                    Request::RtcDiscovery => {
+                        let n = items(&data["rtc_transports"])
+                            .filter(|v| {
+                                v["type"] == "livekit"
+                                    && v["livekit_service_url"].as_str().is_some_and(|s| {
+                                        url::Url::parse(s).is_ok_and(|u| {
+                                            u.scheme() == "https" && u.host().is_some()
+                                        })
+                                    })
+                            })
+                            .count();
+                        self.rtc_status = if n > 0 {
+                            format!(
+                                "Found {n} LiveKit call transport(s). Audio interoperability is not tested yet."
+                            )
+                        } else {
+                            "No supported LiveKit transport advertised by this endpoint.".into()
+                        };
+                    }
                     Request::Send(id, sent) => {
                         if let Some(r) = self.live.list.get_mut(&id) {
                             r.insert(data);
@@ -431,6 +512,12 @@ impl App {
                 self.stopped = true;
                 self.connected = false;
                 self.pending.clear();
+                self.batch = None;
+                for q in self.outbox.rooms.values_mut() {
+                    for a in q {
+                        a.busy = false;
+                    }
+                }
                 self.status = s;
                 if self.closing {
                     return iced::exit();
@@ -441,6 +528,138 @@ impl App {
                 self.commands.close();
                 if self.stopped {
                     return iced::exit();
+                }
+            }
+            Msg::CheckCalls
+                if self.logged_in
+                    && self.connected
+                    && !self
+                        .pending
+                        .values()
+                        .any(|p| matches!(p, Request::RtcDiscovery)) =>
+            {
+                self.rtc_status = "Checking MatrixRTC transports…".into();
+                self.rpc("get_rtc_transports", json!({}), Request::RtcDiscovery);
+            }
+            Msg::HoverFiles(v) => self.hover_files = v,
+            #[cfg(not(target_arch = "wasm32"))]
+            Msg::DropPaths(paths) => {
+                self.hover_files = false;
+                if self.can_stage() {
+                    let room = self.selected.clone();
+                    return Task::perform(
+                        async move {
+                            tokio::task::spawn_blocking(move || {
+                                paths
+                                    .into_iter()
+                                    .take(media::MAX_FILES + 1)
+                                    .filter_map(media::LocalFile::from_path)
+                                    .collect()
+                            })
+                            .await
+                            .unwrap_or_default()
+                        },
+                        move |files| Msg::Files(room, files),
+                    );
+                }
+            }
+            Msg::Files(mut room, files) => {
+                self.hover_files = false;
+                if room.is_empty() {
+                    room = self.selected.clone();
+                }
+                if self.can_stage() && self.rooms().list.contains_key(&room) {
+                    if files.is_empty() {
+                        self.status = "Select regular files to attach.".into();
+                    } else if !self.outbox.stage(&room, files, self.media_limit) {
+                        self.status = format!(
+                            "Up to {} files per room, {} each.",
+                            media::MAX_FILES,
+                            media::size(self.media_limit)
+                        );
+                    }
+                }
+            }
+            Msg::PickFiles if self.can_stage() => {
+                let room = self.selected.clone();
+                #[cfg(not(target_arch = "wasm32"))]
+                return Task::perform(
+                    async {
+                        let paths = rfd::AsyncFileDialog::new().pick_files().await?;
+                        Some(
+                            tokio::task::spawn_blocking(move || {
+                                paths
+                                    .into_iter()
+                                    .take(media::MAX_FILES + 1)
+                                    .filter_map(|p| {
+                                        media::LocalFile::from_path(p.path().to_owned())
+                                    })
+                                    .collect()
+                            })
+                            .await
+                            .unwrap_or_default(),
+                        )
+                    },
+                    move |files| match files {
+                        Some(f) => Msg::Files(room, f),
+                        None => Msg::HoverFiles(false),
+                    },
+                );
+                #[cfg(target_arch = "wasm32")]
+                web_files::pick(&room);
+            }
+            Msg::RemoveFile(id) => {
+                if self
+                    .outbox
+                    .get_mut(&self.selected, id)
+                    .is_some_and(|a| !a.busy)
+                {
+                    self.outbox.remove(&self.selected, id);
+                }
+            }
+            Msg::SaveFile(media) if self.connected && self.logged_in => {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let name = media.name.clone();
+                    return Task::perform(
+                        async move {
+                            rfd::AsyncFileDialog::new()
+                                .set_file_name(name)
+                                .save_file()
+                                .await
+                                .map(|p| p.path().to_owned())
+                        },
+                        move |p| Msg::SaveTo(media, p),
+                    );
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    self.seq += 1;
+                    if self
+                        .commands
+                        .try_send(backend::Command::Download {
+                            id: self.seq,
+                            media,
+                        })
+                        .is_ok()
+                    {
+                        self.pending.insert(self.seq, Request::Download);
+                    }
+                }
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Msg::SaveTo(media, Some(destination)) if self.connected && self.logged_in => {
+                self.seq += 1;
+                if self
+                    .commands
+                    .try_send(backend::Command::Download {
+                        id: self.seq,
+                        media,
+                        destination,
+                    })
+                    .is_ok()
+                {
+                    self.pending.insert(self.seq, Request::Download);
                 }
             }
             Msg::Section(s) => {
@@ -488,6 +707,10 @@ impl App {
             Msg::Send => {
                 let body = self.editor.text();
                 let id = self.selected.clone();
+                if self.outbox.rooms.get(&id).is_some_and(|q| !q.is_empty()) {
+                    self.send_files(id, body);
+                    return Task::none();
+                }
                 if id.is_empty() || body.trim().is_empty() {
                     return Task::none();
                 }
@@ -621,6 +844,19 @@ fn main() -> iced::Result {
         })
         .subscription(|_| {
             iced::Subscription::batch([
+                #[cfg(not(target_arch = "wasm32"))]
+                iced::event::listen_with(|event, _, _| match event {
+                    iced::Event::Window(iced::window::Event::FileDropped(path)) => {
+                        Some(Msg::DropPaths(vec![path]))
+                    }
+                    iced::Event::Window(iced::window::Event::FileHovered(_)) => {
+                        Some(Msg::HoverFiles(true))
+                    }
+                    iced::Event::Window(iced::window::Event::FilesHoveredLeft) => {
+                        Some(Msg::HoverFiles(false))
+                    }
+                    _ => None,
+                }),
                 iced::window::close_requests().map(|_| Msg::Close),
                 iced::keyboard::listen().filter_map(|event| match event {
                     iced::keyboard::Event::KeyPressed {

@@ -92,6 +92,24 @@ pub async fn run(commands: Commands, events: Events) -> Result<(), String> {
                 }
                 command = commands.recv().fuse() => {
                     let Ok(command) = command else { return Ok(()) };
+                    let command=match command {
+                        super::Command::Rpc(value)=>value,
+                        super::Command::Upload{id,file,encrypt,limit}=>{
+                            let worker=worker.clone();let events=events.clone();
+                            wasm_bindgen_futures::spawn_local(async move{
+                                if file.size>limit || crate::web_files::post_upload(&worker,id as f64,&file.file,encrypt).await.is_err() {
+                                    let _=events.send(json!({"command":"error","request_id":id,"data":"Upload failed."})).await;
+                                }
+                            });continue;
+                        }
+                        super::Command::Download{id,media}=>{
+                            let worker=worker.clone();let events=events.clone();
+                            wasm_bindgen_futures::spawn_local(async move{
+                                let ok=if let Some(path)=crate::media::media_path(&media.mxc) {crate::web_files::save_media(&worker,&path,media.encrypted,&media.name).await.is_ok()}else{false};
+                                let _=events.send(json!({"command":if ok {"response"}else{"error"},"request_id":id,"data":null})).await;
+                            });continue;
+                        }
+                    };
                     let wire = json!({"command": command["command"], "request_id": command["request_id"], "data": command["data"].to_string()});
                     let message = js_sys::JSON::parse(&wire.to_string()).map_err(|_| "Invalid command.")?;
                     worker.post_message(&message).map_err(|_| "Cannot send to worker.")?;

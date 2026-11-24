@@ -273,9 +273,7 @@ impl App {
         if let Some(banner) = banner {
             chat = chat.push(banner)
         }
-        if !self.status.is_empty()
-            && (self.logged_in || !self.connected && !self.status.starts_with("Starting"))
-        {
+        if !self.status.is_empty() && !self.status.starts_with("Starting") {
             chat = chat.push(
                 container(text(&self.status).size(13).color(color!(0xffc785))).padding([5, 16]),
             );
@@ -416,6 +414,24 @@ impl App {
                 );
             }
             prev = Some((&p.sender, p.time, day));
+            if let Some(file) = &p.media {
+                feed = feed.push(
+                    row![
+                        Space::new().width(36),
+                        button(
+                            text(format!(
+                                "Save {}  {}",
+                                file.name,
+                                file.size.map(crate::media::size).unwrap_or_default()
+                            ))
+                            .size(14)
+                        )
+                        .on_press(Msg::SaveFile(file.clone()))
+                        .style(button::secondary)
+                    ]
+                    .spacing(13),
+                );
+            }
         }
         let feed = scrollable(feed)
             .id(iced::widget::Id::from(format!(
@@ -455,17 +471,66 @@ impl App {
             .pending
             .values()
             .any(|p| matches!(p,Request::Send(id,_) if id==&self.selected));
+        let files = self.outbox.rooms.get(&self.selected);
+        let has_files = files.is_some_and(|q| !q.is_empty());
+        let uploading = self.batch.as_ref().is_some_and(|b| b.room == self.selected);
+        let mut tray = Column::new().spacing(4);
+        if self.hover_files {
+            tray = tray.push(
+                text(format!("Drop files to attach to {}", r.name))
+                    .color(TEXT)
+                    .font(BOLD),
+            );
+        }
+        for a in files.into_iter().flatten() {
+            let state = if a.busy {
+                if a.descriptor.is_some() {
+                    "Sending…"
+                } else {
+                    "Uploading…"
+                }
+            } else {
+                a.error.as_deref().unwrap_or("Ready")
+            };
+            tray = tray.push(
+                row![
+                    text(format!(
+                        "{}  ·  {}  ·  {state}",
+                        a.source.name,
+                        crate::media::size(a.source.size)
+                    ))
+                    .size(13)
+                    .width(Fill),
+                    button("Remove")
+                        .on_press_maybe((!a.busy).then_some(Msg::RemoveFile(a.id)))
+                        .style(nav(false))
+                ]
+                .align_y(Center),
+            );
+        }
         let composer = row![
+            tooltip(
+                button(text("+").size(20))
+                    .on_press(Msg::PickFiles)
+                    .style(button::secondary),
+                "Attach files",
+                tooltip::Position::Top
+            ),
             editor,
             button(
-                text(if sending { "Sending…" } else { "Send" })
-                    .size(14)
-                    .font(BOLD)
+                text(if sending || uploading {
+                    "Sending…"
+                } else {
+                    "Send"
+                })
+                .size(14)
+                .font(BOLD)
             )
             .on_press_maybe(
                 (!sending
                     && (!self.logged_in || self.connected)
-                    && !self.editor.text().trim().is_empty())
+                    && (has_files && self.batch.is_none()
+                        || !has_files && !self.editor.text().trim().is_empty()))
                 .then_some(Msg::Send)
             )
         ]
@@ -482,6 +547,7 @@ impl App {
             feed,
             container(
                 column![
+                    tray,
                     composer,
                     row![
                         text(foot).size(11).color(DIM),
@@ -566,7 +632,12 @@ impl App {
         } else {
             form = form
                 .push(text(&self.profile).size(25).font(BOLD))
-                .push(text("Verified Matrix device").color(MUTED));
+                .push(text("Verified Matrix device").color(MUTED))
+                .push(
+                    button("Check call server support")
+                        .on_press_maybe(self.connected.then_some(Msg::CheckCalls)),
+                )
+                .push(text(&self.rtc_status).size(13));
         }
         if (!self.logged_in || self.verified) && !self.status.is_empty() {
             form = form.push(text(&self.status).size(14).color(MUTED));

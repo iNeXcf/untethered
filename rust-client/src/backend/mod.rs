@@ -10,5 +10,35 @@ mod web;
 #[cfg(target_arch = "wasm32")]
 pub use web::run;
 
-type Commands = Receiver<Value>;
+pub enum Command {
+    Rpc(Value),
+    Upload {
+        id: i64,
+        file: crate::media::LocalFile,
+        encrypt: bool,
+        limit: u64,
+    },
+    #[cfg(not(target_arch = "wasm32"))]
+    Download {
+        id: i64,
+        media: crate::media::Media,
+        destination: std::path::PathBuf,
+    },
+    #[cfg(target_arch = "wasm32")]
+    Download {
+        id: i64,
+        media: crate::media::Media,
+    },
+}
+#[cfg(test)]
+impl Command {
+    pub fn into_rpc(self) -> Value {
+        if let Self::Rpc(v) = self {
+            v
+        } else {
+            panic!("expected RPC")
+        }
+    }
+}
+type Commands = Receiver<Command>;
 type Events = Sender<Value>;

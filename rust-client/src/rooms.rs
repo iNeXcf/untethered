@@ -27,12 +27,14 @@ pub struct Room {
     pub dm: bool,
     pub unread: bool,
     pub encrypted: bool,
+    pub has_metadata: bool,
     pub end: bool,
     pub cursor: Option<i64>,
     pub members: BTreeMap<String, String>,
     pub history: BTreeMap<i64, Post>,
 }
 pub struct Post {
+    pub media: Option<crate::media::Media>,
     pub sender: String,
     pub body: String,
     pub time: i64,
@@ -64,6 +66,15 @@ impl Room {
         self.history.insert(
             row,
             Post {
+                media: if e["redacted_by"].as_str().is_some_and(|s| !s.is_empty()) {
+                    None
+                } else {
+                    crate::media::Media::parse(if e["type"] == "m.room.encrypted" {
+                        &e["decrypted"]
+                    } else {
+                        &e["content"]
+                    })
+                },
                 sender: string(&e["sender"]),
                 body,
                 time: e["timestamp"].as_i64().unwrap_or(0),
@@ -109,6 +120,7 @@ impl Rooms {
             let room = self.list.entry(id.clone()).or_default();
             let meta = &delta["meta"];
             if meta.is_object() {
+                room.has_metadata = true;
                 room.name = meta["name"]
                     .as_str()
                     .or(meta["canonical_alias"].as_str())

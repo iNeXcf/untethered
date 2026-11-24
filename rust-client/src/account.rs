@@ -112,7 +112,7 @@ mod tests {
         app.recovery = "example".into();
         app.submit_verification();
         app.submit_verification();
-        let sent = rx.try_recv().unwrap();
+        let sent = rx.try_recv().unwrap().into_rpc();
         assert!(rx.try_recv().is_err());
         app.frame(state.clone());
         assert!(app.verifying());
@@ -135,7 +135,7 @@ mod tests {
         app.password = "test".into();
         let _ = app.update(Msg::Login);
         assert_eq!(
-            rx.try_recv().unwrap()["data"]["homeserver_url"],
+            rx.try_recv().unwrap().into_rpc()["data"]["homeserver_url"],
             "https://example.org:8448/"
         );
     }
@@ -193,7 +193,7 @@ mod tests {
         assert_eq!(app.matrix_id, "@alice:example.org");
         app.recovery = "EsTL 2cTx 9Qy1 8TVd qGsn GDrD i5dT EEuX Qz8U P7hi Z7uu U8wZ".into();
         app.submit_verification();
-        let id = rx.try_recv().unwrap()["request_id"].clone();
+        let id = rx.try_recv().unwrap().into_rpc()["request_id"].clone();
         app.frame(json!({"command":"error","request_id":id,"data":"incorrect SSSS key"}));
         assert!(app.verification_feedback().contains("checksum are valid"));
     }
