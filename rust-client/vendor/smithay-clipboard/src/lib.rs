@@ -7,6 +7,8 @@
 use std::ffi::c_void;
 use std::io::Result;
 use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc,Mutex,Weak};
+use std::os::fd::OwnedFd;
 
 use sctk::reexports::calloop::channel::{self, Sender};
 use sctk::reexports::client::Connection;
@@ -15,6 +17,23 @@ use sctk::reexports::client::backend::Backend;
 mod mime;
 mod state;
 mod worker;
+
+pub enum PasteOffer {
+    Png(OwnedFd),
+    Text(OwnedFd),
+}
+static ACTIVE: Mutex<Weak<Sender<worker::Command>>> = Mutex::new(Weak::new());
+
+/// `None` means Iced is not using a Wayland clipboard. Otherwise request the
+/// focused seat's regular selection on its event queue. Never watches changes.
+pub fn composer_offer() -> Option<Result<Option<PasteOffer>>> {
+    let sender=ACTIVE.lock().ok()?.upgrade()?;
+    let (tx,rx)=mpsc::channel();
+    Some(sender.send(worker::Command::ComposerOffer(tx))
+        .map_err(|_|std::io::Error::other("clipboard worker stopped"))
+        .and_then(|()|rx.recv_timeout(std::time::Duration::from_secs(2))
+            .map_err(|_|std::io::Error::other("clipboard worker did not reply"))?))
+}
 
 /// File drag events from the existing data device. No clipboard selections
 /// are inspected. Untethered has one top-level window.
@@ -33,7 +52,7 @@ pub fn on_file_drag(handler: impl Fn(FileDrag) + Send + Sync + 'static) {
 
 /// Access to a Wayland clipboard.
 pub struct Clipboard {
-    request_sender: Sender<worker::Command>,
+    request_sender: Arc<Sender<worker::Command>>,
     request_receiver: Receiver<Result<String>>,
     clipboard_thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -58,6 +77,8 @@ impl Clipboard {
         let name = String::from("smithay-clipboard");
         let clipboard_thread = worker::spawn(name, connection, rx_chan, clipboard_reply_sender);
 
+        let request_sender=Arc::new(request_sender);
+        *ACTIVE.lock().expect("clipboard sender lock")=Arc::downgrade(&request_sender);
         Self { request_receiver, request_sender, clipboard_thread }
     }
 

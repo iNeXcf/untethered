@@ -289,7 +289,7 @@ mod tests {
                 vec![media::LocalFile {
                     name: "photo.png".into(),
                     size: 42,
-                    path: "unused".into(),
+                    origin: media::NativeSource::Path("unused".into()),
                 }],
             ));
             let _ = app.update(Msg::Send);
@@ -345,7 +345,7 @@ mod tests {
             vec![media::LocalFile {
                 name: "report.pdf".into(),
                 size: 2,
-                path: "unused".into(),
+                origin: media::NativeSource::Path("unused".into()),
             }],
         ));
         assert!(rx.try_recv().is_err());

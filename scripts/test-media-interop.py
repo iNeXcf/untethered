@@ -4,7 +4,11 @@ Build the web client first. From the checkout:
   uv run --python 3.13 --with matrix-synapse --with requests --with websocket-client \
     --with playwright --with pillow python scripts/test-media-interop.py
 CHROMIUM and UNTETHERED_BACKEND can select local executables.
+For the native clipboard acceptance test, pass --native-paste wayland or x11.
+It needs a debug client build plus Xvfb, xdotool, ImageMagick, and either
+sway/grim/wl-copy (Wayland) or xclip (X11); it never uses your desktop clipboard.
 """
+import argparse
 import io
 import json
 import os
@@ -123,9 +127,13 @@ def check_browser(fixture, web):
 
 
 def main():
+    args=argparse.ArgumentParser(description=__doc__)
+    args.add_argument("--native-paste",choices=("wayland","x11"))
+    args=args.parse_args()
     assert BACKEND.is_file(), "Run scripts/rust-client.sh once or set UNTETHERED_BACKEND"
     dist = ROOT/"rust-client/web/dist"
-    assert (dist/"backend/gomuks-worker.js").is_file(), "Run scripts/rust-web.sh first"
+    if not args.native_paste:
+        assert (dist/"backend/gomuks-worker.js").is_file(), "Run scripts/rust-web.sh first"
     os.umask(0o077)
     with tempfile.TemporaryDirectory(prefix="untethered-media-",dir=os.environ.get("TMPDIR")) as d:
         tmp = Path(d)
@@ -155,6 +163,10 @@ federation_domain_whitelist: []
                 except requests.ConnectionError:
                     time.sleep(.1)
             f, hdr = seed(tmp,hs)
+            if args.native_paste:
+                from qa_native_paste import check_paste
+                check_paste(tmp, ROOT, BACKEND, f, hdr, args.native_paste)
+                return
             fixture = tmp/"fixture.json"
             fixture.write_text(json.dumps(f))
             subprocess.run(["cargo","test","--locked","-j3","--manifest-path","rust-client/Cargo.toml",

@@ -26,8 +26,8 @@ pub fn spawn(
 }
 
 /// Clipboard worker thread command.
-#[derive(Eq, PartialEq)]
 pub enum Command {
+    ComposerOffer(Sender<Result<Option<crate::PasteOffer>>>),
     /// Store data to a clipboard.
     Store(String),
     /// Store data to a primary selection.
@@ -64,6 +64,7 @@ fn worker_impl(
         .insert_source(rx_chan, |event, _, state| {
             if let channel::Event::Msg(event) = event {
                 match event {
+                    Command::ComposerOffer(reply) => { let _=reply.send(state.composer_offer()); }
                     Command::StorePrimary(contents) => {
                         state.store_selection(SelectionTarget::Primary, contents);
                     },

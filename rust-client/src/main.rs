@@ -9,6 +9,8 @@ mod inline;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod live_test;
 mod media;
+#[cfg(not(target_arch = "wasm32"))]
+mod paste;
 mod preview;
 mod rooms;
 mod transfers;
@@ -41,6 +43,10 @@ enum Field {
 }
 #[derive(Clone)]
 enum Msg {
+    #[cfg(not(target_arch = "wasm32"))]
+    PasteComposer,
+    #[cfg(not(target_arch = "wasm32"))]
+    ClipboardReady(u64, String, paste::Result),
     HoverFiles(bool),
     #[cfg(not(target_arch = "wasm32"))]
     DropPaths(Vec<std::path::PathBuf>),
@@ -104,6 +110,10 @@ enum Request {
     Send(String, String),
 }
 struct App {
+    #[cfg(not(target_arch = "wasm32"))]
+    paste_seq: u64,
+    #[cfg(not(target_arch = "wasm32"))]
+    pasting: bool,
     commands: Sender<backend::Command>,
     outbox: media::Outbox,
     inline: inline::InlineImages,
@@ -155,6 +165,10 @@ impl App {
     }
     fn new(commands: Sender<backend::Command>) -> Self {
         Self {
+            #[cfg(not(target_arch = "wasm32"))]
+            paste_seq: 0,
+            #[cfg(not(target_arch = "wasm32"))]
+            pasting: false,
             commands,
             outbox: Default::default(),
             inline: Default::default(),
@@ -358,6 +372,11 @@ impl App {
                     .into();
                 self.matrix_id = rooms::string(&data["user_id"]);
                 if was != self.logged_in {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        self.paste_seq += 1;
+                        self.pasting = false;
+                    }
                     self.pending.retain(|_, p| matches!(p, Request::Login));
                     self.drafts.clear();
                     self.editor = text_editor::Content::new();
@@ -557,6 +576,34 @@ impl App {
             _ => false,
         };
         match msg {
+            #[cfg(not(target_arch = "wasm32"))]
+            Msg::PasteComposer if self.can_stage() && !self.pasting => {
+                self.paste_seq += 1;
+                self.pasting = true;
+                let seq = self.paste_seq;
+                let room = self.selected.clone();
+                return Task::perform(paste::read(self.media_limit), move |result| {
+                    Msg::ClipboardReady(seq, room, result)
+                });
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Msg::ClipboardReady(seq, room, result) if seq == self.paste_seq => {
+                self.pasting = false;
+                if self.can_stage() && self.rooms().list.contains_key(&room) {
+                    match result {
+                        Ok(paste::Content::Image(f)) => {
+                            return self.update(Msg::Files(room, vec![f]));
+                        }
+                        Ok(paste::Content::Text(s)) if self.selected == room => {
+                            self.editor.perform(text_editor::Action::Edit(
+                                text_editor::Edit::Paste(s.into()),
+                            ))
+                        }
+                        Err(reason) if self.selected == room => self.status = reason.into(),
+                        _ => {}
+                    }
+                }
+            }
             Msg::InlineReady(epoch, key, img) => self.inline.complete(epoch, key, img),
             Msg::ShowInline(key) => self.inline.request(key),
             Msg::Frame(f) => self.frame(f),
@@ -771,6 +818,11 @@ impl App {
             }
             Msg::Draft(a) => self.editor.perform(a),
             Msg::Send => {
+                // Do not send just the caption if Enter races PNG encoding.
+                #[cfg(not(target_arch = "wasm32"))]
+                if self.pasting {
+                    return Task::none();
+                }
                 let body = self.editor.text();
                 let id = self.selected.clone();
                 if self.outbox.rooms.get(&id).is_some_and(|q| !q.is_empty()) {

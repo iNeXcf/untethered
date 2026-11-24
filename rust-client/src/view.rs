@@ -591,7 +591,12 @@ impl App {
                 {
                     Some(text_editor::Binding::Custom(Msg::Send))
                 } else {
-                    text_editor::Binding::from_key_press(press)
+                    let binding = text_editor::Binding::from_key_press(press);
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if matches!(binding, Some(text_editor::Binding::Paste)) {
+                        return Some(text_editor::Binding::Custom(Msg::PasteComposer));
+                    }
+                    binding
                 }
             })
             .padding(11)

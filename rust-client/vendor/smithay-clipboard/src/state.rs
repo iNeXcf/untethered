@@ -141,6 +141,22 @@ impl State {
         Some(())
     }
 
+    /// Get the regular selection for an explicit paste into the focused composer.
+    pub fn composer_offer(&self) -> Result<Option<crate::PasteOffer>> {
+        let Some(selection)=self.latest_seat.as_ref()
+            .and_then(|id|self.seats.get(id)).filter(|s|s.has_focus)
+            .and_then(|s|s.data_device.as_ref()).and_then(|d|d.data().selection_offer())
+            else {return Ok(None)};
+        let mime=selection.with_mime_types(|types|{
+            if types.iter().any(|s|s=="image/png"){Some("image/png".to_owned())}
+            else {MimeType::find_allowed(types).map(|m|m.to_string())}
+        });
+        let Some(mime)=mime else{return Ok(None)};
+        let png=mime=="image/png";
+        let fd=selection.receive(mime).map_err(Error::other)?.into();
+        Ok(Some(if png {crate::PasteOffer::Png(fd)}else{crate::PasteOffer::Text(fd)}))
+    }
+
     /// Load selection for the given target.
     pub fn load_selection(&mut self, ty: SelectionTarget) -> Result<()> {
         let latest = self

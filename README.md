@@ -50,6 +50,11 @@ Uploads are sequential, with up to 10 staged files per room and a 64 MiB/file ca
 (lower if the homeserver advertises a smaller limit). Click **Save** on a received
 attachment. Preview mode simulates a send locally; it never uploads.
 
+To send a screenshot, copy it and press **Ctrl+V in the message composer**.
+An image becomes a removable PNG attachment; plain text is inserted at the cursor.
+The image stays local until Send. Linux Wayland reads the focused clipboard
+through the app's existing data device; no clipboard watcher or helper daemon is needed.
+
 Received images show an inline thumbnail in the active conversation. The client
 uses encrypted Matrix thumbnails when available, or decodes a small original
 (up to 4 MiB) via gomuks. **Save** still downloads the original. The repeatable

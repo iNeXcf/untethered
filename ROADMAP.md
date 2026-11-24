@@ -16,7 +16,11 @@
 - **Received images:** verified inline encrypted thumbnails on native and Chromium;
   an independent browser device rendered the expected image after both login and reload.
   `scripts/test-media-interop.py` reruns the check with disposable accounts.
-- **Files still to do:** native screenshot paste, portal-only
+- **Native screenshot paste:** verified real Ctrl+V on Wayland and X11 with
+  `scripts/test-media-interop.py --native-paste {wayland,x11}`. Each had zero
+  uploads/events while staged and one upload/encrypted image event after Send;
+  downloaded ciphertext decrypted to the exact test pixels and the pasted text caption.
+- **Files still to do:** portal-only
   drop offers, transfer percentages and cancellation after upload starts. Check real
   KDE/KWin and Windows Explorer along with the image/PDF acceptance matrix below.
 - **Calls started:** a user-triggered MatrixRTC transport check in Account, and a

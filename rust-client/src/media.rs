@@ -11,9 +11,16 @@ pub struct LocalFile {
     pub name: String,
     pub size: u64,
     #[cfg(not(target_arch = "wasm32"))]
-    pub path: std::path::PathBuf,
+    pub origin: NativeSource,
     #[cfg(target_arch = "wasm32")]
     pub file: web_sys::File,
+}
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone)]
+pub enum NativeSource {
+    Path(std::path::PathBuf),
+    // Paste stays in process memory until Send or removal; clones share bytes.
+    Clipboard(bytes::Bytes),
 }
 #[cfg(not(target_arch = "wasm32"))]
 impl LocalFile {
@@ -25,7 +32,7 @@ impl LocalFile {
         Some(Self {
             name: path.file_name()?.to_string_lossy().into_owned(),
             size: meta.len(),
-            path,
+            origin: NativeSource::Path(path),
         })
     }
 }

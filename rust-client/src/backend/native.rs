@@ -251,13 +251,27 @@ async fn upload(
     encrypt: bool,
     limit: u64,
 ) -> Result<Value, &'static str> {
-    let f = tokio::fs::File::open(file.path)
-        .await
-        .map_err(|_| "File cannot be opened.")?;
-    let meta = f.metadata().await.map_err(|_| "Cannot read file size.")?;
-    if !meta.is_file() || meta.len() != file.size || meta.len() > limit {
-        return Err("File changed or exceeds the upload limit. Remove and attach it again.");
+    if file.size > limit {
+        return Err("File exceeds the upload limit.");
     }
+    let body = match file.origin {
+        crate::media::NativeSource::Path(path) => {
+            let f = tokio::fs::File::open(path)
+                .await
+                .map_err(|_| "File cannot be opened.")?;
+            let meta = f.metadata().await.map_err(|_| "Cannot read file size.")?;
+            if !meta.is_file() || meta.len() != file.size {
+                return Err("File changed. Remove and attach it again.");
+            }
+            reqwest::Body::from(f)
+        }
+        crate::media::NativeSource::Clipboard(bytes) => {
+            if bytes.len() as u64 != file.size {
+                return Err("Clipboard image size mismatch.");
+            }
+            reqwest::Body::from(bytes)
+        }
+    };
     let reply = http
         .post(format!("http://{addr}/_gomuks/upload"))
         .header("Cookie", cookie)
@@ -267,7 +281,7 @@ async fn upload(
             ("encrypt", if encrypt { "true" } else { "false" }),
         ])
         .timeout(Duration::from_secs(600))
-        .body(reqwest::Body::from(f))
+        .body(body)
         .send()
         .await
         .map_err(|_| "Upload interrupted.")?;
