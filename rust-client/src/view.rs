@@ -624,14 +624,20 @@ impl App {
         .spacing(9)
         .align_y(Center);
         let header = if self.logged_in && self.verified && room.is_some() {
-            header.push(
-                button(text("Search").size(13))
-                    .style(nav(self.search.is_some()))
-                    .on_press_maybe(
-                        (self.search.is_none() && self.original.is_none())
-                            .then_some(Msg::OpenSearch),
-                    ),
-            )
+            header
+                .push(
+                    button(text("Permissions").size(13))
+                        .style(nav(self.permission_panel))
+                        .on_press(Msg::Permissions),
+                )
+                .push(
+                    button(text("Search").size(13))
+                        .style(nav(self.search.is_some()))
+                        .on_press_maybe(
+                            (self.search.is_none() && self.original.is_none())
+                                .then_some(Msg::OpenSearch),
+                        ),
+                )
         } else {
             header
         };
@@ -691,6 +697,62 @@ impl App {
         ];
         if let Some(banner) = banner {
             chat = chat.push(banner)
+        }
+        if self.permission_panel
+            && let Some(r) = room
+        {
+            let policy = &r.posting;
+            let mut panel = column![text("Room permissions · Posting").font(BOLD)].spacing(4);
+            if let Some((member, plain, encrypted)) = policy.summary()
+                && let Some(base) = policy.id()
+                && let Some(action) = policy.action()
+            {
+                let busy = self.posting_busy(&self.selected);
+                let status = if plain > member && encrypted > member {
+                    "Read-only for ordinary members"
+                } else if plain <= member && encrypted <= member {
+                    "Members can post"
+                } else {
+                    "Custom posting levels"
+                };
+                panel = panel.push(
+                    text(format!(
+                        "{status} · member level {member}, message {plain}, encrypted {encrypted}"
+                    ))
+                    .size(14),
+                );
+                if policy.patch(&self.matrix_id, action).is_some() {
+                    panel = panel.push(
+                        button(text(if busy { "Updating…" } else { action.label() }).size(14))
+                            .style(nav(false))
+                            .on_press_maybe((self.connected && !busy).then(|| {
+                                Msg::SetPosting(crate::permissions::Change {
+                                    room: self.selected.clone(),
+                                    base: base.into(),
+                                    action,
+                                })
+                            })),
+                    );
+                } else {
+                    panel =
+                        panel.push(text("Your role cannot change these posting levels.").size(13));
+                }
+                panel=panel.push(text(match action{
+                    crate::permissions::Action::Restrict=>"Read-only raises the default event level and chat overrides. Higher-level members can still post.",
+                    crate::permissions::Action::Restore=>"Restore the previous posting levels, keeping subsequent rule changes.",
+                    crate::permissions::Action::Allow=>"Open plain and encrypted messages to ordinary members. Other event levels stay in place.",
+                }).size(13).color(MUTED));
+            } else {
+                panel = panel.push(
+                    text("Posting permissions unavailable until room state is loaded.").size(13),
+                );
+            }
+            chat = chat.push(
+                container(panel)
+                    .padding([6, 14])
+                    .width(Fill)
+                    .style(|_| surface(TRAY, 5.)),
+            );
         }
         #[cfg(target_os = "linux")]
         if self.alerts.panel
@@ -1141,7 +1203,13 @@ impl App {
         {
             viewport = viewport.push(text("Loading original message…").size(13));
         }
-        let hint = format!("Message {}{}", if r.dm { "@" } else { "#" }, r.name);
+        let restricted =
+            self.logged_in && r.posting.can_post(&self.matrix_id, r.encrypted) == Some(false);
+        let hint = if restricted {
+            "Read-only for your account".into()
+        } else {
+            format!("Message {}{}", if r.dm { "@" } else { "#" }, r.name)
+        };
         let editor = text_editor(&self.editor)
             .id("composer")
             .placeholder(hint)
@@ -1236,6 +1304,7 @@ impl App {
             )
             .on_press_maybe(
                 (!sending
+                    && !restricted
                     && (!self.logged_in || self.connected)
                     && (has_files && self.batch.is_none()
                         || !has_files && !self.editor.text().trim().is_empty()))
@@ -1244,7 +1313,9 @@ impl App {
         ]
         .spacing(8)
         .align_y(Center);
-        let foot = if !self.logged_in {
+        let foot = if restricted {
+            "Read-only for your account"
+        } else if !self.logged_in {
             "Local preview · Messages stay here"
         } else if r.encrypted {
             "End-to-end encrypted"

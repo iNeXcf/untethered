@@ -20,6 +20,7 @@ mod media;
 mod notifications;
 #[cfg(not(target_arch = "wasm32"))]
 mod paste;
+mod permissions;
 mod preview;
 mod reactions;
 mod replies;
@@ -150,6 +151,8 @@ enum Msg {
     More,
     Copy,
     TogglePeople,
+    Permissions,
+    SetPosting(permissions::Change),
     Account,
     Back,
     Server(String),
@@ -196,6 +199,7 @@ enum Request {
     Members(String),
     Send(String, String, Option<rooms::Quote>),
     Context(String, String),
+    Posting(permissions::Flight),
     Edit(String, String),
     Reaction(reactions::Toggle),
     Search(String, search::Page),
@@ -241,6 +245,7 @@ struct App {
     verified: bool,
     account: bool,
     people: bool,
+    permission_panel: bool,
     profile: String,
     matrix_id: String,
     status: String,
@@ -311,6 +316,7 @@ impl App {
             verified: false,
             account: false,
             people: false,
+            permission_panel: false,
             profile: String::new(),
             matrix_id: String::new(),
             status: "Starting gomuks…".into(),
@@ -391,6 +397,7 @@ impl App {
             return;
         }
         self.close_original();
+        self.leave_permission_panel();
         #[cfg(target_os = "linux")]
         {
             self.alerts.panel = false;
@@ -571,6 +578,7 @@ impl App {
                     self.drafts.clear();
                     self.clear_search();
                     self.reply_drafts.clear();
+                    self.leave_permission_panel();
                     #[cfg(target_os = "linux")]
                     self.alerts.reset();
                     self.editing = None;
@@ -597,6 +605,7 @@ impl App {
             }
             "sync_complete" => {
                 if data["clear_state"] == true {
+                    self.leave_permission_panel();
                     self.close_original();
                     self.clear_search();
                     #[cfg(target_os = "linux")]
@@ -720,6 +729,7 @@ impl App {
                             "Could not load history. Use Earlier messages to retry."
                         }
                         Request::Members(_) => "Could not load room members.",
+                        Request::Posting(_)=> "Could not change posting permissions. Check your room role and connection.",
                         Request::Send(..) => "Could not send. Your draft has been kept.",
                         Request::Context(..)=>"Could not load the original message. Try again from the reply.",
                         Request::Edit(room,id)=>{self.finish_edit(f["request_id"].as_i64().unwrap(),&room,&id,&Value::Null);return}
@@ -762,6 +772,7 @@ impl App {
                         };
                     }
                     Request::Context(room, id) => self.show_context(room, id, data),
+                    Request::Posting(f) => self.posting_result(f, data),
                     Request::Reaction(op) => self.finish_reaction(op, data),
                     Request::Search(room, kind) => self.search_response(room, kind, data),
                     Request::Edit(room, id) => {
@@ -790,6 +801,9 @@ impl App {
                     }
                     Request::Members(id) => {
                         if let Some(r) = self.live.list.get_mut(&id) {
+                            for e in items(data) {
+                                r.posting.ingest(&id, e, true);
+                            }
                             #[cfg(target_os = "linux")]
                             if r.voice {
                                 for e in items(data) {
@@ -1340,6 +1354,14 @@ impl App {
                 }
             }
             Msg::Draft(a) => self.editor.perform(a),
+            Msg::Permissions => {
+                if self.permission_panel {
+                    self.leave_permission_panel();
+                } else {
+                    self.permission_panel = true;
+                }
+            }
+            Msg::SetPosting(c) => self.change_posting(c),
             Msg::OpenSearch => return self.begin_search(),
             Msg::SearchReady(room, b) => return self.search_ready(room, b),
             Msg::SearchInput(input) => {
@@ -1438,6 +1460,14 @@ impl App {
                 }
             }
             Msg::Send => {
+                if self.logged_in
+                    && self.live.list.get(&self.selected).is_some_and(|r| {
+                        r.posting.can_post(&self.matrix_id, r.encrypted) == Some(false)
+                    })
+                {
+                    self.status = "This room is read-only for your account.".into();
+                    return Task::none();
+                }
                 // Do not send just the caption if Enter races PNG encoding.
                 #[cfg(not(target_arch = "wasm32"))]
                 if self.pasting {

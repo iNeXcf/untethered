@@ -55,6 +55,13 @@ Matrix account. While Untethered is running, alerts go to the desktop
 notification service; the room you’re currently viewing in a focused
 window doesn’t also show a popup.
 
+**Room posting permissions:** Open **Permissions** in the room header to see
+the levels required for plain and encrypted messages. If your role allows it,
+choose **Make read-only** to stop ordinary members from posting. Members with
+sufficient power can still post announcements. **Restore posting** brings
+back the previous posting levels, including inherited defaults, and keeps
+rules another administrator changed in the meantime.
+
 **Room search:** Click **Search** in the room header, enter a word or phrase,
 and press Enter. Results come from this device’s gomuks history and use the
 current text of edited messages. **Check coverage** shows the number of

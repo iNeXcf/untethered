@@ -22,6 +22,7 @@ pub struct Rooms {
 }
 #[derive(Default)]
 pub struct Room {
+    pub posting: crate::permissions::Posting,
     pub name: String,
     pub topic: String,
     pub space: bool,
@@ -346,6 +347,12 @@ impl Rooms {
             for e in items(&delta["events"]) {
                 if e["room_id"].as_str().is_some_and(|room| room != id) {
                     continue;
+                }
+                if let Some(ty) = e["type"].as_str()
+                    && e["state_key"] == ""
+                    && delta["state"][ty][""] == e["rowid"]
+                {
+                    room.posting.ingest(id, e, false);
                 }
                 #[cfg(target_os = "linux")]
                 if let Some(key) = e["state_key"].as_str()

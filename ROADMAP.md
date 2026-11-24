@@ -171,6 +171,15 @@
   removed it from the homeserver. Browser, closed-app and wider notification
   workflows remain unverified.
 
+- **Room posting enforcement:** The [two-account Synapse test](scripts/room-permissions.md)
+  made an encrypted room read-only through Untethered. Synapse rejected the
+  joined member’s encrypted send, plain-text send and attempt to change the
+  posting rule with HTTP 403 `M_FORBIDDEN`; the administrator could still
+  post. After Untethered restarted and restored posting, Synapse accepted
+  the member’s message and both clients displayed it. A stricter sticker
+  permission and intervening changes to two other rules survived restoration.
+  Kick, ban, and broader moderation workflows remain open.
+
 ## What parity means
 
 A small community should be able to move its everyday conversations here: find a server and its channels, talk in DMs, drop a screenshot, join friends in voice, share a screen, catch up on mentions, and moderate its space. Test those workflows side by side with Discord. A button that looks right but doesn't work with another Matrix client isn't parity.

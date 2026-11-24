@@ -15,7 +15,7 @@ from qa_native_paste import child,isolated_env,start_display,wait_for
 from qa_upload_cancel import slow_gateway
 
 
-def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False,room_search=False,alerts=False):
+def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False,room_search=False,alerts=False,permissions=False):
     paths=[]
     def observe(method,path):
         if room_search or method=="GET" and "/context/" in path:paths.append(unquote(path))
@@ -76,6 +76,15 @@ def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False,room_searc
                 print("Native visible words:",[w for w,_,_ in words()],flush=True);raise
         def click(pos):x("mousemove","--window",win,*map(str,pos),"click","1")
         def lines(words,label):return [(x,y) for v,x,y in words if v==label and x>280]
+        if permissions:
+            from qa_room_permissions import check_permissions
+            def restart_native():
+                nonlocal win
+                native_life.close()
+                win=launch()
+            check_permissions(page,api,room,native,hdr,bh,http,locate,click,restart_native,
+                              lambda *args:x(*[win if arg=="WIN" else arg for arg in args]))
+            return
         if alerts:
             from qa_room_alerts import check_room_alerts
             def restart_native():
