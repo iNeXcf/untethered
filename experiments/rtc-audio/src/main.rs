@@ -13,6 +13,7 @@ use livekit::{
     },
 };
 use std::{env, time::Duration};
+use tokio::sync::{mpsc, oneshot};
 
 fn options(keys: &[[u8; 32]; 2]) -> Result<RoomOptions> {
     let provider = KeyProvider::new(Default::default());
@@ -29,7 +30,26 @@ fn options(keys: &[[u8; 32]; 2]) -> Result<RoomOptions> {
     });
     Ok(opts)
 }
-async fn publish(room: &Room, hz: f64) -> Result<tokio::task::JoinHandle<()>> {
+struct Tone {
+    publication: LocalTrackPublication,
+    changes: mpsc::Sender<(u32, oneshot::Sender<()>)>,
+    task: tokio::task::JoinHandle<()>,
+}
+impl Tone {
+    /// Return after submitting a frame at the new frequency on the existing source.
+    async fn change_to(&self, hz: u32) -> Result<()> {
+        let (tx, rx) = oneshot::channel();
+        self.changes.send((hz, tx)).await?;
+        rx.await?;
+        Ok(())
+    }
+}
+impl Drop for Tone {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+async fn publish(room: &Room, mut hz: u32) -> Result<Tone> {
     let src = NativeAudioSource::new(AudioSourceOptions::default(), 48000, 1, 50);
     let track =
         LocalAudioTrack::create_audio_track("test-tone", RtcAudioSource::Native(src.clone()));
@@ -47,15 +67,20 @@ async fn publish(room: &Room, hz: f64) -> Result<tokio::task::JoinHandle<()>> {
         publication.encryption_type() == EncryptionType::Gcm,
         "published audio without GCM"
     );
-    Ok(tokio::spawn(async move {
+    let (changes, mut updates) = mpsc::channel::<(u32, oneshot::Sender<()>)>(1);
+    let task = tokio::spawn(async move {
         let mut index = 0_u64;
         let mut clock = tokio::time::interval(Duration::from_millis(10));
         clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             clock.tick().await;
+            let changed = updates.try_recv().ok().map(|(next, sent)| {
+                hz = next;
+                sent
+            });
             let data = (0..480)
                 .map(|_| {
-                    let y = (index as f64 * std::f64::consts::TAU * hz / 48000.).sin();
+                    let y = (index as f64 * std::f64::consts::TAU * f64::from(hz) / 48000.).sin();
                     index += 1;
                     (y * 9000.) as i16
                 })
@@ -72,8 +97,16 @@ async fn publish(room: &Room, hz: f64) -> Result<tokio::task::JoinHandle<()>> {
             {
                 break;
             }
+            if let Some(sent) = changed {
+                let _ = sent.send(());
+            }
         }
-    }))
+    });
+    Ok(Tone {
+        publication,
+        changes,
+        task,
+    })
 }
 async fn receive(
     mut events: tokio::sync::mpsc::UnboundedReceiver<RoomEvent>,
@@ -139,10 +172,10 @@ async fn main() -> Result<()> {
         println!("First peer joined.");
         let (b,be)=Room::connect(&url,&env::var("RTC_TOKEN_B")?,options(&keys)?).await?;
         println!("Second peer joined.");
-        let (at,bt)=tokio::try_join!(publish(&a,480.),publish(&b,960.))?;
+        let (at,bt)=tokio::try_join!(publish(&a,480),publish(&b,960))?;
         println!("Published both audio tracks; checking decoded PCM.");
         let result=tokio::try_join!(receive(ae,960.,None),receive(be,480.,None));
-        at.abort();bt.abort(); let _=tokio::join!(a.close(),b.close());result?;
+        drop((at,bt)); let _=tokio::join!(a.close(),b.close());result?;
         println!("PASS: two native peers decoded each other's distinct tones on encrypted LiveKit audio tracks.");
         Ok::<(),anyhow::Error>(())
     }).await??;

@@ -26,6 +26,36 @@ use tokio_tungstenite::{
 mod membership;
 
 const KEY: &str = "io.element.call.encryption_keys";
+struct SenderKey {
+    index: u8,
+    bytes: [u8; 32],
+}
+impl SenderKey {
+    fn fresh(index: u8) -> Result<Self> {
+        let mut bytes = [0; 32];
+        getrandom::fill(&mut bytes).map_err(|_| anyhow::anyhow!("OS randomness unavailable"))?;
+        Ok(Self { index, bytes })
+    }
+
+    async fn share(
+        &self,
+        rpc: &mut Rpc,
+        room: &str,
+        member: &str,
+        device: &str,
+        peer: &str,
+        peer_device: &str,
+    ) -> Result<()> {
+        let key = json!({"index":self.index,"key":STANDARD.encode(self.bytes)});
+        let content = json!({"room_id":room,"member_id":member,"member":{"id":member,"claimed_device_id":device},"media_key":key,"keys":key});
+        rpc.call(
+            "send_to_device",
+            json!({"event_type":KEY,"encrypted":true,"messages":{peer:{peer_device:content}}}),
+        )
+        .await?;
+        Ok(())
+    }
+}
 struct Rpc {
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
     seq: u64,
@@ -171,10 +201,7 @@ pub async fn run() -> Result<()> {
     ensure!(url == "ws://127.0.0.1:18820", "unexpected test SFU");
     let jwt = authorization["jwt"].as_str().context("missing SFU token")?;
     println!("Native: obtained SFU authorization with the verified gomuks device's OpenID token.");
-    let mut mine = [0u8; 32];
-    getrandom::fill(&mut mine).map_err(|_| anyhow::anyhow!("OS randomness unavailable"))?;
-    let key = json!({"index":0,"key":STANDARD.encode(mine)});
-    let content = json!({"room_id":room,"member_id":my_id,"member":{"id":my_id,"claimed_device_id":device},"media_key":key,"keys":key});
+    let mine = SenderKey::fresh(0)?;
     let (index, theirs) = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             for e in rpc.keys.drain(..) {
@@ -194,7 +221,7 @@ pub async fn run() -> Result<()> {
                     .decode(encoded)
                     .or_else(|_| STANDARD_NO_PAD.decode(encoded))?;
                 ensure!(
-                    matches!(bytes.len(), 16 | 32) && bytes != mine,
+                    matches!(bytes.len(), 16 | 32) && bytes != mine.bytes,
                     "invalid remote sender key length: {}",
                     bytes.len()
                 );
@@ -216,18 +243,18 @@ pub async fn run() -> Result<()> {
     });
     ensure!(
         provider.set_key(&peer_id.clone().into(), index, theirs)
-            && provider.set_key(&my_id.clone().into(), 0, mine.to_vec())
+            && provider.set_key(&my_id.clone().into(), 0, mine.bytes.to_vec())
     );
     let mut opts = RoomOptions::default();
     opts.encryption = Some(E2eeOptions {
         encryption_type: EncryptionType::Gcm,
-        key_provider: provider,
+        key_provider: provider.clone(),
     });
     let (lk, events) = Room::connect(url, jwt, opts)
         .await
         .context("SFU connection failed")?;
     ensure!(lk.local_participant().identity().0 == my_id);
-    let tone = publish(&lk, 480.).await?;
+    let tone = publish(&lk, 480).await?;
     my_member
         .heartbeat(async |cmd, body| rpc.call(cmd, body).await.map_err(|e| e.to_string()))
         .await
@@ -251,14 +278,60 @@ pub async fn run() -> Result<()> {
         Ok(())
     }
     ack("release-sender-key").await?;
-    rpc.call(
-        "send_to_device",
-        json!({"event_type":KEY,"encrypted":true,"messages":{peer:{peer_device:content}}}),
-    )
-    .await?;
+    mine.share(&mut rpc, room, &my_id, device, peer, peer_device)
+        .await?;
     println!("Native: released sender key through gomuks to Element's call device only.");
-    ack("element-decoded").await?;
-    tone.abort();
+    ack("rotate-after-480").await?;
+    let mut lifecycle = lk.subscribe();
+    let publication_sid = tone.publication.sid();
+    let local = lk.local_participant().identity();
+    let cryptor = lk
+        .e2ee_manager()
+        .frame_cryptors()
+        .remove(&(local.clone(), publication_sid.clone()))
+        .context("no cryptor for live sender")?;
+    ensure!(
+        cryptor.enabled()
+            && cryptor.key_index() == 0
+            && lk.connection_state() == ConnectionState::Connected
+    );
+    let next = SenderKey::fresh(1)?;
+    ensure!(next.bytes != mine.bytes);
+    // Adding a key to the provider alone doesn't select it for an existing RTP sender.
+    ensure!(provider.set_key(&local, i32::from(next.index), next.bytes.to_vec()));
+    cryptor.set_key_index(i32::from(next.index));
+    ensure!(cryptor.enabled() && cryptor.key_index() == 1);
+    tone.change_to(730).await?;
+    println!("ROTATION_ACTIVE index=1 tone_hz=730");
+    ack("release-rotated-key").await?;
+    next.share(&mut rpc, room, &my_id, device, peer, peer_device)
+        .await?;
+    ack("element-decoded-730").await?;
+    ensure!(
+        cryptor.enabled()
+            && cryptor.key_index() == 1
+            && tone.publication.encryption_type() == EncryptionType::Gcm
+    );
+    ensure!(
+        lk.connection_state() == ConnectionState::Connected
+            && tone.publication.sid() == publication_sid
+    );
+    while let Ok(event) = lifecycle.try_recv() {
+        ensure!(
+            !matches!(
+                event,
+                RoomEvent::Reconnecting
+                    | RoomEvent::Reconnected
+                    | RoomEvent::Disconnected { .. }
+                    | RoomEvent::LocalTrackRepublished { .. }
+                    | RoomEvent::LocalTrackUnpublished { .. }
+                    | RoomEvent::ParticipantDisconnected(_)
+            ),
+            "native participant reconnected or publication replaced during rotation"
+        );
+    }
+    println!("Native: same GCM publication at sender key index 1; no disconnection or republish.");
+    drop(tone);
     lk.close().await?;
     my_member
         .leave(async |cmd, body| rpc.call(cmd, body).await.map_err(|e| e.to_string()))

@@ -47,9 +47,12 @@
   Element Call widget, gomuks Olm sender-key exchange, and OpenID authorization
   through lk-jwt-service 0.10.0. Rust measured Element's 960 Hz on decoded PCM;
   Element received encrypted RTP without decoding Rust's 480 Hz until the key
-  arrived, then measured it on the inbound track. These are disposable local
-  devices and synthetic tones. Key rotation, real capture/playback, ringing,
-  relay-required connectivity and the Iced call controls remain open.
+  arrived, then measured it on the inbound track. The Rust probe also rotated
+  its sender key mid-call: Element received 92 further RTP packets with no new
+  tone before key 1 arrived, then measured 726.6 Hz for the 730 Hz test tone
+  on the same track and SSRC, without reconnecting. Element-initiated rotation,
+  real capture/playback, ringing, relay-required connectivity and Iced call
+  controls remain open.
 
 ## What parity means
 

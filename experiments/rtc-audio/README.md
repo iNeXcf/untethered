@@ -37,9 +37,18 @@ matching the room, sender and participating device/member. The test requires:
   with no sustained **480 Hz** tone in its inbound audio.
 - After gomuks sends the key to that Element device, the widget measures
   **480 Hz** for ten consecutive spectra of its received WebRTC track.
+- During that same call, Rust installs a fresh sender key at index **1**,
+  selects it on the existing frame cryptor, and submits **730 Hz** on the same
+  microphone publication. With key 1 withheld, the test requires at least
+  **80 additional RTP packets** and **18 additional spectra** with no 730 Hz
+  detection. After gomuks delivers key 1 over Olm, Element must detect the new
+  tone for ten consecutive spectra. The browser checks the same receiver,
+  track, SSRC and open SFU signaling socket throughout; Rust checks the same
+  GCM publication and no reconnect or republish events.
 
 This is a synthetic microphone on a local ICE network. It does not exercise
-real capture/playback hardware, TURN, incoming DM ringing or live key rotation.
+real capture/playback hardware, TURN, incoming DM ringing, or a rotation
+initiated by Element.
 
 ## Replay the two-Rust-peer test
 
@@ -93,6 +102,6 @@ sentinel, so a roster entry does not demonstrate a media connection.
 ## What comes next
 
 Move the proven signaling and media path into the desktop client. Keep the
-active call independent of navigation; handle ongoing key changes, microphone
+active call independent of navigation; handle incoming key changes, microphone
 and output devices, mute/deafen, DM ringing and hangup. Verify relay-required
 audio separately. Windows runtime testing is deferred.

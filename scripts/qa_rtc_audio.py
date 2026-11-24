@@ -9,6 +9,7 @@ import re
 import secrets
 import shutil
 import subprocess as sp
+import threading
 import wave
 from contextlib import ExitStack
 from urllib.parse import quote, urlsplit
@@ -102,6 +103,11 @@ rtc:
         ctx=browser.new_context(permissions=["microphone","camera"])
         ctx.add_init_script(path=root/"scripts/qa_rtc_pcm.js")
         page=login_element(ctx,web,peer,room)
+        sockets=[]
+        def watch_sfu(ws):
+            if urlsplit(ws.url).netloc=="127.0.0.1:18820":
+                sockets.append(ws)
+        page.on("websocket",watch_sfu)
         dev=page.evaluate("window.mxMatrixClientPeg.get().getDeviceId()")
         call=page.get_by_role("button",name="Voice call",exact=True)
         call.click(timeout=12000)
@@ -124,29 +130,62 @@ rtc:
         addr=json.loads(engine.stdout.readline())["address"]
         session=http("POST",f"http://{addr}/_gomuks/auth?insecure_cookie=true",auth=("desktop-key",key))
         probe=sp.Popen([root/"experiments/rtc-audio/target/debug/untethered-rtc-probe","--element"],
-                       stdin=sp.PIPE,text=True)
+                       stdin=sp.PIPE,stdout=sp.PIPE,text=True)
+        rotated=threading.Event()
+        def progress():
+            for line in probe.stdout:
+                print(line,end="",flush=True)
+                if line.strip()=="ROTATION_ACTIVE index=1 tone_hz=730":
+                    rotated.set()
+        reader=threading.Thread(target=progress)
+        reader.start()
         def stop_probe():
             if probe.poll() is None:probe.terminate()
             probe.wait(timeout=8)
+            reader.join(timeout=3)
         stack.callback(stop_probe)
         probe.stdin.write(json.dumps({"ws":f"ws://{addr}/_gomuks/websocket","cookie":session.cookies["gomuks_auth"],
             "room":room,"service":jwt,"user":bob,"device":dev})+"\n")
         probe.stdin.flush()
+        def stats():
+            assert probe.poll() is None, "native probe exited during the media test"
+            return widget.evaluate("window.qaAudioStats?.() ?? null")
+        def signal(message):
+            probe.stdin.write(message+"\n");probe.stdin.flush()
         def inbound():
-            assert probe.poll() is None, "native probe exited before negative control"
-            if not widget.evaluate("typeof window.qaInbound === 'function'"):return False
-            packets=widget.evaluate("window.qaInbound()")
-            spectra=widget.evaluate("window.qaSpectra || 0")
-            assert not widget.evaluate("!!window.qaReceived480"),"Element decoded the tone without its sender key"
-            if packets>=60 and spectra>=15:return packets
+            s=stats()
+            if not s:return False
+            assert not s["got480"],"Element decoded 480 Hz without its sender key"
+            if s["packets"]>=60 and s["spectra"]>=15:return s["packets"]
         packets=wait_for("Element receiving encrypted RTP before key delivery",inbound,40)
         print(f"Withheld native sender key: {packets} inbound RTP packets, no decoded 480 Hz tone.",flush=True)
-        probe.stdin.write("release-sender-key\n");probe.stdin.flush()
-        def decoded():
-            assert probe.poll() is None, "native probe exited before Element decoded its tone"
-            return widget.evaluate("window.qaReceived480 === true")
-            return False
-        wait_for("Element decoded native 480 Hz on inbound WebRTC track",decoded,45)
+        signal("release-sender-key")
+        initial=wait_for("Element decoded 480 Hz with key 0",lambda:s if (s:=stats())["got480"] else None,45)
         print("Element decoded 480 Hz from Rust in 10 consecutive audio spectra.",flush=True)
-        probe.stdin.write("element-decoded\n");probe.stdin.close()
-        assert probe.wait(timeout=30)==0,"native side did not decode 960 Hz from Element"
+        assert initial["ssrc"] and initial["state"]=="connected" and initial["hits730"]==0
+        initial_sockets=list(sockets)
+        assert initial_sockets and all(not ws.is_closed() for ws in initial_sockets)
+        def same_stream():
+            s=stats()
+            assert s and s["state"]=="connected" and s["packets"]>=initial["packets"]
+            for field in ("receiverId","trackId","ssrc","peerConnections","losses"):
+                assert s[field]==initial[field], f"{field} changed during sender-key rotation"
+            assert sockets==initial_sockets and all(not ws.is_closed() for ws in sockets),"SFU signaling reconnected"
+            return s
+        signal("rotate-after-480")
+        assert rotated.wait(timeout=8),"Rust did not switch the active frame cryptor and audio source"
+        start=same_stream()
+        def withheld():
+            s=same_stream()
+            assert s["hits730"]==0,"Element decoded new audio before the rotated key was delivered"
+            if s["packets"]-start["packets"]>=80 and s["spectra"]-start["spectra"]>=18 and s["spectra"]-s["last480"]>=5:
+                return s
+        silent=wait_for("encrypted RTP continues while only key 0 is available",withheld,12)
+        delta=silent["packets"]-start["packets"]
+        print(f"Withheld key 1: +{delta} packets on the original SSRC, 0 spectra at 730 Hz.",flush=True)
+        signal("release-rotated-key")
+        after=wait_for("Element decoded 730 Hz with key 1",lambda:s if (s:=same_stream())["got730"] else None,15)
+        print(f"Released key 1: Element measured {after['measured730']:.1f} Hz for 10 consecutive spectra; "
+              "same receiver, track, SSRC and SFU signaling connection.",flush=True)
+        signal("element-decoded-730");probe.stdin.close()
+        assert probe.wait(timeout=10)==0,"native continuity or encryption check failed"
