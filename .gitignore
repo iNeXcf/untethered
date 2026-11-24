@@ -5,3 +5,5 @@
 *.log
 
 /.dev/
+/rust-client/target/
+/rust-client/web/dist/

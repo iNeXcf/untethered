@@ -1,0 +1,157 @@
+use super::{Commands, Events};
+use futures_util::{SinkExt, StreamExt};
+use serde_json::{Value, json};
+use std::{env, fs, net::SocketAddr, path::PathBuf, process::Stdio, time::Duration};
+use tokio::{
+    io::{AsyncBufReadExt, BufReader},
+    process::Command,
+    time,
+};
+use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
+
+pub async fn run(commands: Commands, events: Events) -> Result<(), String> {
+    let exe = env::var_os("UNTETHERED_BACKEND")
+        .map(PathBuf::from)
+        .ok_or("Set UNTETHERED_BACKEND to the pinned gomuks executable.")?;
+    let root = env::var_os("UNTETHERED_PROFILE")
+        .map(PathBuf::from)
+        .ok_or("Set UNTETHERED_PROFILE to a separate Rust client profile directory.")?;
+    let mut dir = fs::DirBuilder::new();
+    dir.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut dir, 0o700);
+    dir.create(&root)
+        .map_err(|_| "Cannot create the profile directory.")?;
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(root.join("rust-client.lock"))
+        .map_err(|_| "Cannot open the profile lock.")?;
+    lock.try_lock()
+        .map_err(|_| "This profile is already open.")?;
+
+    let key = uuid::Uuid::new_v4().to_string() + &uuid::Uuid::new_v4().to_string();
+    let mut child = Command::new(exe);
+    #[cfg(windows)]
+    child.creation_flags(0x08000000); // CREATE_NO_WINDOW for the console backend.
+    for (k, _) in env::vars_os() {
+        if k.to_string_lossy().starts_with("GOMUKS_") {
+            child.env_remove(k);
+        }
+    }
+    let mut child = child
+        .arg("--desktop")
+        .env("GOMUKS_ROOT", &root)
+        .env("GOMUKS_DESKTOP_KEY", &key)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .stdin(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|_| "Cannot launch gomuks.")?;
+    let mut stdout = BufReader::new(child.stdout.take().unwrap()).lines();
+    let addr = time::timeout(Duration::from_secs(15), async {
+        while let Some(line) = stdout
+            .next_line()
+            .await
+            .map_err(|_| "Cannot read gomuks startup.")?
+        {
+            let Ok(frame) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            if frame["started"] == true {
+                return frame["address"]
+                    .as_str()
+                    .and_then(|s| s.parse::<SocketAddr>().ok())
+                    .filter(|a| a.ip().is_loopback() && a.port() != 0)
+                    .ok_or("Invalid gomuks loopback address.");
+            }
+        }
+        Err("gomuks stopped during startup.")
+    })
+    .await
+    .map_err(|_| "gomuks startup timed out.")??;
+    let http = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|_| "Cannot initialize HTTP.")?;
+    let response = http
+        .post(format!("http://{addr}/_gomuks/auth?insecure_cookie=true"))
+        .basic_auth("desktop-key", Some(key))
+        .send()
+        .await
+        .map_err(|_| "Cannot reach gomuks.")?;
+    if !response.status().is_success() {
+        return Err("gomuks rejected local authentication.".into());
+    }
+    let cookie = response
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|h| h.to_str().ok()?.split(';').next())
+        .find(|s| s.starts_with("gomuks_auth="))
+        .ok_or("Missing gomuks session cookie.")?;
+    let mut request = format!("ws://{addr}/_gomuks/websocket")
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("Cookie", cookie.parse().map_err(|_| "Invalid cookie.")?);
+    let (mut ws, _) = time::timeout(
+        Duration::from_secs(8),
+        tokio_tungstenite::connect_async(request),
+    )
+    .await
+    .map_err(|_| "gomuks connection timed out.")?
+    .map_err(|_| "Cannot connect to gomuks.")?;
+    let mut heartbeat = time::interval(Duration::from_secs(15));
+    let mut last_received = 0;
+    let mut last_frame = time::Instant::now();
+    loop {
+        let outgoing = tokio::select! {
+            frame = ws.next() => {
+                match frame {
+                    Some(Ok(Message::Text(text))) => {
+                        let frame: Value = serde_json::from_str(&text).map_err(|_| "Invalid gomuks frame.")?;
+                        if let Some(id) = frame["request_id"].as_i64().filter(|&id| id < 0) { last_received = id; }
+                        last_frame = time::Instant::now();
+                        if events.send(frame).await.is_err() { break; }
+                    }
+                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return Err("Disconnected from gomuks. Reopen the client to reconnect.".into()),
+                    _ => {}
+                }
+                continue;
+            }
+            cmd = commands.recv() => match cmd { Ok(v) => v, Err(_) => break },
+            _ = heartbeat.tick() => {
+                if last_frame.elapsed() > Duration::from_secs(75) { return Err("gomuks stopped responding.".into()); }
+                json!({"command":"ping","request_id":0,"data":{"last_received_id":last_received}})
+            }
+            _ = child.wait() => return Err("gomuks exited.".into()),
+        };
+        ws.send(Message::Text(outgoing.to_string().into()))
+            .await
+            .map_err(|_| "Cannot send to gomuks.")?;
+    }
+    let _ = ws.close(None).await;
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        let _ = Command::new("kill")
+            .arg("-TERM")
+            .arg(pid.to_string())
+            .status()
+            .await;
+        if time::timeout(Duration::from_secs(3), child.wait())
+            .await
+            .is_ok()
+        {
+            return Ok(());
+        }
+    }
+    let _ = child.kill().await;
+    Ok(())
+}

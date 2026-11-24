@@ -1,0 +1,570 @@
+use super::{App, Msg, Request, Section, rooms::Room};
+use chrono::{DateTime, Local};
+use iced::{
+    Alignment::Center,
+    Border, Color, Element, Fill, Font, Length, Theme, color, font, keyboard,
+    widget::{
+        Column, Row, Space, button, column, container, row, rule, scrollable, text, text_editor,
+        text_input, tooltip,
+    },
+};
+
+const RAIL: Color = color!(0x1e1f22);
+const SIDE: Color = color!(0x2b2d31);
+const CHAT: Color = color!(0x313338);
+const TRAY: Color = color!(0x232428);
+const HOVER: Color = color!(0x35373c);
+const ACTIVE: Color = color!(0x404249);
+const BLURPLE: Color = color!(0x5865f2);
+const TEXT: Color = color!(0xf2f3f5);
+const MUTED: Color = color!(0xb5bac1);
+const DIM: Color = color!(0x969ba4);
+const BOLD: Font = Font {
+    weight: font::Weight::Bold,
+    ..Font::with_name("Liberation Sans")
+};
+type El<'a> = Element<'a, Msg>;
+
+fn surface(c: Color, r: f32) -> container::Style {
+    container::Style {
+        background: Some(c.into()),
+        border: Border::default().rounded(r),
+        ..Default::default()
+    }
+}
+fn nav(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_, s| button::Style {
+        background: Some(
+            (if active {
+                ACTIVE
+            } else if s == button::Status::Hovered {
+                HOVER
+            } else {
+                Color::TRANSPARENT
+            })
+            .into(),
+        ),
+        text_color: if active { TEXT } else { MUTED },
+        border: Border::default().rounded(5),
+        ..Default::default()
+    }
+}
+fn avatar(name: &str, size: f32) -> El<'static> {
+    let colors = [
+        color!(0x5865a1),
+        color!(0x337a79),
+        color!(0x95613d),
+        color!(0x865b89),
+        color!(0x536bab),
+    ];
+    let c = colors[name.bytes().fold(0usize, |a, b| a + b as usize) % colors.len()];
+    let initials = name
+        .split_whitespace()
+        .take(2)
+        .filter_map(|s| s.chars().next())
+        .collect::<String>()
+        .to_uppercase();
+    container(
+        text(initials)
+            .size(size * 0.42)
+            .font(BOLD)
+            .color(Color::WHITE),
+    )
+    .center(size)
+    .style(move |_| surface(c, size / 2.))
+    .into()
+}
+fn label(s: &str) -> El<'_> {
+    text(s).font(BOLD).size(11).color(MUTED).into()
+}
+fn rail_button<'a>(glyph: String, hint: &'a str, active: bool, msg: Msg) -> El<'a> {
+    let b = button(container(text(glyph).font(BOLD).color(TEXT).size(19)).center(44))
+        .padding(0)
+        .on_press(msg)
+        .style(move |_, s| {
+            let highlighted = active || s == button::Status::Hovered;
+            button::Style {
+                background: Some(if highlighted {
+                    BLURPLE.into()
+                } else {
+                    CHAT.into()
+                }),
+                border: Border::default().rounded(if highlighted { 14 } else { 22 }),
+                ..Default::default()
+            }
+        });
+    let marker = container(Space::new())
+        .width(4)
+        .height(if active { 30 } else { 0 })
+        .style(|_| surface(TEXT, 3.));
+    tooltip(
+        row![marker, b].spacing(7).align_y(Center),
+        container(text(hint).size(14)).padding(6),
+        tooltip::Position::Right,
+    )
+    .style(|_| surface(RAIL, 5.))
+    .gap(8)
+    .into()
+}
+
+impl App {
+    pub(super) fn view(&self) -> El<'_> {
+        if self.account || self.logged_in && !self.verified {
+            return self.account_view();
+        }
+        let store = self.rooms();
+        let mut icons = column![
+            rail_button(
+                "U".into(),
+                "Home · direct messages",
+                self.section == Section::Direct,
+                Msg::Section(Section::Direct)
+            ),
+            rail_button(
+                "#".into(),
+                "All rooms",
+                self.section == Section::All,
+                Msg::Section(Section::All)
+            ),
+            container(rule::horizontal(1)).width(36).padding([4, 0])
+        ]
+        .spacing(8)
+        .align_x(Center);
+        for (id, r) in &store.list {
+            if r.space {
+                let s = Section::Space(id.clone());
+                let initials = r
+                    .name
+                    .split_whitespace()
+                    .take(2)
+                    .filter_map(|s| s.chars().next())
+                    .collect::<String>()
+                    .to_uppercase();
+                icons = icons.push(rail_button(
+                    initials,
+                    &r.name,
+                    self.section == s,
+                    Msg::Section(s),
+                ));
+            }
+        }
+        let rail = container(scrollable(icons))
+            .padding([14, 0])
+            .width(70)
+            .height(Fill)
+            .style(|_| surface(RAIL, 0.));
+        let section_name = match &self.section {
+            Section::All => "All rooms",
+            Section::Direct => "Direct messages",
+            Section::Space(id) => store
+                .list
+                .get(id)
+                .map(|r| r.name.as_str())
+                .unwrap_or("Space"),
+        };
+        let head = container(text(section_name).font(BOLD).size(17).color(TEXT))
+            .padding([0, 16])
+            .center_y(52)
+            .width(Fill);
+        let mut links = Column::new().spacing(2).padding([0, 8]);
+        for (id, r) in self.visible() {
+            let prefix = if r.dm { "@" } else { "#" };
+            let active = id == &self.selected;
+            let entry = row![
+                text(prefix).size(22).color(DIM),
+                text(&r.name)
+                    .size(15)
+                    .width(Fill)
+                    .color(if active || r.unread { TEXT } else { MUTED }),
+                text(if r.unread { "•" } else { "" }).color(TEXT)
+            ]
+            .spacing(9)
+            .align_y(Center);
+            links = links.push(
+                button(entry)
+                    .width(Fill)
+                    .padding([5, 9])
+                    .on_press(Msg::Open(id.clone()))
+                    .style(nav(active)),
+            );
+        }
+        let name = if self.logged_in {
+            self.profile.as_str()
+        } else {
+            "Preview user"
+        };
+        let user = button(
+            row![
+                avatar(name, 31.),
+                column![
+                    text(name).size(14).font(BOLD),
+                    text(if self.logged_in {
+                        "Matrix account"
+                    } else {
+                        "Local preview"
+                    })
+                    .size(11)
+                    .color(MUTED)
+                ]
+            ]
+            .spacing(10)
+            .align_y(Center),
+        )
+        .padding(9)
+        .width(Fill)
+        .on_press(Msg::Account)
+        .style(nav(false));
+        let side = container(column![
+            head,
+            rule::horizontal(1),
+            container(label(if self.section == Section::Direct {
+                "DIRECT MESSAGES"
+            } else {
+                "TEXT CHANNELS"
+            }))
+            .padding([14, 16]),
+            scrollable(links).height(Fill),
+            container(user).width(Fill).style(|_| surface(TRAY, 0.))
+        ])
+        .width(211)
+        .height(Fill)
+        .style(|_| surface(SIDE, 0.));
+        let room = store.list.get(&self.selected);
+        let channel = room.map(|r| r.name.as_str()).unwrap_or("Rooms");
+        let header = row![
+            text(if room.is_some_and(|r| r.dm) { "@" } else { "#" })
+                .size(25)
+                .color(DIM),
+            text(channel).font(BOLD).size(17),
+            Space::new().width(Fill),
+            button(text("People").size(13))
+                .on_press(Msg::TogglePeople)
+                .style(nav(self.people)),
+            button(text("Copy chat").size(13))
+                .on_press_maybe(room.map(|_| Msg::Copy))
+                .style(nav(false))
+        ]
+        .spacing(9)
+        .align_y(Center);
+        let banner = if !self.logged_in {
+            Some(
+                container(
+                    row![
+                        text("PREVIEW").size(11).font(BOLD).color(color!(0xb7bcff)),
+                        text("Explore a local room").size(13).width(Fill),
+                        button(text("Sign in to Matrix").size(13).font(BOLD))
+                            .on_press(Msg::Account)
+                            .style(button::primary)
+                    ]
+                    .spacing(10)
+                    .align_y(Center),
+                )
+                .width(Fill)
+                .padding([7, 16])
+                .style(|_| surface(color!(0x30334a), 0.)),
+            )
+        } else {
+            None
+        };
+        let mut chat = column![
+            container(header).padding([0, 17]).center_y(52).width(Fill),
+            rule::horizontal(1)
+        ];
+        if let Some(banner) = banner {
+            chat = chat.push(banner)
+        }
+        if !self.status.is_empty()
+            && (self.logged_in || !self.connected && !self.status.starts_with("Starting"))
+        {
+            chat = chat.push(
+                container(text(&self.status).size(13).color(color!(0xffc785))).padding([5, 16]),
+            );
+        }
+        let body: El = if let Some(r) = room {
+            self.conversation(r)
+        } else {
+            container(
+                column![
+                    text("No rooms here yet").font(BOLD).size(24),
+                    text("Choose another space or open All rooms.").color(MUTED)
+                ]
+                .spacing(6),
+            )
+            .center(Fill)
+            .into()
+        };
+        let mut middle = Row::new().push(body).height(Fill);
+        if self.people
+            && let Some(r) = room
+        {
+            let people: std::collections::BTreeSet<_> =
+                r.history.values().map(|p| p.sender.as_str()).collect();
+            let mut list = column![label("IN THIS CONVERSATION")]
+                .spacing(13)
+                .padding(14);
+            for sender in people {
+                let n = r.display(sender);
+                list = list.push(
+                    row![avatar(n, 28.), text(n).size(14)]
+                        .spacing(8)
+                        .align_y(Center),
+                );
+            }
+            middle = middle.push(
+                container(scrollable(list))
+                    .width(178)
+                    .height(Fill)
+                    .style(|_| surface(SIDE, 0.)),
+            );
+        }
+        chat = chat.push(middle);
+        row![
+            rail,
+            side,
+            container(chat)
+                .height(Fill)
+                .width(Fill)
+                .style(|_| surface(CHAT, 0.))
+        ]
+        .height(Fill)
+        .into()
+    }
+    fn conversation<'a>(&'a self, r: &'a Room) -> El<'a> {
+        let mut feed = Column::new().padding([16, 18]).spacing(2);
+        if self.logged_in && !r.end {
+            feed = feed.push(
+                button(text("Earlier messages").size(12))
+                    .on_press_maybe(self.connected.then_some(Msg::More))
+                    .style(nav(false)),
+            );
+        }
+        if r.end || !self.logged_in {
+            feed = feed
+                .push(
+                    container(text(if r.dm { "@" } else { "#" }).font(BOLD).size(30))
+                        .center(52)
+                        .style(|_| surface(ACTIVE, 26.)),
+                )
+                .push(
+                    text(format!(
+                        "{}{}",
+                        if r.dm { "" } else { "Welcome to #" },
+                        r.name
+                    ))
+                    .font(BOLD)
+                    .size(28)
+                    .color(TEXT),
+                )
+                .push(
+                    text(if r.topic.is_empty() {
+                        "This is the start of the conversation."
+                    } else {
+                        &r.topic
+                    })
+                    .size(14)
+                    .color(MUTED),
+                );
+        }
+        let mut prev: Option<(&str, i64, String)> = None;
+        for p in r.posts() {
+            let stamp = DateTime::from_timestamp_millis(p.time)
+                .unwrap_or_default()
+                .with_timezone(&Local);
+            let day = stamp.format("%B %-d, %Y").to_string();
+            let date_change = prev.as_ref().is_none_or(|(_, _, d)| d != &day);
+            let group = date_change
+                || prev
+                    .as_ref()
+                    .is_none_or(|(s, t, _)| *s != p.sender || p.time - *t > 300_000);
+            if date_change {
+                feed = feed.push(
+                    container(
+                        row![
+                            rule::horizontal(1),
+                            text(day.clone()).size(11).color(MUTED),
+                            rule::horizontal(1)
+                        ]
+                        .spacing(8)
+                        .align_y(Center),
+                    )
+                    .padding([9, 0]),
+                );
+            }
+            let name = r.display(&p.sender);
+            if group {
+                let info = row![
+                    text(name).size(16).font(BOLD).color(TEXT),
+                    text(stamp.format("%H:%M").to_string())
+                        .size(11)
+                        .color(MUTED)
+                ]
+                .spacing(9)
+                .align_y(Center);
+                feed = feed.push(
+                    container(
+                        row![
+                            avatar(name, 36.),
+                            column![info, text(&p.body).size(16)].spacing(2).width(Fill)
+                        ]
+                        .spacing(13),
+                    )
+                    .padding([5, 0]),
+                );
+            } else {
+                feed = feed.push(
+                    row![Space::new().width(36), text(&p.body).size(16).width(Fill)].spacing(13),
+                );
+            }
+            prev = Some((&p.sender, p.time, day));
+        }
+        let feed = scrollable(feed)
+            .id(iced::widget::Id::from(format!(
+                "timeline-{}",
+                self.selected
+            )))
+            .anchor_bottom()
+            .height(Fill);
+        let hint = format!("Message {}{}", if r.dm { "@" } else { "#" }, r.name);
+        let editor = text_editor(&self.editor)
+            .placeholder(hint)
+            .on_action(Msg::Draft)
+            .key_binding(|press| {
+                #[cfg(target_arch = "wasm32")]
+                if press.modifiers.command()
+                    && press.key.as_ref() == keyboard::Key::Character("v")
+                    && matches!(press.status, text_editor::Status::Focused { .. })
+                {
+                    return Some(text_editor::Binding::Custom(Msg::WebPaste(
+                        super::Field::Composer(self.selected.clone()),
+                    )));
+                }
+                if press.key == keyboard::Key::Named(keyboard::key::Named::Enter)
+                    && press.modifiers.is_empty()
+                    && matches!(press.status, text_editor::Status::Focused { .. })
+                {
+                    Some(text_editor::Binding::Custom(Msg::Send))
+                } else {
+                    text_editor::Binding::from_key_press(press)
+                }
+            })
+            .padding(11)
+            .height(Length::Shrink)
+            .min_height(42)
+            .max_height(100);
+        let sending = self
+            .pending
+            .values()
+            .any(|p| matches!(p,Request::Send(id,_) if id==&self.selected));
+        let composer = row![
+            editor,
+            button(
+                text(if sending { "Sending…" } else { "Send" })
+                    .size(14)
+                    .font(BOLD)
+            )
+            .on_press_maybe(
+                (!sending
+                    && (!self.logged_in || self.connected)
+                    && !self.editor.text().trim().is_empty())
+                .then_some(Msg::Send)
+            )
+        ]
+        .spacing(8)
+        .align_y(Center);
+        let foot = if !self.logged_in {
+            "Local preview · Messages stay here"
+        } else if r.encrypted {
+            "End-to-end encrypted"
+        } else {
+            "Matrix room"
+        };
+        column![
+            feed,
+            container(
+                column![
+                    composer,
+                    row![
+                        text(foot).size(11).color(DIM),
+                        Space::new().width(Fill),
+                        text("Shift + Enter for a new line").size(11).color(DIM)
+                    ]
+                ]
+                .spacing(5)
+            )
+            .padding([10, 16])
+        ]
+        .width(Fill)
+        .height(Fill)
+        .into()
+    }
+    fn account_view(&self) -> El<'_> {
+        macro_rules! field {
+            ($label:expr,$value:expr,$kind:ident) => {{
+                let input = text_input($label, $value).on_input(Msg::$kind).padding(11);
+                #[cfg(target_arch = "wasm32")]
+                let input = input.on_paste(|_| Msg::WebPaste(super::Field::$kind));
+                input
+            }};
+        }
+        let mut form = column![label("UNTETHERED  /  ACCOUNT")]
+            .spacing(14)
+            .width(362);
+        if !self.logged_in {
+            form = form
+                .push(text("Welcome back").size(32).font(BOLD))
+                .push(text("Sign in to your Matrix homeserver.").color(MUTED))
+                .push(field!(
+                    "Homeserver · https://matrix.org",
+                    &self.server,
+                    Server
+                ))
+                .push(field!("Matrix username", &self.username, Username))
+                .push(
+                    field!("Password", &self.password, Password)
+                        .secure(true)
+                        .on_submit(Msg::Login),
+                )
+                .push(
+                    button("Sign in").padding([9, 16]).on_press_maybe(
+                        (self.connected
+                            && !self.pending.values().any(|p| matches!(p, Request::Login)))
+                        .then_some(Msg::Login),
+                    ),
+                );
+        } else if !self.verified {
+            form = form
+                .push(text("Verify this device").size(28).font(BOLD))
+                .push(text(&self.profile))
+                .push(
+                    field!("Matrix recovery key", &self.recovery, Recovery)
+                        .secure(true)
+                        .on_submit(Msg::Verify),
+                )
+                .push(
+                    button("Verify device").on_press_maybe(self.connected.then_some(Msg::Verify)),
+                );
+        } else {
+            form = form
+                .push(text(&self.profile).size(25).font(BOLD))
+                .push(text("Verified Matrix device").color(MUTED));
+        }
+        if !self.status.is_empty() {
+            form = form.push(text(&self.status).size(14).color(MUTED));
+        }
+        if !self.logged_in || self.verified {
+            form = form.push(
+                button(if self.logged_in {
+                    "Back to rooms"
+                } else {
+                    "Back to preview"
+                })
+                .on_press(Msg::Back)
+                .style(button::secondary),
+            );
+        }
+        container(container(form).padding(30).style(|_| surface(SIDE, 12.)))
+            .center(Fill)
+            .style(|_| surface(RAIL, 0.))
+            .into()
+    }
+}
