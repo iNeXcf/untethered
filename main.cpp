@@ -1,5 +1,6 @@
 #include <QtCore>
 #include <QGuiApplication>
+#include <QtWebEngineQuick/qtwebenginequickglobal.h>
 #include <QClipboard>
 #include <QImageReader>
 #include <QQmlApplicationEngine>
@@ -28,6 +29,8 @@ class Chat : public QObject {
     Q_PROPERTY(bool ready MEMBER ready NOTIFY changed)
     Q_PROPERTY(bool loggedIn MEMBER loggedIn NOTIFY changed)
     Q_PROPERTY(bool loggingOut READ loggingOut NOTIFY changed)
+    Q_PROPERTY(QUrl callUrl MEMBER callUrl NOTIFY callControlsChanged)
+    Q_PROPERTY(QString callRoomName MEMBER callRoomName NOTIFY callControlsChanged)
     Q_PROPERTY(QString imageUploadRoom MEMBER imageUploadRoom NOTIFY changed)
     Q_PROPERTY(bool verified MEMBER verified NOTIFY changed)
     Q_PROPERTY(QString status MEMBER status NOTIFY changed)
@@ -128,6 +131,7 @@ public:
 
     Q_INVOKABLE void logout() {
         if (!ready || !loggedIn || loggingOut()) return;
+        closeCall();
         cancelImageUpload();
         logoutRequest = transmit("logout", {});
         setStatus("Signing out…");
@@ -159,6 +163,40 @@ public:
             if (room == selected) emit timelineChanged();
         });
     }
+    Q_INVOKABLE bool isCallOrigin(const QUrl &url) const {
+        return !base.isEmpty() && url.scheme() == base.scheme() && url.host() == base.host()
+            && url.port() == base.port() && url.userInfo().isEmpty();
+    }
+
+    Q_INVOKABLE QString callPassword(const QUrl &url) const {
+        if (callUrl.isEmpty() || !isCallOrigin(url) || url.path() != "/_gomuks/auth") return {};
+        return QString::fromLatin1(key);
+    }
+
+    Q_INVOKABLE void openCall() {
+        if (!ready || !loggedIn || loggingOut() || selected.isEmpty() || base.isEmpty() || !callUrl.isEmpty()) return;
+
+        // The web frontend hosts the widget and restores its room and panel from this startup state.
+        const QJsonObject panel{{"type", "element-call"}};
+        const QJsonObject state{{"room_id", selected}, {"right_panel", panel}};
+        const auto stateJson = QJsonDocument(state).toJson(QJsonDocument::Compact);
+        callUrl = base;
+        callUrl.setPath("/");
+        QByteArray query = "state=" + QUrl::toPercentEncoding(QString::fromUtf8(stateJson));
+        if (!frontendETag.isEmpty())
+            query += "&updateTo=" + QUrl::toPercentEncoding(frontendETag);
+        callUrl.setQuery(QString::fromLatin1(query));
+        callRoomName = roomName;
+        emit callControlsChanged();
+    }
+
+    Q_INVOKABLE void closeCall() {
+        if (callUrl.isEmpty()) return;
+        callUrl.clear();
+        callRoomName.clear();
+        emit callControlsChanged();
+    }
+
     Q_INVOKABLE void copyText(const QString &text) {
         QGuiApplication::clipboard()->setText(text);
     }
@@ -318,9 +356,10 @@ public:
             }
             const bool hasImage = !redacted && body["msgtype"].toString() == "m.image";
             QUrl image, thumbnail;
+            const auto imageInfo = body["info"].toObject();
             if (hasImage) {
                 image = messageMediaUrl(body, "url", "file");
-                thumbnail = messageMediaUrl(body["info"].toObject(), "thumbnail_url", "thumbnail_file");
+                thumbnail = messageMediaUrl(imageInfo, "thumbnail_url", "thumbnail_file");
             }
             if (redacted) text = "Message removed";
             else if (!event["send_error"].toString().isEmpty()) text += "  ·  Failed to send";
@@ -341,6 +380,7 @@ public:
             result.append(QVariantMap{{"id", QString::number(event["rowid"].toInteger())},
                                       {"eventId", eventId}, {"replyTo", replyTo},
                                       {"hasImage", hasImage}, {"image", image}, {"thumbnail", thumbnail},
+                                      {"imageWidth", imageInfo["w"].toInt()}, {"imageHeight", imageInfo["h"].toInt()},
                                       {"canReply", !redacted && eventId.startsWith('$')},
                                       {"sender", sender}, {"name", name},
                                       {"avatar", encryptedAvatar.isEmpty() ? avatarUrl(avatar) : avatarUrl(encryptedAvatar, true)},
@@ -359,6 +399,7 @@ signals:
     void timelineChanged();
     void olderMessagesLoading();
     void imageSent(const QString &room);
+    void callControlsChanged();
 
 private:
     static QJsonObject messageParams(const QString &room, const QString &text, const QString &replyTo) {
@@ -444,6 +485,10 @@ private:
         }
         if (stdoutBuffer.size() > 1024 * 1024) stdoutBuffer.clear();
     }
+    QByteArray desktopAuthorization() const {
+        return "Basic " + (QByteArray("desktop-key:") + key).toBase64();
+    }
+
     void authenticate() {
         QUrl url = base;
         url.setPath("/_gomuks/auth");
@@ -451,7 +496,8 @@ private:
         QNetworkRequest request(url);
         request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
         request.setTransferTimeout(5000);
-        request.setRawHeader("Authorization", "Basic " + (QByteArray("desktop-key:") + key).toBase64());
+        request.setRawHeader("Authorization", desktopAuthorization());
+        request.setHeader(QNetworkRequest::ContentTypeHeader, "application/x-www-form-urlencoded");
         auto *reply = http.post(request, QByteArray());
         connect(reply, &QNetworkReply::finished, this, [this, reply] {
             const int code = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
@@ -540,6 +586,8 @@ private:
             auto callback = pending.take(int(id));
             if (name == "error") setStatus("Matrix request failed. Check your homeserver, credentials or room access.");
             else if (callback) callback(frame["data"]);
+        } else if (name == "run_id") {
+            frontendETag = data["etag"].toString();
         } else if (name == "image_auth_token") {
             imageToken = frame["data"].toString();
             emit changed();
@@ -552,6 +600,7 @@ private:
             accountName = data["displayname"].toString();
             accountAvatar = data["avatar_url"].toString();
             if (!loggedIn) {
+                closeCall();
                 logoutRequest = 0;
                 pending.clear();
                 cancelImageUpload();
@@ -620,6 +669,9 @@ private:
     QString imageUploadRoom;
     int imageSendRequest = 0;
     QWebSocket socket;
+    QUrl callUrl;
+    QString frontendETag;
+    QString callRoomName;
     QTimer startup, ping;
     QUrl base;
     QByteArray key, stdoutBuffer;
@@ -665,6 +717,7 @@ static bool migrateLegacyProfile(const QString &root) {
 }
 
 int main(int argc, char **argv) {
+    QtWebEngineQuick::initialize();
     QGuiApplication app(argc, argv);
     app.setApplicationName("untethered");
     app.setApplicationDisplayName("untethered");

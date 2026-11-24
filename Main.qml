@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
 import QtQuick.Layouts
+import QtWebEngine
 
 ApplicationWindow {
     id: window
@@ -11,29 +12,31 @@ ApplicationWindow {
     minimumHeight: 520
     visible: true
     title: "untethered"
-    color: "#1d1c21"
+    color: "#1c2023"
     palette.window: window.color
     palette.base: window.fieldSurface
-    palette.text: "#f0edf3"
-    palette.windowText: palette.text
+    palette.text: window.foreground
+    palette.windowText: window.foreground
     palette.button: window.hoverSurface
-    palette.buttonText: palette.text
+    palette.buttonText: window.foreground
     palette.placeholderText: window.muted
     palette.highlight: "#34524a"
-    palette.highlightedText: palette.text
-    readonly property color muted: "#aaa5b2"
+    palette.highlightedText: window.foreground
+    readonly property color foreground: "#f0edf3"
+    readonly property color muted: "#a9b2ba"
     readonly property color accent: "#9be1c9"
-    readonly property color activeSurface: "#37343f"
-    readonly property color hoverSurface: "#2c2933"
-    readonly property color sidebarSurface: "#17161b"
-    readonly property color railSurface: "#111015"
-    readonly property color fieldSurface: "#25232b"
-    readonly property color divider: "#34313b"
+    readonly property color activeSurface: "#30413f"
+    readonly property color hoverSurface: "#2a3237"
+    readonly property color sidebarSurface: "#171c20"
+    readonly property color railSurface: "#121619"
+    readonly property color fieldSurface: "#242b30"
+    readonly property color divider: "#313a40"
     readonly property string directContext: "direct"
     readonly property string contextName: contextId === directContext ? "Direct messages"
         : contextId === "" ? "All rooms" : (spaces.find(space => space.id === contextId)?.name ?? "Space")
     readonly property var roomIndex: chat.roomList
     readonly property var spaces: roomIndex.filter(room => room.space)
+    readonly property var selectedRoom: roomIndex.find(room => room.id === chat.selected)
     readonly property var visibleRooms: roomsFor(contextId)
     property string contextId: ""
     property var lastRooms: ({})
@@ -47,6 +50,34 @@ ApplicationWindow {
     readonly property bool sendingImage: chat.selected !== "" && chat.imageUploadRoom === chat.selected
     readonly property bool canAttachImage: chat.ready && !chat.loggingOut
         && chat.selected !== "" && !sendingImage
+
+    property bool showCall: false
+    readonly property bool callOpen: chat.callUrl.toString() !== ""
+    property bool callOutputMuted: false
+    property bool audioSettingsPending: false
+
+    function openCallAudioSettings() {
+        openCallPane()
+        if (callOpen) {
+            if (callPane.item)
+                callPane.item.audioSettingsError = ""
+            audioSettingsPending = true
+        }
+    }
+
+    function openCallPane() {
+        if (!callOpen)
+            chat.openCall()
+        showCall = callOpen
+    }
+
+    onCallOpenChanged: {
+        if (!callOpen) {
+            showCall = false
+            callOutputMuted = false
+            audioSettingsPending = false
+        }
+    }
 
     function startReply(message) {
         replyTarget = message
@@ -110,6 +141,7 @@ ApplicationWindow {
             }
             window.hadSession = true
             if (window.draftRoom !== chat.selected) {
+                window.showCall = false
                 imageViewer.close()
                 if (window.draftRoom !== "") {
                     window.drafts[window.draftRoom] = composer.text
@@ -144,6 +176,90 @@ ApplicationWindow {
             navigate("")
         } else if (!visibleRooms.some(room => room.id === chat.selected)) {
             navigate(contextId)
+        }
+    }
+
+    component ProfileButton: ToolButton {
+        id: profileButton
+        required property string symbol
+        Layout.preferredWidth: 30
+        Layout.preferredHeight: 32
+        padding: 6
+
+        background: Rectangle {
+            radius: 6
+            color: profileButton.checked ? "#46313b"
+                : profileButton.hovered || profileButton.visualFocus ? window.hoverSurface : "transparent"
+            border.color: profileButton.visualFocus ? window.accent : "transparent"
+        }
+
+        contentItem: Canvas {
+            id: profileIcon
+            readonly property color ink: profileButton.checked ? "#f095a4"
+                : profileButton.enabled ? window.palette.text : window.muted
+            onInkChanged: requestPaint()
+            Connections {
+                target: profileButton
+                function onCheckedChanged() { profileIcon.requestPaint() }
+            }
+            onPaint: {
+                const ctx = getContext("2d")
+                ctx.reset()
+                const size = Math.min(width, height)
+                ctx.translate((width - size) / 2, (height - size) / 2)
+                ctx.scale(size / 20, size / 20)
+                ctx.strokeStyle = ink
+                ctx.lineWidth = 1.7
+                ctx.lineCap = "round"
+                ctx.lineJoin = "round"
+
+                ctx.beginPath()
+                switch (profileButton.symbol) {
+                case "microphone":
+                    ctx.roundedRect(7, 2, 6, 11, 3, 3)
+                    ctx.moveTo(4, 10)
+                    ctx.quadraticCurveTo(4, 15, 10, 15)
+                    ctx.quadraticCurveTo(16, 15, 16, 10)
+                    ctx.moveTo(10, 15)
+                    ctx.lineTo(10, 18)
+                    ctx.moveTo(7, 18)
+                    ctx.lineTo(13, 18)
+                    if (profileButton.checked) {
+                        ctx.moveTo(3, 17)
+                        ctx.lineTo(17, 3)
+                    }
+                    break
+                case "call":
+                    ctx.roundedRect(2, 4, 16, 11, 2, 2)
+                    ctx.moveTo(7, 18)
+                    ctx.lineTo(13, 18)
+                    ctx.moveTo(10, 15)
+                    ctx.lineTo(10, 18)
+                    break
+                case "headphones":
+                    ctx.moveTo(3, 13)
+                    ctx.lineTo(3, 9)
+                    ctx.arc(10, 9, 7, Math.PI, 0)
+                    ctx.lineTo(17, 13)
+                    ctx.roundedRect(3, 11, 4, 6, 1.5, 1.5)
+                    ctx.roundedRect(13, 11, 4, 6, 1.5, 1.5)
+                    break
+                case "settings":
+                    for (let i = 0; i < 32; i++) {
+                        const angle = i * Math.PI / 16
+                        const radius = i % 4 < 2 ? 8 : 6.2
+                        const x = 10 + radius * Math.cos(angle)
+                        const y = 10 + radius * Math.sin(angle)
+                        if (i === 0) ctx.moveTo(x, y)
+                        else ctx.lineTo(x, y)
+                    }
+                    ctx.closePath()
+                    ctx.moveTo(12.7, 10)
+                    ctx.arc(10, 10, 2.7, 0, 2 * Math.PI)
+                    break
+                }
+                ctx.stroke()
+            }
         }
     }
 
@@ -319,6 +435,14 @@ ApplicationWindow {
             }
             Rectangle { Layout.fillWidth: true; height: 1; color: window.divider }
             Button {
+                text: "Call Audio Settings"
+                enabled: window.callOpen || (chat.ready && !chat.loggingOut && chat.selected !== "")
+                onClicked: {
+                    settings.close()
+                    window.openCallAudioSettings()
+                }
+            }
+            Button {
                 text: chat.loggingOut ? "Signing out…" : "Sign out"
                 enabled: chat.ready && !chat.loggingOut
                 onClicked: logoutConfirmation.open()
@@ -354,12 +478,66 @@ ApplicationWindow {
 
     Dialog {
         id: invalidImage
+        implicitWidth: Math.min(window.width - 48, 420)
         parent: Overlay.overlay
         anchors.centerIn: parent
         title: "Image unavailable"
         modal: true
         standardButtons: Dialog.Ok
         contentItem: Label { text: "The selected file could not be opened as an image." }
+    }
+
+    Dialog {
+        id: callPermission
+        implicitWidth: Math.min(window.width - 48, 420)
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        modal: true
+        title: "Element Call"
+        standardButtons: Dialog.Yes | Dialog.No
+        property var requests: []
+        property var current: null
+
+        function enqueue(request, devices) {
+            requests.push({ permission: request, devices: devices })
+            if (!visible && !current)
+                showNext()
+        }
+
+        function showNext() {
+            if (!window.callOpen || visible || current || requests.length === 0)
+                return
+            current = requests.shift()
+            open()
+        }
+
+        function respond(granted) {
+            if (current?.permission.isValid) {
+                if (granted)
+                    current.permission.grant()
+                else
+                    current.permission.deny()
+            }
+            current = null
+        }
+
+        contentItem: Label {
+            text: "Allow Element Call to use " + (callPermission.current?.devices ?? "") + "?"
+            wrapMode: Text.WordWrap
+        }
+        onAccepted: respond(true)
+        onRejected: respond(false)
+        onClosed: Qt.callLater(showNext)
+        Connections {
+            target: window
+            function onCallOpenChanged() {
+                if (!window.callOpen) {
+                    callPermission.requests = []
+                    if (callPermission.visible)
+                        callPermission.reject()
+                }
+            }
+        }
     }
 
     Dialog {
@@ -516,585 +694,971 @@ ApplicationWindow {
         visible: chat.loggedIn
 
         Rectangle {
-            Layout.preferredWidth: 68
-            Layout.fillHeight: true
-            color: window.railSurface
-            ColumnLayout {
-                anchors.fill: parent
-                anchors.margins: 10
-                spacing: 6
-                NavigationButton {
-                    text: "DM"
-                    centered: true
-                    font.bold: true
-                    Layout.fillWidth: true
-                    highlighted: window.contextId === window.directContext
-                    Accessible.name: "Direct messages"
-                    ToolTip.text: Accessible.name
-                    ToolTip.visible: hovered
-                    onClicked: window.navigate(window.directContext)
-                }
-                NavigationButton {
-                    text: "All"
-                    centered: true
-                    font.bold: true
-                    Layout.fillWidth: true
-                    highlighted: window.contextId === ""
-                    Accessible.name: "All rooms"
-                    ToolTip.text: Accessible.name
-                    ToolTip.visible: hovered
-                    onClicked: window.navigate("")
-                }
-                Rectangle { Layout.fillWidth: true; height: 1; color: window.divider }
-                ListView {
-                    id: spaceList
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    clip: true
-                    spacing: 6
-                    model: window.spaces
-                    delegate: NavigationButton {
-                        required property var modelData
-                        width: spaceList.width
-                        height: 42
-                        centered: true
-                        font.bold: true
-                        padding: 3
-                        contentItem: Avatar {
-                            name: modelData.name
-                            source: modelData.avatar ?? ""
-                        }
-                        highlighted: window.contextId === modelData.id
-                        Accessible.name: modelData.name
-                        ToolTip.text: modelData.name
-                        ToolTip.visible: hovered
-                        onClicked: window.navigate(modelData.id)
-                    }
-                }
-            }
-        }
-        Rectangle {
-            Layout.preferredWidth: 232
+            Layout.preferredWidth: window.width < 900 ? 270 : 334
             Layout.fillHeight: true
             color: window.sidebarSurface
+
             ColumnLayout {
                 anchors.fill: parent
-                anchors.margins: 10
-                spacing: 6
-                Label {
-                    text: window.contextName
-                    textFormat: Text.PlainText
-                    elide: Text.ElideRight
-                    Layout.fillWidth: true
-                    Layout.leftMargin: 8
-                    Layout.preferredHeight: 38
-                    verticalAlignment: Text.AlignVCenter
-                    font.pixelSize: 16
-                    font.weight: Font.DemiBold
-                }
-                NavigationButton {
-                    text: "Quick switch  ·  Ctrl+K"
-                    Layout.fillWidth: true
-                    onClicked: switcher.open()
-                }
-                ListView {
-                    id: rooms
-                    Layout.fillHeight: true
-                    Layout.fillWidth: true
-                    clip: true
-                    spacing: 2
-                    model: window.visibleRooms
-                    delegate: NavigationButton {
-                        required property var modelData
-                        width: rooms.width
-                        highlighted: chat.selected === modelData.id
-                        avatarSource: modelData.avatar ?? ""
-                        avatarName: modelData.name
-                        showAvatar: modelData.dm || avatarSource.toString() !== ""
-                        text: (modelData.unread ? "•  " : "") + (showAvatar ? "" : "#  ") + modelData.name
-                        font.bold: modelData.unread
-                        Accessible.name: modelData.name + (modelData.unread ? ", unread" : "")
-                        onClicked: window.navigate(window.contextId, modelData.id)
-                    }
-                    ScrollBar.vertical: ScrollBar {}
-                    Label {
-                        anchors.centerIn: parent
-                        visible: rooms.count === 0
-                        color: window.muted
-                        text: window.contextId === window.directContext ? "No direct messages" : "No rooms"
-                    }
-                }
-                Rectangle { Layout.fillWidth: true; height: 1; color: window.divider }
+                spacing: 0
                 RowLayout {
                     Layout.fillWidth: true
-                    Layout.margins: 8
-                    spacing: 8
-                    Avatar {
-                        source: chat.profileAvatar
-                        name: chat.profileName.startsWith("@") ? chat.profileName.slice(1) : chat.profileName
-                        Layout.preferredWidth: 30
-                        Layout.preferredHeight: 30
+                    Layout.fillHeight: true
+                    spacing: 0
+                    Rectangle {
+                        Layout.preferredWidth: 62
+                        Layout.fillHeight: true
+                        color: window.railSurface
+                        ColumnLayout {
+                            anchors.fill: parent
+                            anchors.margins: 10
+                            spacing: 6
+                            NavigationButton {
+                                text: "DM"
+                                centered: true
+                                font.bold: true
+                                Layout.fillWidth: true
+                                highlighted: window.contextId === window.directContext
+                                Accessible.name: "Direct messages"
+                                ToolTip.text: Accessible.name
+                                ToolTip.visible: hovered
+                                onClicked: window.navigate(window.directContext)
+                            }
+                            NavigationButton {
+                                text: "All"
+                                centered: true
+                                font.bold: true
+                                Layout.fillWidth: true
+                                highlighted: window.contextId === ""
+                                Accessible.name: "All rooms"
+                                ToolTip.text: Accessible.name
+                                ToolTip.visible: hovered
+                                onClicked: window.navigate("")
+                            }
+                            Rectangle { Layout.fillWidth: true; height: 1; color: window.divider }
+                            ListView {
+                                id: spaceList
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                clip: true
+                                spacing: 6
+                                model: window.spaces
+                                delegate: NavigationButton {
+                                    required property var modelData
+                                    width: spaceList.width
+                                    height: 42
+                                    centered: true
+                                    font.bold: true
+                                    padding: 4
+                                    Rectangle {
+                                        anchors.left: parent.left
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: 3
+                                        height: 20
+                                        radius: 1.5
+                                        visible: parent.highlighted
+                                        color: window.accent
+                                    }
+                                    contentItem: Avatar {
+                                        name: modelData.name
+                                        source: modelData.avatar ?? ""
+                                    }
+                                    highlighted: window.contextId === modelData.id
+                                    Accessible.name: modelData.name
+                                    ToolTip.text: modelData.name
+                                    ToolTip.visible: hovered
+                                    onClicked: window.navigate(modelData.id)
+                                }
+                            }
+                        }
                     }
-                    Label {
-                        text: chat.profileName
-                        textFormat: Text.PlainText
+                    Rectangle {
                         Layout.fillWidth: true
-                        elide: Text.ElideRight
-                        color: window.muted
-                        ToolTip.text: chat.profile
-                        ToolTip.visible: profileHover.hovered
-                        HoverHandler { id: profileHover }
+                        Layout.fillHeight: true
+                        color: window.sidebarSurface
+                        ColumnLayout {
+                            anchors.fill: parent
+                            anchors.margins: 10
+                            spacing: 6
+                            Label {
+                                text: window.contextName
+                                textFormat: Text.PlainText
+                                elide: Text.ElideRight
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 8
+                                Layout.preferredHeight: 38
+                                verticalAlignment: Text.AlignVCenter
+                                font.pixelSize: 16
+                                font.weight: Font.DemiBold
+                            }
+                            Rectangle { Layout.fillWidth: true; height: 1; color: window.divider }
+                            ListView {
+                                id: rooms
+                                Layout.fillHeight: true
+                                Layout.fillWidth: true
+                                clip: true
+                                spacing: 2
+                                model: window.visibleRooms
+                                delegate: NavigationButton {
+                                    required property var modelData
+                                    width: rooms.width
+                                    height: modelData.dm ? 38 : 32
+                                    highlighted: chat.selected === modelData.id
+                                    avatarSource: modelData.avatar ?? ""
+                                    avatarName: modelData.name
+                                    showAvatar: modelData.dm || avatarSource.toString() !== ""
+                                    text: (modelData.unread ? "•  " : "") + (showAvatar ? "" : "#  ") + modelData.name
+                                    font.bold: modelData.unread
+                                    Accessible.name: modelData.name + (modelData.unread ? ", unread" : "")
+                                    onClicked: window.navigate(window.contextId, modelData.id)
+                                }
+                                ScrollBar.vertical: ScrollBar {}
+                                Label {
+                                    anchors.centerIn: parent
+                                    visible: rooms.count === 0
+                                    color: window.muted
+                                    text: window.contextId === window.directContext ? "No direct messages" : "No rooms"
+                                }
+                            }
+                        }
                     }
-                    ToolButton {
-                        text: "⚙"
-                        Accessible.name: "User settings"
-                        ToolTip.text: "User settings · Ctrl+,"
-                        ToolTip.visible: hovered
-                        onClicked: settings.open()
+                }
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 54
+                    Layout.leftMargin: 8
+                    Layout.rightMargin: 8
+                    Layout.bottomMargin: 8
+                    Layout.topMargin: 4
+                    radius: 9
+                    color: window.fieldSurface
+                    border.color: window.divider
+
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 8
+                        anchors.rightMargin: 6
+                        spacing: 4
+
+                        Avatar {
+                            source: chat.profileAvatar
+                            name: chat.profileName.startsWith("@") ? chat.profileName.slice(1) : chat.profileName
+                            Layout.preferredWidth: 32
+                            Layout.preferredHeight: 32
+                            Rectangle {
+                                anchors.right: parent.right
+                                anchors.bottom: parent.bottom
+                                width: 12
+                                height: 12
+                                radius: width / 2
+                                border.width: 2
+                                border.color: window.fieldSurface
+                                color: chat.ready ? "#69be95" : window.muted
+                            }
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            Layout.leftMargin: 4
+                            spacing: 1
+
+                            Label {
+                                text: chat.profileName
+                                textFormat: Text.PlainText
+                                Layout.fillWidth: true
+                                elide: Text.ElideRight
+                                font.pixelSize: 14
+                                ToolTip.text: chat.profile
+                                ToolTip.visible: profileHover.hovered
+                                HoverHandler { id: profileHover }
+                            }
+                            Label {
+                                text: chat.ready ? "Connected" : "Disconnected"
+                                color: window.muted
+                                font.pixelSize: 11
+                            }
+                        }
+
+                        ProfileButton {
+                            symbol: "microphone"
+                            enabled: callPane.item?.microphoneAvailable ?? false
+                            checked: callPane.item?.microphoneMuted ?? false
+                            Accessible.name: checked ? "Unmute microphone" : "Mute microphone"
+                            ToolTip.text: window.callOpen ? Accessible.name : "No active call"
+                            ToolTip.visible: hovered
+                            onClicked: callPane.item?.readMicrophone(true)
+                        }
+                        ProfileButton {
+                            symbol: "call"
+                            enabled: window.callOpen
+                            Accessible.name: "Return to call"
+                            ToolTip.text: Accessible.name
+                            ToolTip.visible: hovered
+                            onClicked: window.openCallPane()
+                        }
+                        ProfileButton {
+                            symbol: "headphones"
+                            enabled: window.callOpen
+                            checkable: true
+                            checked: window.callOutputMuted
+                            Accessible.name: checked ? "Unmute call audio" : "Mute call audio"
+                            ToolTip.text: Accessible.name
+                            ToolTip.visible: hovered
+                            onClicked: window.callOutputMuted = !window.callOutputMuted
+                        }
+                        ProfileButton {
+                            symbol: "settings"
+                            Accessible.name: "User settings"
+                            ToolTip.text: "User settings · Ctrl+,"
+                            ToolTip.visible: hovered
+                            onClicked: settings.open()
+                        }
                     }
                 }
             }
         }
-        ColumnLayout {
+        Rectangle { Layout.fillHeight: true; Layout.preferredWidth: 1; color: window.divider }
+
+        Rectangle {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            spacing: 0
-            Rectangle {
-                Layout.fillWidth: true
-                Layout.preferredHeight: 52
-                color: window.color
+            color: window.color
+
+            ColumnLayout {
+                anchors.fill: parent
+                spacing: 0
                 Rectangle {
-                    anchors.bottom: parent.bottom
-                    width: parent.width
-                    height: 1
-                    color: window.divider
-                }
-                RowLayout {
-                    anchors.fill: parent
-                    anchors.leftMargin: 20
-                    anchors.rightMargin: 18
-                    Label {
-                        text: chat.roomName || "Choose a room"
-                        textFormat: Text.PlainText
-                        elide: Text.ElideRight
-                        Layout.fillWidth: true
-                        font.pixelSize: 17
-                        font.weight: Font.DemiBold
-                    }
-                    Label { text: "Encrypted"; color: window.accent; visible: chat.encrypted }
-                    Button { text: "Older messages"; visible: chat.selected !== ""; enabled: chat.ready; onClicked: chat.paginate(true) }
-                }
-            }
-            Button {
-                visible: !chat.verified
-                text: "Verify this device in User settings"
-                Layout.leftMargin: 20
-                Layout.topMargin: 8
-                onClicked: settings.open()
-            }
-            Label {
-                visible: text.length > 0
-                text: chat.status
-                color: window.muted
-                Layout.fillWidth: true
-                Layout.leftMargin: 20
-                wrapMode: Text.WordWrap
-            }
-            ListView {
-                id: timeline
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                clip: true
-                spacing: 4
-                property string displayedRoom: ""
-                property string historyAnchor: ""
-                property var eventIndices: ({})
-                property string highlightedEvent: ""
-
-                function jumpToEvent(eventId) {
-                    const index = eventIndices[eventId]
-                    if (index === undefined)
-                        return
-                    positionViewAtIndex(index, ListView.Center)
-                    highlightedEvent = eventId
-                    replyHighlight.restart()
-                }
-
-                Timer {
-                    id: replyHighlight
-                    interval: 1600
-                    onTriggered: timeline.highlightedEvent = ""
-                }
-
-                function refreshMessages() {
-                    const messages = chat.messages
-                    const sameRoom = displayedRoom === chat.selected
-                    const anchor = historyAnchor
-                    historyAnchor = ""
-                    if (sameRoom && JSON.stringify(model) === JSON.stringify(messages))
-                        return
-
-                    if (!sameRoom)
-                        highlightedEvent = ""
-                    displayedRoom = chat.selected
-                    const indices = Object.create(null)
-                    messages.forEach((message, index) => {
-                        if (message.eventId)
-                            indices[message.eventId] = index
-                    })
-                    eventIndices = indices
-                    model = messages
-                    forceLayout()
-                    const anchorIndex = sameRoom && anchor !== ""
-                        ? messages.findIndex(message => message.id === anchor) : -1
-                    if (anchorIndex >= 0)
-                        positionViewAtIndex(anchorIndex, ListView.Beginning)
-                    else
-                        positionViewAtEnd()
-                }
-
-                Connections {
-                    target: chat
-                    function onOlderMessagesLoading() {
-                        const top = timeline.contentY
-                        let index = timeline.indexAt(1, top)
-                        if (index < 0)
-                            index = timeline.indexAt(1, top + timeline.spacing + 1)
-                        timeline.historyAnchor = timeline.model?.[index]?.id ?? ""
-                    }
-                    function onTimelineChanged() { timeline.refreshMessages() }
-                }
-                delegate: Item {
-                    id: message
-                    required property var modelData
-                    width: timeline.width
-                    height: messageColumn.implicitHeight + (modelData.startsGroup ? 10 : 0)
-                    readonly property var original: modelData.replyTo
-                        ? timeline.model?.[timeline.eventIndices[modelData.replyTo]] : null
-
-                    HoverHandler { id: messageHover }
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 52
+                    color: window.color
                     Rectangle {
+                        anchors.bottom: parent.bottom
+                        width: parent.width
+                        height: 1
+                        color: window.divider
+                    }
+                    RowLayout {
                         anchors.fill: parent
-                        color: window.activeSurface
-                        visible: timeline.highlightedEvent !== "" && timeline.highlightedEvent === modelData.eventId
-                    }
-
-                    ColumnLayout {
-                        id: messageColumn
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.top: parent.top
-                        anchors.leftMargin: 18
-                        anchors.rightMargin: 22
-                        anchors.topMargin: modelData.startsGroup ? 10 : 0
-                        spacing: 6
-
-                        RowLayout {
-                            visible: modelData.day.length > 0
+                        anchors.leftMargin: 20
+                        anchors.rightMargin: 18
+                        Label {
+                            visible: !!window.selectedRoom && !window.selectedRoom.dm
+                            text: "#"
+                            color: window.accent
+                            font.pixelSize: 18
+                            Accessible.ignored: true
+                        }
+                        Label {
+                            text: chat.roomName || "Choose a room"
+                            textFormat: Text.PlainText
+                            elide: Text.ElideRight
                             Layout.fillWidth: true
-                            Layout.bottomMargin: 6
-                            spacing: 10
-                            Rectangle { Layout.fillWidth: true; height: 1; color: window.divider }
-                            Label { text: modelData.day; color: window.muted; font.pixelSize: 12 }
-                            Rectangle { Layout.fillWidth: true; height: 1; color: window.divider }
+                            font.pixelSize: 17
+                            font.weight: Font.DemiBold
                         }
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: 10
-
-                            Item {
-                                Layout.preferredWidth: 34
-                                Layout.preferredHeight: modelData.startsGroup ? 34 : 0
-                                Layout.alignment: Qt.AlignTop
-
-                                Avatar {
-                                    anchors.fill: parent
-                                    visible: modelData.startsGroup
-                                    source: visible ? modelData.avatar ?? "" : ""
-                                    name: modelData.name
-                                }
-                            }
-
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                spacing: 3
-                                RowLayout {
-                                    visible: modelData.startsGroup
-                                    Layout.fillWidth: true
-                                    spacing: 8
-                                    Label {
-                                        text: modelData.name
-                                        textFormat: Text.PlainText
-                                        font.weight: Font.DemiBold
-                                        elide: Text.ElideRight
-                                        Layout.maximumWidth: message.width / 2
-                                        ToolTip.text: modelData.sender
-                                        ToolTip.visible: senderHover.hovered
-                                        HoverHandler { id: senderHover }
-                                    }
-                                    Label { text: modelData.time; color: window.muted; font.pixelSize: 12 }
-                                    Item { Layout.fillWidth: true }
-                                }
-                                NavigationButton {
-                                    visible: !!modelData.replyTo
-                                    enabled: !!message.original
-                                    Layout.fillWidth: true
-                                    text: message.original
-                                        ? message.original.name + " · " + message.original.body.replace(/\s+/g, " ")
-                                        : "Original message not loaded"
-                                    Accessible.name: "In reply to " + text
-                                    onClicked: timeline.jumpToEvent(modelData.replyTo)
-                                }
-                                Loader {
-                                    active: !!modelData.hasImage
-                                    visible: active
-                                    Layout.fillWidth: true
-                                    Layout.maximumWidth: 360
-                                    Layout.preferredHeight: 230
-                                    Layout.alignment: Qt.AlignLeft
-
-                                    sourceComponent: Button {
-                                        id: imagePreview
-                                        readonly property url fullSource: modelData.image ?? ""
-                                        readonly property url thumbnailSource: modelData.thumbnail ?? ""
-                                        property bool thumbnailFailed: false
-                                        onThumbnailSourceChanged: thumbnailFailed = false
-                                        enabled: fullSource.toString() !== ""
-                                        Accessible.name: "Open image"
-                                        onClicked: {
-                                            imageViewer.imageSource = fullSource
-                                            imageViewer.open()
-                                        }
-                                        background: Rectangle {
-                                            radius: 8
-                                            color: window.fieldSurface
-                                            border.color: imagePreview.visualFocus ? window.accent : window.divider
-                                        }
-                                        contentItem: Item {
-                                            Image {
-                                                id: thumbnailImage
-                                                anchors.fill: parent
-                                                source: !imagePreview.thumbnailFailed && imagePreview.thumbnailSource.toString() !== ""
-                                                    ? imagePreview.thumbnailSource : imagePreview.fullSource
-                                                asynchronous: true
-                                                fillMode: Image.PreserveAspectFit
-                                                sourceSize.width: 720
-                                                sourceSize.height: 460
-                                                onStatusChanged: {
-                                                    if (status === Image.Error && source.toString() === imagePreview.thumbnailSource.toString())
-                                                        imagePreview.thumbnailFailed = true
-                                                }
-                                            }
-                                            Label {
-                                                anchors.centerIn: parent
-                                                visible: thumbnailImage.status !== Image.Ready
-                                                color: window.muted
-                                                text: thumbnailImage.status === Image.Loading ? "Loading image…" : "Image unavailable"
-                                            }
-                                        }
-                                    }
-                                }
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    Label {
-                                        text: modelData.body
-                                        textFormat: Text.PlainText
-                                        wrapMode: Text.Wrap
-                                        Layout.fillWidth: true
-                                        Layout.alignment: Qt.AlignTop
-                                        font.pixelSize: 15
-                                        Accessible.name: modelData.name + ", " + modelData.time + ": " + text
-                                    }
-                                    Rectangle {
-                                        id: messageActions
-                                        Layout.preferredWidth: actionButtons.implicitWidth + 8
-                                        Layout.preferredHeight: actionButtons.implicitHeight + 4
-                                        Layout.alignment: Qt.AlignTop
-                                        radius: 7
-                                        color: window.fieldSurface
-                                        border.color: window.divider
-                                        opacity: messageHover.hovered || replyAction.activeFocus
-                                            || copyAction.activeFocus ? 1 : 0
-
-                                        RowLayout {
-                                            id: actionButtons
-                                            anchors.centerIn: parent
-                                            spacing: 2
-
-                                            ToolButton {
-                                                id: replyAction
-                                                visible: !!modelData.canReply
-                                                enabled: chat.ready && !chat.loggingOut && !window.sendingImage
-                                                text: "↩"
-                                                Accessible.name: "Reply to " + modelData.name
-                                                ToolTip.text: "Reply"
-                                                ToolTip.visible: messageActions.opacity > 0 && hovered
-                                                Layout.preferredWidth: 30
-                                                Layout.preferredHeight: 24
-                                                onClicked: window.startReply(modelData)
-                                            }
-                                            ToolButton {
-                                                id: copyAction
-                                                text: "Copy"
-                                                Accessible.name: "Copy message text"
-                                                Layout.preferredHeight: 24
-                                                onClicked: chat.copyText(modelData.body)
-                                            }
-                                        }
-                                    }
-                                }
+                        Label { text: "Encrypted"; color: window.accent; visible: chat.encrypted && window.width > 1050 }
+                        NavigationButton {
+                            text: "Find"
+                            Accessible.name: "Find a conversation"
+                            ToolTip.text: "Quick switch · Ctrl+K"
+                            ToolTip.visible: hovered
+                            onClicked: switcher.open()
+                        }
+                        NavigationButton {
+                            text: window.showCall ? "Back to chat" : "Call"
+                            Accessible.name: window.showCall ? "Back to chat" : "Open Element Call in this room"
+                            visible: chat.selected !== ""
+                            enabled: window.showCall || (chat.ready && !chat.loggingOut)
+                            onClicked: {
+                                if (window.showCall)
+                                    window.showCall = false
+                                else
+                                    window.openCallPane()
                             }
                         }
+                        NavigationButton { text: "History"; Accessible.name: "Load older messages"; visible: chat.selected !== "" && !window.showCall; enabled: chat.ready; onClicked: chat.paginate(true) }
                     }
                 }
-                ScrollBar.vertical: ScrollBar {}
-            }
-            RowLayout {
-                visible: window.replyTarget !== null
-                Layout.fillWidth: true
-                Layout.leftMargin: 16
-                Layout.rightMargin: 16
-                Layout.topMargin: 8
-                Label {
-                    text: window.replyTarget
-                        ? "Replying to " + window.replyTarget.name + " · " + window.replyTarget.body.replace(/\s+/g, " ")
-                        : ""
-                    textFormat: Text.PlainText
-                    elide: Text.ElideRight
-                    color: window.muted
+                Loader {
+                    id: callPane
                     Layout.fillWidth: true
-                }
-                ToolButton {
-                    text: "×"
-                    Accessible.name: "Cancel reply"
-                    enabled: !window.sendingImage
-                    onClicked: window.replyTarget = null
-                }
-            }
-            Shortcut {
-                sequence: "Escape"
-                enabled: window.replyTarget !== null && !window.sendingImage && !settings.opened && !switcher.opened && !imageViewer.opened
-                onActivated: window.replyTarget = null
-            }
-            RowLayout {
-                visible: window.imageAttachment.toString() !== ""
-                Layout.fillWidth: true
-                Layout.leftMargin: 16
-                Layout.rightMargin: 16
-                Layout.topMargin: 8
-                spacing: 10
-                Image {
-                    source: visible ? window.imageAttachment : ""
-                    asynchronous: true
-                    fillMode: Image.PreserveAspectFit
-                    sourceSize.width: 160
-                    sourceSize.height: 120
-                    Layout.preferredWidth: 80
-                    Layout.preferredHeight: 60
-                }
-                Label {
-                    text: window.sendingImage ? "Sending image…" : "Image attached"
-                    Layout.fillWidth: true
-                    color: window.muted
-                }
-                ToolButton {
-                    text: "×"
-                    Accessible.name: "Remove attached image"
-                    enabled: !window.sendingImage
-                    onClicked: window.imageAttachment = ""
-                }
-            }
-            RowLayout {
-                visible: chat.selected !== ""
-                Layout.fillWidth: true
-                Layout.margins: 16
-                ToolButton {
-                    text: "+"
-                    Accessible.name: "Attach an image"
-                    ToolTip.text: Accessible.name
-                    ToolTip.visible: hovered
-                    enabled: window.canAttachImage
-                    onClicked: {
-                        attachmentPicker.room = chat.selected
-                        attachmentPicker.open()
-                    }
-                }
-                ScrollView {
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: Math.max(44, Math.min(168, composer.implicitHeight))
-                    contentWidth: availableWidth
-                    ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
-                    ScrollBar.vertical.policy: ScrollBar.AsNeeded
+                    Layout.fillHeight: true
+                    active: window.callOpen
+                    visible: window.showCall && active
 
-                    TextArea {
-                        id: composer
-                        leftPadding: 12
-                        rightPadding: 16
-                        topPadding: 10
-                        bottomPadding: 10
-                        wrapMode: TextEdit.Wrap
-                        textFormat: TextEdit.PlainText
-                        background: Rectangle {
-                            radius: 9
-                            color: window.fieldSurface
-                            border.color: composer.activeFocus ? window.accent : window.divider
-                        }
-                        placeholderText: window.imageAttachment.toString() !== "" ? "Add a caption"
-                            : chat.roomName ? "Message " + chat.roomName : "Write a message"
-                        Accessible.name: placeholderText
-                        enabled: chat.ready && !chat.loggingOut && !window.sendingImage
+                    sourceComponent: ColumnLayout {
+                        id: callContent
+                        spacing: 0
+                        property string audioSettingsError: ""
+                        property bool microphoneAvailable: false
+                        property bool microphoneMuted: false
+                        property bool microphoneRequestPending: false
 
-                        DropArea {
-                            anchors.fill: parent
-                            enabled: window.canAttachImage
-                            onEntered: drag => {
-                                drag.accepted = drag.hasUrls && drag.urls.some(url => chat.canAttachImage(url))
-                            }
-                            onDropped: drop => {
-                                const image = drop.urls.find(url => chat.canAttachImage(url))
-                                if (image) {
-                                    window.imageAttachment = image
-                                    drop.acceptProposedAction()
-                                    composer.forceActiveFocus()
-                                }
-                            }
+                        function readMicrophone(toggle) {
+                            if (microphoneRequestPending || !callView.pageReady)
+                                return
+                            microphoneRequestPending = true
+                            callView.runJavaScript(`
+                                (() => {
+                                    const frame = document.querySelector(".right-panel-content.element-call iframe");
+                                    const button = frame?.contentDocument?.querySelector('[data-testid="incall_mute"]');
+                                    const active = button?.getAttribute("aria-checked");
+                                    if (active !== "true" && active !== "false") return null;
+                                    if (${toggle} && !button.disabled) button.click();
+                                    return { muted: active === "false", available: !button.disabled };
+                                })()
+                            `, WebEngineScript.ApplicationWorld, state => {
+                                microphoneAvailable = state?.available ?? false
+                                microphoneMuted = state?.muted ?? false
+                                microphoneRequestPending = false
+                            })
                         }
 
-                        Keys.onPressed: event => {
-                            if (!composer.inputMethodComposing && window.canAttachImage
-                                    && event.matches(StandardKey.Paste)) {
-                                const image = chat.clipboardImage()
-                                if (image.toString() !== "") {
-                                    window.imageAttachment = image
-                                    event.accepted = true
+                        Timer {
+                            interval: 400
+                            repeat: true
+                            running: window.callOpen && callView.pageReady && callView.loadError === ""
+                            onTriggered: callContent.readMicrophone(false)
+                        }
+
+                        Timer {
+                            interval: 300
+                            triggeredOnStart: true
+                            repeat: true
+                            running: window.audioSettingsPending && window.showCall
+                            property int attempts: 0
+                            onRunningChanged: if (running) attempts = 0
+                            onTriggered: {
+                                if (++attempts > 40 || callView.loadError !== "") {
+                                    callContent.audioSettingsError = "Audio settings are unavailable. Try again once the call view has loaded."
+                                    window.audioSettingsPending = false
                                     return
                                 }
+                                if (!callView.pageReady)
+                                    return
+                                callView.runJavaScript(`
+                                    (() => {
+                                        const frame = document.querySelector(".right-panel-content.element-call iframe");
+                                        const widget = frame && frame.contentDocument;
+                                        if (!widget) return false;
+                                        const audioTab = '[aria-controls$="[audio]"]';
+                                        const currentTab = widget.querySelector(audioTab);
+                                        if (currentTab) {
+                                            currentTab.click();
+                                            return true;
+                                        }
+                                        const settings = widget.querySelector(
+                                            '[data-testid="settings-bottom-left"], [data-testid="settings-bottom-center"], [data-testid="settings-app-bar"]'
+                                        );
+                                        if (!settings) return false;
+                                        settings.click();
+                                        let attempts = 0;
+                                        const focusAudio = () => {
+                                            const tab = widget.querySelector(audioTab);
+                                            if (tab) tab.click();
+                                            else if (++attempts < 10) setTimeout(focusAudio, 50);
+                                        };
+                                        setTimeout(focusAudio, 0);
+                                        return true;
+                                    })()
+                                `, WebEngineScript.ApplicationWorld, opened => {
+                                    if (opened)
+                                        window.audioSettingsPending = false
+                                })
                             }
-                            const enter = event.key === Qt.Key_Return || event.key === Qt.Key_Enter
-                            if (!enter || composer.inputMethodComposing
-                                    || (event.modifiers & ~Qt.KeypadModifier) !== Qt.NoModifier)
-                                return
+                        }
 
-                            event.accepted = true
-                            if (!event.isAutoRepeat && sendButton.enabled)
-                                sendButton.clicked()
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Layout.margins: 10
+                            Label {
+                                text: "Call in " + chat.callRoomName
+                                textFormat: Text.PlainText
+                                Layout.fillWidth: true
+                                elide: Text.ElideRight
+                            }
+                            Button {
+                                text: "Audio Settings"
+                                enabled: !window.audioSettingsPending && callView.loadError === ""
+                                onClicked: window.openCallAudioSettings()
+                            }
+                            Button {
+                                text: "Close call"
+                                onClicked: chat.closeCall()
+                            }
+                        }
+
+                        Label {
+                            visible: callContent.audioSettingsError !== ""
+                            Layout.fillWidth: true
+                            Layout.leftMargin: 10
+                            Layout.rightMargin: 10
+                            text: callContent.audioSettingsError
+                            color: window.muted
+                            wrapMode: Text.WordWrap
+                        }
+
+                        Item {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            WebEngineView {
+                                id: callView
+                                anchors.fill: parent
+                                profile: WebEngineProfile { offTheRecord: true }
+                                backgroundColor: window.color
+                                audioMuted: window.callOutputMuted
+                                settings.javascriptCanOpenWindows: false
+                                url: chat.callUrl
+                                property string loadError: ""
+                                property bool pageReady: false
+                                property bool authAttempted: false
+                                visible: pageReady && loadError === ""
+
+                                userScripts.collection: [{
+                                    name: "element-call-default-audio-output",
+                                    injectionPoint: WebEngineScript.DocumentCreation,
+                                    worldId: WebEngineScript.MainWorld,
+                                    runsOnSubFrames: true,
+                                    // Element Call 0.28.2 can pass undefined before devices are enumerated.
+                                    sourceCode: `
+                                        (() => {
+                                            if (window === window.top || !location.pathname.startsWith("/element-call-embedded/"))
+                                                return;
+                                            try {
+                                                if (location.origin !== window.top.location.origin) return;
+                                            } catch { return; }
+
+                                            const audio = window.AudioContext && window.AudioContext.prototype;
+                                            if (typeof audio?.setSinkId !== "function") return;
+                                            const setSinkId = audio.setSinkId;
+                                            audio.setSinkId = function (sinkId) {
+                                                return setSinkId.call(this, sinkId === undefined ? "" : sinkId);
+                                            };
+                                        })();
+                                    `
+                                }, {
+                                    name: "untethered-call-layout",
+                                    injectionPoint: WebEngineScript.DocumentReady,
+                                    worldId: WebEngineScript.ApplicationWorld,
+                                    sourceCode: `
+                                        const layout = document.createElement("style");
+                                        layout.textContent = [
+                                            "html, body { background: #1d1c21 !important; }",
+                                            "body { visibility: hidden !important; overflow: hidden !important; }",
+                                            "main.matrix-main { translate: none !important; transition: none !important; }",
+                                            ".right-panel { position: fixed !important; inset: 0 !important; }",
+                                            ".right-panel-content.element-call { visibility: visible !important;",
+                                            "position: fixed !important; inset: 0 !important;",
+                                            "width: auto !important; height: auto !important; }"
+                                        ].join(" ");
+                                        document.head.append(layout);
+                                        let mounted = !!document.querySelector(".right-panel-content.element-call iframe");
+                                        new MutationObserver(() => {
+                                            if (document.querySelector(".right-panel-content.element-call iframe"))
+                                                mounted = true;
+                                            else if (mounted && !document.querySelector(".right-panel-content.element-call"))
+                                                document.title = "untethered-call-ended";
+                                        }).observe(document.body, {childList: true, subtree: true});
+                                    `
+                                }]
+
+                                onAuthenticationDialogRequested: request => {
+                                    const password = request.type === AuthenticationDialogRequest.AuthenticationTypeHTTP
+                                        && !authAttempted ? chat.callPassword(request.url) : ""
+                                    if (password) {
+                                        authAttempted = true
+                                        request.dialogAccept("desktop-key", password)
+                                    } else {
+                                        request.dialogReject()
+                                        if (chat.isCallOrigin(request.url))
+                                            loadError = "Could not open the Matrix session for Element Call."
+                                    }
+                                }
+                                onNavigationRequested: request => {
+                                    if (request.isMainFrame && !chat.isCallOrigin(request.url))
+                                        request.reject()
+                                }
+                                onPermissionRequested: request => {
+                                    let devices = ""
+                                    if (chat.isCallOrigin(request.origin)) {
+                                        switch (request.permissionType) {
+                                        case WebEnginePermission.PermissionType.MediaAudioCapture: devices = "your microphone"; break
+                                        case WebEnginePermission.PermissionType.MediaVideoCapture: devices = "your camera"; break
+                                        case WebEnginePermission.PermissionType.MediaAudioVideoCapture: devices = "your microphone and camera"; break
+                                        }
+                                    }
+                                    if (!devices) {
+                                        request.deny()
+                                        return
+                                    }
+                                    callPermission.enqueue(request, devices)
+                                }
+                                onLoadingChanged: info => {
+                                    if (info.status === WebEngineView.LoadSucceededStatus)
+                                        pageReady = true
+                                    else if (info.status === WebEngineView.LoadFailedStatus)
+                                        loadError = "Could not load Element Call."
+                                }
+                                onRenderProcessTerminated: loadError = "The Element Call view stopped."
+                                onTitleChanged: {
+                                    if (title === "untethered-call-ended")
+                                        Qt.callLater(chat.closeCall)
+                                }
+                            }
+                            Label {
+                                visible: !callView.pageReady || callView.loadError !== ""
+                                anchors.centerIn: parent
+                                color: window.muted
+                                text: callView.loadError || "Opening Element Call…"
+                            }
                         }
                     }
                 }
+
                 Button {
-                    id: sendButton
-                    text: window.sendingImage ? "Sending…" : "Send"
-                    enabled: chat.ready && !chat.loggingOut && !window.sendingImage
-                        && (window.imageAttachment.toString() !== "" ? chat.imageUploadRoom === ""
-                            : composer.text.trim().length > 0)
-                    onClicked: {
-                        const replyTo = window.replyTarget?.eventId ?? ""
-                        if (window.imageAttachment.toString() !== "") {
-                            chat.sendImage(window.imageAttachment, composer.text, replyTo)
-                        } else if (chat.send(composer.text, replyTo)) {
-                            composer.clear()
-                            window.replyTarget = null
+                    visible: !chat.verified && !window.showCall
+                    text: "Verify this device in User settings"
+                    Layout.leftMargin: 20
+                    Layout.topMargin: 8
+                    onClicked: settings.open()
+                }
+                Label {
+                    visible: text.length > 0
+                    text: chat.status
+                    color: window.muted
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 20
+                    wrapMode: Text.WordWrap
+                }
+                ListView {
+                    id: timeline
+                    visible: !window.showCall
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    clip: true
+                    spacing: 4
+                    onHeightChanged: Qt.callLater(alignShortTimeline)
+                    onContentHeightChanged: Qt.callLater(alignShortTimeline)
+
+                    function alignShortTimeline(stickToEnd = true) {
+                        const margin = Math.max(0, height - contentHeight)
+                        if (Math.abs(topMargin - margin) < 1)
+                            return
+                        const wasShort = topMargin > 0
+                        topMargin = margin
+                        if (stickToEnd && (wasShort || margin > 0))
+                            positionViewAtEnd()
+                    }
+                    property string displayedRoom: ""
+                    property string historyAnchor: ""
+                    property var eventIndices: ({})
+                    property string highlightedEvent: ""
+
+                    function jumpToEvent(eventId) {
+                        const index = eventIndices[eventId]
+                        if (index === undefined)
+                            return
+                        positionViewAtIndex(index, ListView.Center)
+                        highlightedEvent = eventId
+                        replyHighlight.restart()
+                    }
+
+                    Timer {
+                        id: replyHighlight
+                        interval: 1600
+                        onTriggered: timeline.highlightedEvent = ""
+                    }
+
+                    function refreshMessages() {
+                        const messages = chat.messages
+                        const sameRoom = displayedRoom === chat.selected
+                        const anchor = historyAnchor
+                        historyAnchor = ""
+                        if (sameRoom && JSON.stringify(model) === JSON.stringify(messages))
+                            return
+
+                        if (!sameRoom)
+                            highlightedEvent = ""
+                        displayedRoom = chat.selected
+                        const indices = Object.create(null)
+                        messages.forEach((message, index) => {
+                            if (message.eventId)
+                                indices[message.eventId] = index
+                        })
+                        eventIndices = indices
+                        model = messages
+                        forceLayout()
+                        alignShortTimeline(false)
+                        const anchorIndex = sameRoom && anchor !== ""
+                            ? messages.findIndex(message => message.id === anchor) : -1
+                        if (anchorIndex >= 0)
+                            positionViewAtIndex(anchorIndex, ListView.Beginning)
+                        else
+                            positionViewAtEnd()
+                    }
+
+                    Connections {
+                        target: chat
+                        function onOlderMessagesLoading() {
+                            const top = timeline.contentY
+                            let index = timeline.indexAt(1, top)
+                            if (index < 0)
+                                index = timeline.indexAt(1, top + timeline.spacing + 1)
+                            timeline.historyAnchor = timeline.model?.[index]?.id ?? ""
+                        }
+                        function onTimelineChanged() { timeline.refreshMessages() }
+                    }
+                    delegate: Item {
+                        id: message
+                        required property var modelData
+                        width: timeline.width
+                        height: messageColumn.implicitHeight + (modelData.startsGroup ? 10 : 0)
+                        readonly property var original: modelData.replyTo
+                            ? timeline.model?.[timeline.eventIndices[modelData.replyTo]] : null
+
+                        HoverHandler { id: messageHover }
+                        Rectangle {
+                            anchors.fill: parent
+                            color: timeline.highlightedEvent === modelData.eventId && modelData.eventId
+                                ? window.activeSurface : window.hoverSurface
+                            visible: messageHover.hovered
+                                || (timeline.highlightedEvent !== "" && timeline.highlightedEvent === modelData.eventId)
+                        }
+
+                        ColumnLayout {
+                            id: messageColumn
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            anchors.leftMargin: 18
+                            anchors.rightMargin: 22
+                            anchors.topMargin: modelData.startsGroup ? 10 : 0
+                            spacing: 6
+
+                            RowLayout {
+                                visible: modelData.day.length > 0
+                                Layout.fillWidth: true
+                                Layout.bottomMargin: 6
+                                spacing: 10
+                                Rectangle { Layout.fillWidth: true; height: 1; color: window.divider }
+                                Label { text: modelData.day; color: window.muted; font.pixelSize: 12 }
+                                Rectangle { Layout.fillWidth: true; height: 1; color: window.divider }
+                            }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 10
+
+                                Item {
+                                    Layout.preferredWidth: 34
+                                    Layout.preferredHeight: modelData.startsGroup ? 34 : 0
+                                    Layout.alignment: Qt.AlignTop
+
+                                    Avatar {
+                                        anchors.fill: parent
+                                        visible: modelData.startsGroup
+                                        source: visible ? modelData.avatar ?? "" : ""
+                                        name: modelData.name
+                                    }
+                                }
+
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 3
+                                    RowLayout {
+                                        visible: modelData.startsGroup
+                                        Layout.fillWidth: true
+                                        spacing: 8
+                                        Label {
+                                            text: modelData.name
+                                            textFormat: Text.PlainText
+                                            font.weight: Font.DemiBold
+                                            elide: Text.ElideRight
+                                            Layout.maximumWidth: message.width / 2
+                                            ToolTip.text: modelData.sender
+                                            ToolTip.visible: senderHover.hovered
+                                            HoverHandler { id: senderHover }
+                                        }
+                                        Label { text: modelData.time; color: window.muted; font.pixelSize: 12 }
+                                        Item { Layout.fillWidth: true }
+                                    }
+                                    NavigationButton {
+                                        visible: !!modelData.replyTo
+                                        enabled: !!message.original
+                                        Layout.fillWidth: true
+                                        text: message.original
+                                            ? message.original.name + " · " + message.original.body.replace(/\s+/g, " ")
+                                            : "Original message not loaded"
+                                        Accessible.name: "In reply to " + text
+                                        onClicked: timeline.jumpToEvent(modelData.replyTo)
+                                    }
+                                    Loader {
+                                        active: !!modelData.hasImage
+                                        visible: active
+                                        Layout.fillWidth: true
+                                        Layout.maximumWidth: 360
+                                        Layout.preferredHeight: modelData.imageWidth > 0 && modelData.imageHeight > 0
+                                            ? Math.max(96, Math.min(380, width * modelData.imageHeight / modelData.imageWidth))
+                                            : 230
+                                        Layout.alignment: Qt.AlignLeft
+
+                                        sourceComponent: Button {
+                                            id: imagePreview
+                                            readonly property url fullSource: modelData.image ?? ""
+                                            readonly property url thumbnailSource: modelData.thumbnail ?? ""
+                                            property bool thumbnailFailed: false
+                                            onThumbnailSourceChanged: thumbnailFailed = false
+                                            enabled: fullSource.toString() !== ""
+                                            Accessible.name: "Open image"
+                                            onClicked: {
+                                                imageViewer.imageSource = fullSource
+                                                imageViewer.open()
+                                            }
+                                            background: Rectangle {
+                                                radius: 8
+                                                color: window.fieldSurface
+                                                border.color: imagePreview.visualFocus ? window.accent : window.divider
+                                            }
+                                            contentItem: Item {
+                                                Image {
+                                                    id: thumbnailImage
+                                                    anchors.fill: parent
+                                                    source: !imagePreview.thumbnailFailed && imagePreview.thumbnailSource.toString() !== ""
+                                                        ? imagePreview.thumbnailSource : imagePreview.fullSource
+                                                    asynchronous: true
+                                                    fillMode: Image.PreserveAspectFit
+                                                    sourceSize.width: 720
+                                                    sourceSize.height: 460
+                                                    onStatusChanged: {
+                                                        if (status === Image.Error && source.toString() === imagePreview.thumbnailSource.toString())
+                                                            imagePreview.thumbnailFailed = true
+                                                    }
+                                                }
+                                                Label {
+                                                    anchors.centerIn: parent
+                                                    visible: thumbnailImage.status !== Image.Ready
+                                                    color: window.muted
+                                                    text: thumbnailImage.status === Image.Loading ? "Loading image…" : "Image unavailable"
+                                                }
+                                            }
+                                        }
+                                    }
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        Label {
+                                            text: modelData.body
+                                            textFormat: Text.PlainText
+                                            wrapMode: Text.Wrap
+                                            Layout.fillWidth: true
+                                            Layout.alignment: Qt.AlignTop
+                                            font.pixelSize: 15
+                                            Accessible.name: modelData.name + ", " + modelData.time + ": " + text
+                                        }
+                                        Rectangle {
+                                            id: messageActions
+                                            Layout.preferredWidth: actionButtons.implicitWidth + 8
+                                            Layout.preferredHeight: actionButtons.implicitHeight + 4
+                                            Layout.alignment: Qt.AlignTop
+                                            radius: 7
+                                            color: window.fieldSurface
+                                            border.color: window.divider
+                                            opacity: messageHover.hovered || replyAction.activeFocus
+                                                || copyAction.activeFocus ? 1 : 0
+
+                                            RowLayout {
+                                                id: actionButtons
+                                                anchors.centerIn: parent
+                                                spacing: 2
+
+                                                ToolButton {
+                                                    id: replyAction
+                                                    visible: !!modelData.canReply
+                                                    enabled: chat.ready && !chat.loggingOut && !window.sendingImage
+                                                    text: "↩"
+                                                    Accessible.name: "Reply to " + modelData.name
+                                                    ToolTip.text: "Reply"
+                                                    ToolTip.visible: messageActions.opacity > 0 && hovered
+                                                    Layout.preferredWidth: 30
+                                                    Layout.preferredHeight: 24
+                                                    onClicked: window.startReply(modelData)
+                                                }
+                                                ToolButton {
+                                                    id: copyAction
+                                                    text: "Copy"
+                                                    Accessible.name: "Copy message text"
+                                                    Layout.preferredHeight: 24
+                                                    onClicked: chat.copyText(modelData.body)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    ScrollBar.vertical: ScrollBar {}
+                }
+                RowLayout {
+                    visible: window.replyTarget !== null && !window.showCall
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 16
+                    Layout.rightMargin: 16
+                    Layout.topMargin: 8
+                    Label {
+                        text: window.replyTarget
+                            ? "Replying to " + window.replyTarget.name + " · " + window.replyTarget.body.replace(/\s+/g, " ")
+                            : ""
+                        textFormat: Text.PlainText
+                        elide: Text.ElideRight
+                        color: window.muted
+                        Layout.fillWidth: true
+                    }
+                    ToolButton {
+                        text: "×"
+                        Accessible.name: "Cancel reply"
+                        enabled: !window.sendingImage
+                        onClicked: window.replyTarget = null
+                    }
+                }
+                Shortcut {
+                    sequence: "Escape"
+                    enabled: window.replyTarget !== null && !window.sendingImage && !settings.opened && !switcher.opened && !imageViewer.opened
+                    onActivated: window.replyTarget = null
+                }
+                RowLayout {
+                    visible: window.imageAttachment.toString() !== "" && !window.showCall
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 16
+                    Layout.rightMargin: 16
+                    Layout.topMargin: 8
+                    spacing: 10
+                    Image {
+                        source: visible ? window.imageAttachment : ""
+                        asynchronous: true
+                        fillMode: Image.PreserveAspectFit
+                        sourceSize.width: 160
+                        sourceSize.height: 120
+                        Layout.preferredWidth: 80
+                        Layout.preferredHeight: 60
+                    }
+                    Label {
+                        text: window.sendingImage ? "Sending image…" : "Image attached"
+                        Layout.fillWidth: true
+                        color: window.muted
+                    }
+                    ToolButton {
+                        text: "×"
+                        Accessible.name: "Remove attached image"
+                        enabled: !window.sendingImage
+                        onClicked: window.imageAttachment = ""
+                    }
+                }
+                Rectangle {
+                    visible: chat.selected !== "" && !window.showCall
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 10
+                    Layout.rightMargin: 10
+                    Layout.topMargin: 8
+                    Layout.bottomMargin: 10
+                    implicitHeight: composerControls.implicitHeight + 10
+                    radius: 12
+                    color: window.fieldSurface
+                    border.color: composer.activeFocus ? window.accent : window.divider
+
+                    RowLayout {
+                        id: composerControls
+                        anchors.fill: parent
+                        anchors.margins: 5
+                        spacing: 6
+                        ToolButton {
+                            text: "+"
+                            Accessible.name: "Attach an image"
+                            ToolTip.text: Accessible.name
+                            ToolTip.visible: hovered
+                            enabled: window.canAttachImage
+                            onClicked: {
+                                attachmentPicker.room = chat.selected
+                                attachmentPicker.open()
+                            }
+                        }
+                        ScrollView {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: Math.max(44, Math.min(168, composer.implicitHeight))
+                            contentWidth: availableWidth
+                            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                            ScrollBar.vertical.policy: ScrollBar.AsNeeded
+
+                            TextArea {
+                                id: composer
+                                leftPadding: 6
+                                rightPadding: 16
+                                topPadding: 10
+                                bottomPadding: 10
+                                wrapMode: TextEdit.Wrap
+                                textFormat: TextEdit.PlainText
+                                background: Item {}
+                                placeholderText: window.imageAttachment.toString() !== "" ? "Add a caption"
+                                    : chat.roomName ? "Message " + chat.roomName : "Write a message"
+                                Accessible.name: placeholderText
+                                enabled: chat.ready && !chat.loggingOut && !window.sendingImage
+
+                                DropArea {
+                                    anchors.fill: parent
+                                    enabled: window.canAttachImage
+                                    onEntered: drag => {
+                                        drag.accepted = drag.hasUrls && drag.urls.some(url => chat.canAttachImage(url))
+                                    }
+                                    onDropped: drop => {
+                                        const image = drop.urls.find(url => chat.canAttachImage(url))
+                                        if (image) {
+                                            window.imageAttachment = image
+                                            drop.acceptProposedAction()
+                                            composer.forceActiveFocus()
+                                        }
+                                    }
+                                }
+
+                                Keys.onPressed: event => {
+                                    if (!composer.inputMethodComposing && window.canAttachImage
+                                            && event.matches(StandardKey.Paste)) {
+                                        const image = chat.clipboardImage()
+                                        if (image.toString() !== "") {
+                                            window.imageAttachment = image
+                                            event.accepted = true
+                                            return
+                                        }
+                                    }
+                                    const enter = event.key === Qt.Key_Return || event.key === Qt.Key_Enter
+                                    if (!enter || composer.inputMethodComposing
+                                            || (event.modifiers & ~Qt.KeypadModifier) !== Qt.NoModifier)
+                                        return
+
+                                    event.accepted = true
+                                    if (!event.isAutoRepeat && sendButton.enabled)
+                                        sendButton.clicked()
+                                }
+                            }
+                        }
+                        Button {
+                            id: sendButton
+                            text: window.sendingImage ? "Sending…" : "Send"
+                            background: Rectangle {
+                                radius: 7
+                                color: sendButton.enabled ? window.activeSurface : "transparent"
+                                border.color: sendButton.visualFocus ? window.accent : "transparent"
+                            }
+                            enabled: chat.ready && !chat.loggingOut && !window.sendingImage
+                                && (window.imageAttachment.toString() !== "" ? chat.imageUploadRoom === ""
+                                    : composer.text.trim().length > 0)
+                            onClicked: {
+                                const replyTo = window.replyTarget?.eventId ?? ""
+                                if (window.imageAttachment.toString() !== "") {
+                                    chat.sendImage(window.imageAttachment, composer.text, replyTo)
+                                } else if (chat.send(composer.text, replyTo)) {
+                                    composer.clear()
+                                    window.replyTarget = null
+                                }
+                            }
                         }
                     }
                 }

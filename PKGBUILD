@@ -7,7 +7,7 @@ conflicts=('gomuks-native' 'unteathered')
 replaces=('gomuks-native' 'unteathered')
 url='https://github.com/gomuks/gomuks'
 license=('AGPL-3.0-or-later')
-depends=('qt6-base' 'qt6-declarative' 'qt6-websockets' 'qt6-imageformats' 'ca-certificates')
+depends=('qt6-base' 'qt6-declarative' 'qt6-websockets' 'qt6-webengine' 'qt6-imageformats' 'ca-certificates')
 optdepends=('qt6-wayland: Wayland platform plugin')
 makedepends=('binutils')
 _gomuks_release=0.2611.1
@@ -17,9 +17,9 @@ source=('untethered.pro' 'main.cpp' 'Main.qml' 'ui.qrc' 'untethered.desktop' 'LI
 noextract=("$_deb")
 options=('!strip' '!debug')
 sha256sums=(
-    '6f3ced8bbd8c5f5e93abab6719ed64fab8f765d00bb46a8be323ba50fb433fca'
-    '5ad717dd0806610b0c6fbfea3916bc7f2886bc8bd75883ee29a1c7e495a72a2e'
-    'e1fb8873db219041895f7a47d21202ba222967ea27a30b6946a14f59ebd7f674'
+    'b8b7ae958ae29507bd04a04ee0462711287a2db3d186c799d699ee7edcc7755c'
+    '22943f10283df1bd688869345838cc96fea8b50bbd73e7def45bdd16b2cd9fc9'
+    '86bc937b01364870afe73a40a79f6a255df7ce6c51444c5c27814a7735b04c8e'
     '288315478e8401b8efe16eefa0568e2be0c199bb4f9876f01d3eb7a12c77f5dd'
     '636e7f40fa3f8031264be7c0ea51d265cd13f6c48a829f09f1ae006161c8ca3b'
     '0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0'

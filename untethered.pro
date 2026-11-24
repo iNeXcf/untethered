@@ -1,4 +1,4 @@
-QT += quick network websockets
+QT += quick network websockets webenginequick
 CONFIG += c++17
 TARGET = untethered
 SOURCES += main.cpp
