@@ -63,8 +63,10 @@ back the previous posting levels, including inherited defaults, and keeps
 rules another administrator changed in the meantime.
 
 **Room membership:** Open **People**, find the member by name or Matrix ID,
-and select their row. **Ban** removes them and prevents rejoining; you can
-include a reason. To readmit someone, select their **Banned** row and choose
+and select their row. **Kick** removes a joined member. They cannot post while
+out, but can rejoin a public room without an invitation. **Ban** also prevents
+rejoining. Either action accepts an optional reason. To readmit a banned
+member, select their **Banned** row and choose
 **Unban**. In an invite-only room, choose **Invite** separately. Their status
 changes to **Joined** when they accept. Membership controls use your room role
 and the selected account’s full Matrix ID.

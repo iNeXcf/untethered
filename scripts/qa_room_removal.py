@@ -1,10 +1,11 @@
 """Two joined accounts: exercise target-specific membership UI and independent server auth."""
 from urllib.parse import quote,unquote,urlsplit
+import re
 import requests
 from qa_native_paste import wait_for
 
 
-def check_ban(page,api,room,peer_hs,admin,member,http,locate,click,restart,x):
+def check_removal(page,api,room,peer_hs,admin,member,http,locate,click,restart,x,*,kick=False):
     hs=api.split("/_matrix/")[0]
     moderator=http("GET",hs+"/_matrix/client/v3/account/whoami",headers=admin).json()["user_id"]
     peer=page.evaluate("()=>window.mxMatrixClientPeg.get().getSafeUserId()")
@@ -14,13 +15,16 @@ def check_ban(page,api,room,peer_hs,admin,member,http,locate,click,restart,x):
         return http("GET",member_url,headers=admin).json()
     assert current()["membership"]=="join"
     levels=http("GET",api+"/state/m.room.power_levels",headers=admin).json()
-    assert levels.get("users",{}).get(peer,levels.get("users_default",0))<levels.get("ban",50)
+    action="kick" if kick else "ban"
+    assert levels.get("users",{}).get(peer,levels.get("users_default",0))<levels.get(action,50)
     # Public at the time of the failed join: a lack of invitation cannot
     # explain this refusal. Switch back to invite-only before lifting the ban.
     def joins(rule):
         http("PUT",api+"/state/m.room.join_rules",headers=admin,json={"join_rule":rule})
         assert http("GET",api+"/state/m.room.join_rules",headers=admin).json()["join_rule"]==rule
-    joins("public")
+    if kick:
+        assert http("GET",api+"/state/m.room.join_rules",headers=admin).json()["join_rule"]=="public"
+    else:joins("public")
     http("PUT",(peer_hs or hs)+"/_matrix/client/v3/profile/"+quote(peer,safe="")+"/displayname",headers=member,json={"displayname":"Bruno"})
     wait_for("joined target has room display name",lambda:current().get("displayname")=="Bruno",15)
     def point(ws,word,min_x):return next(((xx,y) for w,xx,y in ws if w==word and xx>min_x),None)
@@ -48,8 +52,8 @@ def check_ban(page,api,room,peer_hs,admin,member,http,locate,click,restart,x):
             return response.json()
         else:
             assert response.json()["room_id"]==result["room"]==room
+    def is_send(r):return r.request.method=="PUT" and f"/rooms/{room}/send/m.room.encrypted/" in unquote(urlsplit(r.url).path)
     def send(body):
-        def is_send(r):return r.request.method=="PUT" and f"/rooms/{room}/send/m.room.encrypted/" in unquote(urlsplit(r.url).path)
         with page.expect_response(is_send) as wire:
             eid=page.evaluate("async ([r,b])=>(await window.mxMatrixClientPeg.get().sendTextMessage(r,b)).event_id",[room,body])
         assert wire.value.status==200 and wire.value.json()["event_id"]==eid
@@ -63,11 +67,53 @@ def check_ban(page,api,room,peer_hs,admin,member,http,locate,click,restart,x):
         assert event["sender"]==peer and event["type"]=="m.room.encrypted" and "ciphertext" in event["content"]
         return eid
     baseline=send("Arrival beacon")
-    denied=requests.post((peer_hs or hs)+"/_matrix/client/v3/rooms/"+quote(room,safe="")+"/ban",headers=member,json={"user_id":moderator},timeout=10)
+    denied=requests.post((peer_hs or hs)+"/_matrix/client/v3/rooms/"+quote(room,safe="")+"/"+action,headers=member,json={"user_id":moderator},timeout=10)
     assert denied.status_code==403
     tap("people",280);tap("bruno");selected("joined")
     reason="Room conduct test"
-    tap("reason");x("type","--clearmodifiers",reason);tap("ban")
+    tap("reason");x("type","--clearmodifiers",reason)
+    if kick:
+        # Once it sees `leave`, Element may decline to encrypt another event.
+        # Hold a fresh, genuine encrypted PUT before it reaches the network,
+        # then let Synapse authorize it only after the kick is established.
+        held=[]
+        page.route(re.compile(r"/send/m\.room\.encrypted/"),lambda route:held.append(route),times=1)
+        page.evaluate("""r=>{
+            const c=window.mxMatrixClientPeg.get();
+            window.qaKickSend=c.sendTextMessage(r,'Outside message').catch(e=>{
+                if(e.event?.status==='not_sent')c.cancelPendingEvent(e.event);
+                return {errcode:e.errcode};
+            });
+        }""",room)
+        route=wait_for("fresh Megolm send ready",lambda:held[0] if held else page.evaluate("false"))
+        assert route.request.method=="PUT" and route.request.post_data_json["algorithm"]=="m.megolm.v1.aes-sha2"
+        tap("kick")
+        left=observed("leave");assert left.get("reason")==reason
+        selected("left");synced("leave")
+        with page.expect_response(is_send) as wire:
+            route.continue_()
+        result=page.evaluate("window.qaKickSend")
+        assert wire.value.status==403 and wire.value.json()["errcode"]==result["errcode"]=="M_FORBIDDEN",(wire.value.status,wire.value.json())
+        plain=requests.put(api+"/send/m.room.message/after-kick",headers=member,json={"msgtype":"m.text","body":"Outside plain"},timeout=10)
+        assert plain.status_code==403 and plain.json()["errcode"]=="M_FORBIDDEN",plain.text
+        chunk=http("GET",api+"/messages",headers=admin,params={"dir":"b","limit":100}).json()["chunk"]
+        assert {e["event_id"] for e in chunk if e["type"] in ("m.room.message","m.room.encrypted")}=={baseline}
+        print("Kick: Synapse membership=leave with the supplied reason. Encrypted and plain member sends while out "
+              "returned HTTP 403 M_FORBIDDEN; only the pre-kick message exists in history.",flush=True)
+        join(200);observed("join");synced("join");selected("joined")
+        page.goto(page.url.split("#")[0]+"#/room/"+room)
+        eid=send("Public return")
+        chunk=http("GET",api+"/messages",headers=admin,params={"dir":"b","limit":100}).json()["chunk"]
+        assert {e["event_id"] for e in chunk if e["type"] in ("m.room.message","m.room.encrypted")}=={baseline,eid}
+        transitions=[(e["sender"],e["content"]["membership"]) for e in reversed(chunk)
+                     if e["type"]=="m.room.member" and e.get("state_key")==peer]
+        assert transitions[-2:]==[(moderator,"leave"),(peer,"join")] and all(k in ("join","leave") for _,k in transitions),transitions
+        assert http("GET",api+"/state/m.room.join_rules",headers=admin).json()["join_rule"]=="public"
+        assert http("GET",api+"/state/m.room.power_levels",headers=admin).json()==levels
+        print(f"Public rejoin HTTP 200, zero invite or ban events for the member. Post-rejoin Megolm send HTTP 200 {eid}; "
+              "Element and Untethered displayed 'Public return'.",flush=True)
+        return
+    tap("ban")
     banned=observed("ban");assert banned.get("reason")==reason
     synced("ban");error=join(403,"M_FORBIDDEN" if peer_hs else "M_BAD_STATE")
     assert "ban" in error["error"].lower(),error

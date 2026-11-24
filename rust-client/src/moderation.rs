@@ -60,14 +60,16 @@ impl Member {
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Action {
+    Kick,
     Ban,
     Unban,
     Invite,
 }
 impl Action {
-    pub const ALL: [Self; 3] = [Self::Ban, Self::Unban, Self::Invite];
+    pub const ALL: [Self; 4] = [Self::Kick, Self::Ban, Self::Unban, Self::Invite];
     fn wire(self) -> &'static str {
         match self {
+            Self::Kick => "kick",
             Self::Ban => "ban",
             Self::Unban => "unban",
             Self::Invite => "invite",
@@ -75,6 +77,7 @@ impl Action {
     }
     pub fn label(self) -> &'static str {
         match self {
+            Self::Kick => "Kick",
             Self::Ban => "Ban",
             Self::Unban => "Unban",
             Self::Invite => "Invite",
@@ -82,6 +85,7 @@ impl Action {
     }
     fn applies(self, kind: Kind) -> bool {
         match self {
+            Self::Kick => kind == Kind::Joined,
             Self::Ban => kind != Kind::Banned,
             Self::Unban => kind == Kind::Banned,
             Self::Invite => matches!(kind, Kind::Left | Kind::Knocking),
@@ -345,6 +349,33 @@ mod tests {
         assert!(a.member_change(Action::Invite).is_some());
         a.directory.users.get_mut("@mod:h").unwrap().kind = Kind::Left;
         assert!(a.member_change(Action::Invite).is_none());
+    }
+    #[test]
+    fn kick_uses_its_own_threshold_and_only_targets_joined_lower_power_members() {
+        let (mut a, _) = app();
+        a.directory.choose(Some("@other:h".into()));
+        // Level 60 can ban at 55 but cannot kick at 65.
+        assert!(a.member_change(Action::Kick).is_none());
+        let mut changed = state();
+        changed[1]["content"]["kick"] = json!(60);
+        changed[1]["content"]["ban"] = json!(70);
+        a.live
+            .list
+            .get_mut("!room")
+            .unwrap()
+            .posting
+            .ingest("!room", &changed[1], false);
+        assert!(a.member_change(Action::Kick).is_some());
+        assert!(a.member_change(Action::Ban).is_none());
+        for target in ["@mod:h", "@equal:h"] {
+            a.directory.choose(Some(target.into()));
+            assert!(a.member_change(Action::Kick).is_none());
+        }
+        a.directory.choose(Some("@other:h".into()));
+        for kind in [Kind::Left, Kind::Banned, Kind::Invited, Kind::Knocking] {
+            a.directory.users.get_mut("@other:h").unwrap().kind = kind;
+            assert!(a.member_change(Action::Kick).is_none());
+        }
     }
     #[test]
     fn stale_target_membership_cannot_be_overwritten_or_moderated_by_a_late_snapshot() {

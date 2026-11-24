@@ -64,3 +64,24 @@ and joining without an invitation must still fail. **Invite** must yield
 `invite`; the same Element account then joins and posts a fresh message.
 The fixture checks the send response, Megolm event, decrypted text on both
 screens, and the actual membership sequence `ban → leave → invite → join`.
+
+## Verify kick in a public room
+
+Run `"$PYTHON" scripts/test-media-interop.py --room-kick` with the same
+native debug build and Element environment. Both disposable accounts use
+one loopback Synapse. Public joining is enabled before the member’s first
+join; no invite is sent at any point.
+
+The member first posts a message visible in Element and Untethered.
+The test holds a second, freshly encrypted Element request before it reaches
+the network. The administrator enters a reason and clicks **Kick** in the
+People panel. Once Synapse and both clients show `leave`, the test releases
+the encrypted request and also submits a new plain-text send as the member.
+Both must return HTTP 403 `M_FORBIDDEN` from Synapse, and neither may appear
+in room history.
+
+The same Element account must then rejoin directly and post a fresh Megolm
+message. The fixture checks both HTTP 200 responses, the event ID and text
+on both clients, unchanged join rules and power levels, and a final
+moderator-authored `leave` followed by a member-authored `join`, with no ban
+or invitation in the member’s history.

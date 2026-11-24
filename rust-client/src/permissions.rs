@@ -117,6 +117,7 @@ impl Posting {
         let enough = |name, default| level(c, name, default).is_some_and(|v| actor >= v);
         match action {
             Action::Invite => enough("invite", 0),
+            Action::Kick => actor > target && enough("kick", 50),
             Action::Ban => actor > target && enough("ban", 50),
             // In Synapse unbanning another user is ban -> leave, so the
             // room's kick threshold also applies.

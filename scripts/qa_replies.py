@@ -15,7 +15,7 @@ from qa_native_paste import child,isolated_env,start_display,wait_for
 from qa_upload_cancel import slow_gateway
 
 
-def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False,room_search=False,alerts=False,permissions=False,ban=False,peer_hs=None):
+def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False,room_search=False,alerts=False,permissions=False,ban=False,kick=False,peer_hs=None):
     paths=[]
     def observe(method,path):
         if room_search or method=="GET" and "/context/" in path:paths.append(unquote(path))
@@ -27,7 +27,10 @@ def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False,room_searc
         room=native["room"];api=hs+"/_matrix/client/v3/rooms/"+quote(room,safe="")
         uid=(http("GET",peer_hs+"/_matrix/client/v3/account/whoami",headers=bh).json()["user_id"]
              if peer_hs else "@"+bob["username"]+":test.invalid")
-        http("POST",api+"/invite",headers=hdr,json={"user_id":uid})
+        if kick:
+            http("PUT",api+"/state/m.room.join_rules",headers=hdr,json={"join_rule":"public"})
+        else:
+            http("POST",api+"/invite",headers=hdr,json={"user_id":uid})
         member_api=(peer_hs or hs)+"/_matrix/client/v3/rooms/"+quote(room,safe="")
         http("POST",member_api+"/join",headers=bh,json={})
         web=stack.enter_context(element_server(peer_hs or hs,server_name=uid.split(":",1)[1]));pw=stack.enter_context(sync_playwright())
@@ -78,15 +81,15 @@ def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False,room_searc
                 print("Native visible words:",[w for w,_,_ in words()],flush=True);raise
         def click(pos):x("mousemove","--window",win,*map(str,pos),"click","1")
         def lines(words,label):return [(x,y) for v,x,y in words if v==label and x>280]
-        if permissions or ban:
+        if permissions or ban or kick:
             def restart_native():
                 nonlocal win
                 native_life.close()
                 win=launch()
-            if ban:
-                from qa_room_ban import check_ban
-                check_ban(page,api,room,peer_hs,hdr,bh,http,locate,click,restart_native,
-                          lambda *args:x(*[win if arg=="WIN" else arg for arg in args]))
+            if ban or kick:
+                from qa_room_removal import check_removal
+                check_removal(page,api,room,peer_hs,hdr,bh,http,locate,click,restart_native,
+                              lambda *args:x(*[win if arg=="WIN" else arg for arg in args]),kick=kick)
             else:
                 from qa_room_permissions import check_permissions
                 check_permissions(page,api,room,native,hdr,bh,http,locate,click,restart_native,

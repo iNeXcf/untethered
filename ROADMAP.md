@@ -184,8 +184,14 @@
   `M_FORBIDDEN` (“You are banned from this room”). On the same Synapse server
   the equivalent refusal was HTTP 403 `M_BAD_STATE`. After restart, **Unban**
   left the member outside; in invite-only mode **Invite** allowed rejoining,
-  and both clients displayed the new encrypted message. Kicks, reports and
-  broader moderation workflows remain open.
+  and both clients displayed the new encrypted message.
+- **Kick in a public room:** The [two-account kick test](scripts/room-permissions.md#verify-kick-in-a-public-room)
+  used **People → Kick**. Synapse recorded a moderator-authored `leave` with
+  the supplied reason and rejected both encrypted and plain member sends
+  with HTTP 403 `M_FORBIDDEN` while the member was out. The member rejoined
+  with HTTP 200 and both clients displayed the next encrypted message.
+  There were no invite or ban events for that member. Reports and broader
+  moderation workflows remain open.
 
 ## What parity means
 
