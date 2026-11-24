@@ -1,4 +1,5 @@
 use super::{App, Msg, Request, Section, rooms::Room};
+mod reaction_bar;
 #[cfg(target_os = "linux")]
 mod video_wall;
 use chrono::{DateTime, Local};
@@ -861,6 +862,20 @@ impl App {
                         .style(nav(false))
                         .on_press(Msg::Reply(id.clone())),
                 );
+                if p.reactable {
+                    line = line.push(
+                        button(text("React").size(12))
+                            .padding([1, 6])
+                            .style(nav(self
+                                .reaction_picker
+                                .as_ref()
+                                .is_some_and(|p| &p.target == id)))
+                            .on_press_maybe(
+                                (self.verified && self.connected)
+                                    .then(|| Msg::ReactionPicker(id.clone())),
+                            ),
+                    );
+                }
             }
             if let Some(edit) = self
                 .editing
@@ -911,6 +926,9 @@ impl App {
                     );
             } else {
                 message = message.push(line);
+            }
+            if let Some(bar) = reaction_bar::view(self, p) {
+                message = message.push(bar);
             }
             if original.is_some_and(|c| Some(&c.event) == p.event_id.as_ref()) {
                 feed = feed.push(

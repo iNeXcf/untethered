@@ -30,3 +30,18 @@ edited quote in Element must highlight the exact original. Each native **View or
 make a room-scoped GET for the corresponding event ID and show that original
 with the correct neighboring text. The fixture also drives **Preceding
 messages** and **Back to latest**.
+
+## Reactions on an edited reply
+
+Run the same command with `--reactions` instead of `--replies`. This shorter
+fixture creates an encrypted parent, reply, edit and sibling reply. It opens
+Untethered’s **React** picker on the edited text and chooses **Like**. Element
+clicks the 👍 chip on the same reply. The test reads both visible counts and
+queries Synapse’s relations endpoint: exactly two senders on the base reply
+ID, none on the edit or neighboring messages.
+
+Both clients reconnect with the count at 2. Untethered then clicks the chip
+to remove its own reaction. The test checks which annotation was redacted
+and compares the surviving event ID and sender to Element’s original
+annotation. A second restart/reload must still show 1 on both clients;
+Untethered offers **Add your reaction**, while Element’s chip remains selected.

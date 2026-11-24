@@ -148,8 +148,12 @@
   three edits were Megolm `m.replace` events targeting the two reply IDs.
   After restart/reload, both timelines displayed *Polar revision* and
   *Meridian correction* in place. Each client’s two links still opened the
-  correct original despite identical original text. Reactions and the rest
-  of the everyday messaging milestone remain open.
+  correct original despite identical original text.
+- **Reactions on edited replies:** The [two-client reaction test](scripts/replies-element.md#reactions-on-an-edited-reply)
+  added 👍 once from each client. Both showed 2 on the base reply ID.
+  Untethered removed its own annotation after a restart; after reconnecting
+  again, both showed 1 and only Element still owned the reaction. Synapse
+  confirmed no reactions targeted the replacement, quoted message or sibling reply.
 
 ## What parity means
 

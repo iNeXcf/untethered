@@ -19,6 +19,7 @@ mod media;
 #[cfg(not(target_arch = "wasm32"))]
 mod paste;
 mod preview;
+mod reactions;
 mod replies;
 mod rooms;
 mod transfers;
@@ -116,6 +117,9 @@ enum Msg {
     Draft(text_editor::Action),
     Send,
     Reply(String),
+    ReactionPicker(String),
+    ReactionInput(String),
+    ToggleReaction(reactions::Toggle),
     Edit(String),
     ChangeEdit(text_editor::Action),
     SaveEdit,
@@ -172,6 +176,7 @@ enum Request {
     Send(String, String, Option<rooms::Quote>),
     Context(String, String),
     Edit(String, String),
+    Reaction(reactions::Toggle),
 }
 struct App {
     #[cfg(target_os = "linux")]
@@ -203,6 +208,7 @@ struct App {
     reply_drafts: BTreeMap<String, rooms::Quote>,
     original: Option<replies::Original>,
     editing: Option<edits::Editing>,
+    reaction_picker: Option<reactions::Picker>,
     editor: text_editor::Content,
     loaded: BTreeSet<String>,
     connected: bool,
@@ -269,6 +275,7 @@ impl App {
             reply_drafts: Default::default(),
             original: None,
             editing: None,
+            reaction_picker: None,
             editor: text_editor::Content::new(),
             loaded: Default::default(),
             connected: false,
@@ -674,6 +681,7 @@ impl App {
                         Request::Send(..) => "Could not send. Your draft has been kept.",
                         Request::Context(..)=>"Could not load the original message. Try again from the reply.",
                         Request::Edit(room,id)=>{self.finish_edit(f["request_id"].as_i64().unwrap(),&room,&id,&Value::Null);return}
+                        Request::Reaction(op)=>{self.finish_reaction(op,&Value::Null);return}
                     }
                     .into();
                     return;
@@ -709,6 +717,7 @@ impl App {
                         };
                     }
                     Request::Context(room, id) => self.show_context(room, id, data),
+                    Request::Reaction(op) => self.finish_reaction(op, data),
                     Request::Edit(room, id) => {
                         self.finish_edit(f["request_id"].as_i64().unwrap(), &room, &id, data)
                     }
@@ -1272,6 +1281,24 @@ impl App {
                 }
             }
             Msg::Draft(a) => self.editor.perform(a),
+            Msg::ReactionPicker(id) => {
+                if self.visible_post(&id).is_some_and(|p| p.reactable) {
+                    self.reaction_picker = (!self
+                        .reaction_picker
+                        .as_ref()
+                        .is_some_and(|p| p.target == id))
+                    .then(|| reactions::Picker {
+                        target: id,
+                        custom: String::new(),
+                    });
+                }
+            }
+            Msg::ReactionInput(s) => {
+                if let Some(p) = &mut self.reaction_picker {
+                    p.custom = s;
+                }
+            }
+            Msg::ToggleReaction(op) => self.toggle_reaction(op),
             Msg::Edit(id) => {
                 if self.start_edit(id) {
                     return operation::focus("message-edit");

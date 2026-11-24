@@ -12,6 +12,16 @@ pub struct Original {
     pub preceding: bool,
 }
 impl App {
+    pub fn visible_post(&self, id: &str) -> Option<&crate::rooms::Post> {
+        self.live.list.get(&self.selected)?.by_id(id).or_else(|| {
+            self.original
+                .as_ref()
+                .filter(|c| c.room == self.selected)?
+                .slice
+                .as_ref()?
+                .by_id(id)
+        })
+    }
     pub fn timeline_id(&self) -> iced::widget::Id {
         self.original
             .as_ref()
@@ -34,6 +44,7 @@ impl App {
     }
     pub fn close_original(&mut self) {
         self.original = None;
+        self.reaction_picker = None;
         self.editing = None;
         self.pending
             .retain(|_, r| !matches!(r, Request::Context(..)));

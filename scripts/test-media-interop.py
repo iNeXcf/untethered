@@ -139,6 +139,7 @@ def main():
     args.add_argument("--kwin-element",action="store_true",help="Drive a real Dolphin drag under KWin and round-trip both files through Element Web")
     args.add_argument("--rtc-membership",action="store_true",help="Observe the Rust client's MatrixRTC join, heartbeat, hangup and abandoned membership in Element Web")
     args.add_argument("--replies",action="store_true",help="Send and edit encrypted replies in Iced and Element, reconnect both and jump to the originals beyond recent history")
+    args.add_argument("--reactions",action="store_true",help="Toggle the same reaction from Iced and Element on an edited reply and verify ownership after reconnect")
     args.add_argument("--rtc-audio",action="store_true",help="Verify encrypted Rust ↔ Element Call tones using real LiveKit and Matrix OpenID authorization")
     args.add_argument("--desktop-dm",action="store_true",help="Drive the Iced DM call controls and Element's incoming call prompt with isolated audio")
     args.add_argument("--incoming-dm",action="store_true",help="Ring the Iced desktop twice from Element, decline then accept and hang up")
@@ -162,7 +163,7 @@ def main():
     if args.desktop_dm or args.incoming_dm or args.voice_room: args.rtc_audio=True
     assert BACKEND.is_file(), "Run scripts/rust-client.sh once or set UNTETHERED_BACKEND"
     dist = ROOT/"rust-client/web/dist"
-    if not any((args.native_paste,args.portal_drop,args.kwin_element,args.rtc_membership,args.rtc_audio,args.replies)):
+    if not any((args.native_paste,args.portal_drop,args.kwin_element,args.rtc_membership,args.rtc_audio,args.replies,args.reactions)):
         assert (dist/"backend/gomuks-worker.js").is_file(), "Run scripts/rust-web.sh first"
     os.umask(0o077)
     with tempfile.TemporaryDirectory(prefix="untethered-media-",dir=os.environ.get("TMPDIR")) as d:
@@ -172,13 +173,13 @@ def main():
         if args.rtc_audio:
             from qa_rtc_audio import configure, test as audio_test
             server_name,extra_listeners,extra_settings,rtc_service=configure(tmp,free_port)
-        if args.replies:
+        if args.replies or args.reactions:
             extra_settings="rc_message: {per_second: 1000, burst_count: 1000}\n"
         subprocess.run([sys.executable, "-m", "synapse.app.homeserver", "-c", "hs.yaml", "--generate-config",
                         "-H", server_name, "--report-stats", "no"], cwd=tmp, stdout=subprocess.DEVNULL, check=True)
         port = free_port()
         hs = f"http://127.0.0.1:{port}"
-        gateway_port=free_port() if args.upload_cancel or args.portal_drop or args.kwin_element or args.replies else None
+        gateway_port=free_port() if args.upload_cancel or args.portal_drop or args.kwin_element or args.replies or args.reactions else None
         public_url=f"http://127.0.0.1:{gateway_port}" if gateway_port else hs
         (tmp/"local.yaml").write_text(f"""listeners:
 {extra_listeners}  - port: {port}
@@ -204,9 +205,9 @@ federation_domain_whitelist: []
                     break
                 except requests.ConnectionError:
                     time.sleep(.1)
-            if args.replies:
+            if args.replies or args.reactions:
                 from qa_replies import test_replies
-                test_replies(tmp,hs,ROOT,BACKEND,seed,http,gateway_port)
+                test_replies(tmp,hs,ROOT,BACKEND,seed,http,gateway_port,reactions=args.reactions)
                 return
             if args.rtc_audio:
                 audio_test(tmp,hs,server_name,rtc_service,ROOT,BACKEND,seed,http,service,desktop=args.desktop_dm or args.incoming_dm,incoming=args.incoming_dm,controls=args.call_controls,devices=args.call_devices,reconnect=args.call_reconnect,turn=args.call_turn,group=args.voice_room,share=args.window_share,camera=args.room_camera,ptt=args.room_ptt,layout=args.room_layout)

@@ -110,18 +110,11 @@ pub struct Editing {
     pub pending: Option<i64>,
 }
 impl App {
-    fn edit_post(&self, id: &str) -> Option<&Post> {
-        self.live.list.get(&self.selected)?.by_id(id).or_else(|| {
-            self.original
-                .as_ref()
-                .filter(|c| c.room == self.selected)?
-                .slice
-                .as_ref()?
-                .by_id(id)
-        })
-    }
     pub fn start_edit(&mut self, id: String) -> bool {
-        let Some(p) = self.edit_post(&id).filter(|p| p.may_edit(&self.matrix_id)) else {
+        let Some(p) = self
+            .visible_post(&id)
+            .filter(|p| p.may_edit(&self.matrix_id))
+        else {
             return false;
         };
         if !self.connected
@@ -152,7 +145,7 @@ impl App {
             return;
         };
         let Some(post) = self
-            .edit_post(&d.event)
+            .visible_post(&d.event)
             .filter(|p| p.may_edit(&self.matrix_id))
         else {
             return;

@@ -52,6 +52,13 @@ Enter or **Save edit** to update it in place; **Cancel** or Escape discards
 the change. Editing leaves your unsent composer draft alone. An edited reply
 keeps its **View original** link.
 
+**Reactions:** Click **React** beside a message to choose a quick reaction
+or enter your own emoji or text. Click an existing reaction to add yours;
+click a highlighted reaction to remove only yours. Reactions stay on the
+same message when its text is edited. In encrypted rooms, gomuks and Element
+use standard `m.reaction` events: the reaction key and target ID are visible
+to the homeserver, while the message text remains encrypted.
+
 **Files:** Drop files onto a room or click **+** to stage them, optionally type
 a caption for the first attachment, then press **Send**. A local preview strip
 shows image thumbnails or file-type cards; use **×** to remove a file. PNG,

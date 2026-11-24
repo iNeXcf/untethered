@@ -15,7 +15,7 @@ from qa_native_paste import child,isolated_env,start_display,wait_for
 from qa_upload_cancel import slow_gateway
 
 
-def test_replies(tmp,hs,root,backend,seed,http,port):
+def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False):
     paths=[]
     def observe(method,path):
         if method=="GET" and "/context/" in path:paths.append(unquote(path))
@@ -73,6 +73,23 @@ def test_replies(tmp,hs,root,backend,seed,http,port):
                 print("Native visible words:",[w for w,_,_ in words()],flush=True);raise
         def click(pos):x("mousemove","--window",win,*map(str,pos),"click","1")
         def lines(words,label):return [(x,y) for v,x,y in words if v==label and x>280]
+        if reactions:
+            from qa_reactions import check_reactions
+            def restart():
+                nonlocal win
+                native_life.close()
+                page.reload()
+                win=launch()
+            def hover(pos):
+                x("mousemove","--window",win,*map(str,pos))
+            def react_click(pos):
+                click(pos)
+                hover((65,60))  # Keep chip tooltips off the message during OCR.
+            def room_get(suffix,version="v3"):
+                return http("GET",f"{hs}/_matrix/client/{version}/rooms/{quote(room,safe='')}"+suffix,headers=hdr).json()
+            check_reactions(page,room,uid,room_get,
+                            locate,react_click,hover,restart)
+            return
         first,_,second,_=messages(["Beacon original","Cobalt waypoint","Beacon original","Amber waypoint"])
         def select_first(ws):
             originals=sorted(y for _,y in lines(ws,"beacon"))

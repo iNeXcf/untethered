@@ -55,6 +55,8 @@ impl Quote {
     }
 }
 pub struct Post {
+    pub reactable: bool,
+    pub chips: crate::reactions::Chips,
     pub(super) text_message: bool,
     pub(super) encrypted: bool,
     pub(super) mentions: Value,
@@ -221,6 +223,15 @@ impl Room {
             self.event_rows.insert(id.clone(), row);
         }
         let mut post = Post {
+            reactable: confirmed
+                && !redacted
+                && e["state_key"].is_null()
+                && (matches!(e["type"].as_str(), Some("m.room.message" | "m.sticker"))
+                    || matches!(
+                        e["decrypted_type"].as_str(),
+                        Some("m.room.message" | "m.sticker")
+                    )),
+            chips: crate::reactions::chips(e),
             text_message: !redacted
                 && e["state_key"].is_null()
                 && content["msgtype"] == "m.text"
