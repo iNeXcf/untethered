@@ -6,7 +6,7 @@ pkgdesc='Native Rust/Iced Matrix client powered by gomuks'
 arch=('x86_64')
 url='https://github.com/koalexbear/untethered'
 license=('AGPL-3.0-or-later' 'OFL-1.1' 'MIT')
-optdepends=('xdg-desktop-portal: file picker with a desktop-specific portal backend')
+optdepends=('xdg-desktop-portal: document portal file drops and file picker with a desktop-specific backend')
 depends=('ca-certificates' 'fontconfig' 'gcc-libs' 'glibc' 'libx11' 'libxcb'
          'libxcursor' 'libxi' 'libxkbcommon-x11' 'libxrandr' 'wayland')
 makedepends=('cargo' 'git')

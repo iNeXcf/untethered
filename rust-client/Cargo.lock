@@ -3683,6 +3683,7 @@ name = "untethered-iced"
 version = "0.1.0"
 dependencies = [
  "arboard",
+ "ashpd",
  "async-channel",
  "async-lock",
  "bs58",
@@ -3693,6 +3694,7 @@ dependencies = [
  "image",
  "imagesize",
  "js-sys",
+ "libc",
  "reqwest",
  "rfd",
  "serde_json",

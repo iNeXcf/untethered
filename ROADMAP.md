@@ -24,8 +24,12 @@
   browser worker uses actual XHR upload events. `scripts/test-media-interop.py
   --upload-cancel` throttles encrypted 16 MiB files: both transports closed
   mid-body with zero new room events; each retry delivered exactly one.
-- **Files still to do:** portal-only drop offers. Check real
-  KDE/KWin and Windows Explorer along with the image/PDF acceptance matrix below.
+- **Portal-only Wayland drop:** `scripts/test-media-interop.py --portal-drop` uses
+  a GTK sender with no URI list and a real private `xdg-document-portal`. Switching
+  rooms during retrieval and upload left the other room untouched. The original
+  encrypted room received exactly one PNG and one PDF; both decrypted byte-for-byte.
+- **Files still to do:** finish the real KDE/KWin and Windows Explorer runtime
+  checks and the bidirectional Element image/PDF acceptance matrix below.
 - **Calls started:** a user-triggered MatrixRTC transport check in Account, and a
   [repeatable native audio probe](experiments/rtc-audio/README.md). Two Rust peers
   decoded each other's encrypted audio through a test SFU. Element interop, real

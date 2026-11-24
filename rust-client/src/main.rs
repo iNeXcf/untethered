@@ -15,6 +15,8 @@ mod preview;
 mod rooms;
 mod transfers;
 mod view;
+#[cfg(target_os = "linux")]
+mod wayland_drop;
 #[cfg(target_arch = "wasm32")]
 mod web_files;
 
@@ -43,6 +45,10 @@ enum Field {
 }
 #[derive(Clone)]
 enum Msg {
+    #[cfg(target_os = "linux")]
+    WaylandDrop(async_channel::Receiver<smithay_clipboard::FileDrop>),
+    #[cfg(target_os = "linux")]
+    WaylandDropResolved(u64, String, wayland_drop::Result),
     #[cfg(not(target_arch = "wasm32"))]
     PasteComposer,
     #[cfg(not(target_arch = "wasm32"))]
@@ -111,6 +117,8 @@ enum Request {
     Send(String, String),
 }
 struct App {
+    #[cfg(target_os = "linux")]
+    drop_epoch: u64,
     #[cfg(not(target_arch = "wasm32"))]
     paste_seq: u64,
     #[cfg(not(target_arch = "wasm32"))]
@@ -161,11 +169,13 @@ impl App {
         #[cfg(target_arch = "wasm32")]
         let task = Task::batch([task, browser_verification::listen(), web_files::listen()]);
         #[cfg(target_os = "linux")]
-        let task = Task::batch([task, transfers::wayland_drops()]);
+        let task = Task::batch([task, wayland_drop::listen()]);
         (Self::new(commands), task)
     }
     fn new(commands: Sender<backend::Command>) -> Self {
         Self {
+            #[cfg(target_os = "linux")]
+            drop_epoch: 0,
             #[cfg(not(target_arch = "wasm32"))]
             paste_seq: 0,
             #[cfg(not(target_arch = "wasm32"))]
@@ -378,6 +388,10 @@ impl App {
                     .into();
                 self.matrix_id = rooms::string(&data["user_id"]);
                 if was != self.logged_in {
+                    #[cfg(target_os = "linux")]
+                    {
+                        self.drop_epoch += 1;
+                    }
                     #[cfg(not(target_arch = "wasm32"))]
                     {
                         self.paste_seq += 1;
@@ -649,6 +663,28 @@ impl App {
                 self.rpc("get_rtc_transports", json!({}), Request::RtcDiscovery);
             }
             Msg::HoverFiles(v) => self.hover_files = v,
+            #[cfg(target_os = "linux")]
+            Msg::WaylandDrop(offer) => {
+                self.hover_files = false;
+                if self.can_stage()
+                    && let Ok(drop) = offer.try_recv()
+                {
+                    let epoch = self.drop_epoch;
+                    let room = self.selected.clone();
+                    return Task::perform(wayland_drop::resolve(drop), move |result| {
+                        Msg::WaylandDropResolved(epoch, room, result)
+                    });
+                }
+            }
+            #[cfg(target_os = "linux")]
+            Msg::WaylandDropResolved(epoch, room, result)
+                if epoch == self.drop_epoch && self.rooms().list.contains_key(&room) =>
+            {
+                match result {
+                    Ok(files) => return self.stage_files(room, files),
+                    Err(reason) => self.status = reason.into(),
+                }
+            }
             #[cfg(not(target_arch = "wasm32"))]
             Msg::DropPaths(paths) => {
                 self.hover_files = false;
@@ -676,24 +712,7 @@ impl App {
                     room = self.selected.clone();
                 }
                 if self.can_stage() && self.rooms().list.contains_key(&room) {
-                    if files.is_empty() {
-                        self.status = "Select regular files to attach.".into();
-                    } else {
-                        let (all, jobs) = self.outbox.stage(&room, files, self.media_limit);
-                        if !all {
-                            self.status = format!(
-                                "Up to {} files per room, {} each.",
-                                media::MAX_FILES,
-                                media::size(self.media_limit)
-                            );
-                        }
-                        return Task::batch(jobs.into_iter().map(|(id, file)| {
-                            let room = room.clone();
-                            Task::perform(preview::load(file), move |thumb| {
-                                Msg::Thumbnail(room, id, thumb)
-                            })
-                        }));
-                    }
+                    return self.stage_files(room, files);
                 }
             }
             Msg::Thumbnail(room, id, thumb) => {

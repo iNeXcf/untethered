@@ -30,7 +30,8 @@ def wait_for(description, check, timeout=20):
 
 @contextmanager
 def child(args, env, **kw):
-    proc = sp.Popen(args, env=env, stdout=sp.DEVNULL, stderr=None if os.getenv("PASTE_QA_DEBUG") else sp.DEVNULL, start_new_session=True, **kw)
+    stderr=kw.pop("stderr",None if os.getenv("PASTE_QA_DEBUG") else sp.DEVNULL)
+    proc = sp.Popen(args, env=env, stdout=sp.DEVNULL, stderr=stderr, start_new_session=True, **kw)
     try:
         yield proc
     finally:
@@ -45,7 +46,7 @@ def child(args, env, **kw):
             proc.wait()
 
 
-def check_paste(tmp, root, backend, f, headers, platform):
+def isolated_env(tmp,backend,platform):
     env = os.environ.copy()
     for k in ("DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET", "SWAYSOCK", "XAUTHORITY",
               "DBUS_SESSION_BUS_ADDRESS", "SESSION_MANAGER"):
@@ -56,7 +57,37 @@ def check_paste(tmp, root, backend, f, headers, platform):
         env[k] = str(folder)
     env.update(XDG_SESSION_TYPE=platform, UNTETHERED_BACKEND=str(backend),
                UNTETHERED_PROFILE=str(tmp/"seed"))
+    return env
+
+
+def start_display(stack,tmp,env,platform,width=1180,height=760):
     runtime = Path(env["XDG_RUNTIME_DIR"])
+    r,w=os.pipe()
+    try:
+        stack.enter_context(child(["Xvfb","-displayfd",str(w),"-screen","0",f"{max(1280,width)}x{max(900,height)}x24",
+                                   "-noreset","-nolisten","tcp"],env,pass_fds=(w,)))
+        assert select.select([r],[],[],10)[0], "private X server failed"
+        # Read through newline before closing: Xvfb writes it separately.
+        with os.fdopen(r,"rb",closefd=False) as ready_pipe:
+            env["DISPLAY"]=":"+str(int(ready_pipe.readline(32)))
+    finally:
+        os.close(r);os.close(w)
+    wait_for("private X display accepting connections",lambda: sp.run(
+        ["xdpyinfo"],env=env,stdout=sp.DEVNULL,stderr=sp.DEVNULL,timeout=3).returncode==0)
+    if platform=="wayland":
+        conf=tmp/"sway.conf"
+        conf.write_text(f"output * mode {width}x{height}\nseat seat0 fallback true\nxwayland disable\ndefault_border none\n")
+        env.update(WLR_BACKENDS="x11",WLR_RENDERER="pixman")
+        sway=stack.enter_context(child(["sway","-c",str(conf)],env))
+        def sway_socket():
+            assert sway.poll() is None, "private sway compositor failed to start"
+            return next(runtime.glob("sway-ipc.*.sock"),None)
+        env["SWAYSOCK"]=str(wait_for("isolated sway",sway_socket))
+        env["WAYLAND_DISPLAY"]=wait_for("Wayland socket",lambda:next((s.name for s in runtime.glob("wayland-*") if s.is_socket()),None))
+
+
+def check_paste(tmp, root, backend, f, headers, platform):
+    env=isolated_env(tmp,backend,platform)
     def run(*args, text=True):
         return sp.check_output(args, env=env, text=text, stderr=sp.DEVNULL, timeout=10)
 
@@ -100,31 +131,8 @@ def check_paste(tmp, root, backend, f, headers, platform):
         return base64.urlsafe_b64decode(s+"="*(-len(s)%4))
 
     with ExitStack() as stack:
-        r,w=os.pipe()
-        try:
-            stack.enter_context(child(["Xvfb","-displayfd",str(w),"-screen","0","1280x900x24",
-                                       "-noreset","-nolisten","tcp"],env,pass_fds=(w,)))
-            assert select.select([r],[],[],10)[0], "private X server failed"
-            # Xvfb may write the number and its newline separately; closing
-            # the pipe after the first write makes the server exit with EPIPE.
-            with os.fdopen(r,"rb",closefd=False) as ready_pipe:
-                env["DISPLAY"]=":"+str(int(ready_pipe.readline(32)))
-        finally:
-            os.close(r);os.close(w)
-        wait_for("private X display accepting connections",lambda: sp.run(
-            ["xdpyinfo"],env=env,stdout=sp.DEVNULL,stderr=sp.DEVNULL,timeout=3).returncode==0)
-        if platform=="wayland":
-            conf=tmp/"sway.conf"
-            conf.write_text("output * mode 1180x760\nseat seat0 fallback true\nxwayland disable\ndefault_border none\n")
-            env.update(WLR_BACKENDS="x11",WLR_RENDERER="pixman")
-            sway=stack.enter_context(child(["sway","-c",str(conf)],env))
-            def sway_socket():
-                assert sway.poll() is None, "private sway compositor failed to start"
-                return next(runtime.glob("sway-ipc.*.sock"),None)
-            env["SWAYSOCK"]=str(wait_for("isolated sway",sway_socket))
-            env["WAYLAND_DISPLAY"]=wait_for("Wayland socket",lambda:next((s.name for s in runtime.glob("wayland-*") if s.is_socket()),None))
+        start_display(stack,tmp,env,platform)
         client=stack.enter_context(child([root/"rust-client/target/debug/untethered-iced"],env))
-
         def ready():
             assert client.poll() is None, "native GUI exited"
             if platform=="wayland":

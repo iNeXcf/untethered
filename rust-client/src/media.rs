@@ -19,8 +19,26 @@ pub struct LocalFile {
 #[derive(Clone)]
 pub enum NativeSource {
     Path(std::path::PathBuf),
+    #[cfg(target_os = "linux")]
+    Portal(std::sync::Arc<std::fs::File>),
     // Paste stays in process memory until Send or removal; clones share bytes.
     Clipboard(bytes::Bytes),
+}
+#[cfg(not(target_arch = "wasm32"))]
+impl NativeSource {
+    // Reopen pinned regular files for independent read offsets: thumbnail
+    // decoding and upload may run concurrently; dup/try_clone shares a cursor.
+    pub fn read_path(&self) -> Option<std::borrow::Cow<'_, std::path::Path>> {
+        match self {
+            Self::Path(path) => Some(path.as_path().into()),
+            #[cfg(target_os = "linux")]
+            Self::Portal(fd) => {
+                use std::os::fd::AsRawFd;
+                Some(std::path::PathBuf::from(format!("/proc/self/fd/{}", fd.as_raw_fd())).into())
+            }
+            Self::Clipboard(_) => None,
+        }
+    }
 }
 #[cfg(not(target_arch = "wasm32"))]
 impl LocalFile {
@@ -260,6 +278,27 @@ pub fn drop_paths(uris: &str) -> Vec<std::path::PathBuf> {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
+    #[test]
+    fn multi_file_drafts_obey_per_room_count_and_server_size_limit() {
+        let mut out = super::Outbox::default();
+        let files = (0..14)
+            .map(|i| super::LocalFile {
+                name: format!("file-{i}.txt"),
+                size: if i == 1 { 11 } else { 10 },
+                origin: super::NativeSource::Path("unused".into()),
+            })
+            .collect();
+        let (all, _) = out.stage("original", files, 10);
+        assert!(!all);
+        let q = &out.rooms["original"];
+        assert_eq!(q.len(), super::MAX_FILES);
+        assert_eq!(q.first().unwrap().source.name, "file-0.txt");
+        assert_eq!(q.last().unwrap().source.name, "file-10.txt");
+        assert!(q.iter().all(|a| a.source.size <= 10));
+        let extra = q[0].source.clone();
+        assert!(out.stage("other", vec![extra], 10).0);
+        assert_eq!(out.rooms["original"].len(), super::MAX_FILES);
+    }
     #[test]
     fn uri_lists_handle_multiple_files_and_reject_network_paths() {
         let u = "# ignored\r\nfile:///tmp/a%20b.txt\r\nhttps://example.org/file\nfile://remote/share\nfile:///tmp/c.pdf\r\n";

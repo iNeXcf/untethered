@@ -1,4 +1,3 @@
-#[cfg(any(test, target_os = "linux"))]
 use crate::Msg;
 use crate::{App, Request, backend::Command, media};
 use iced::widget::text_editor;
@@ -14,6 +13,26 @@ pub struct Batch {
 }
 
 impl App {
+    pub fn stage_files(&mut self, room: String, files: Vec<media::LocalFile>) -> iced::Task<Msg> {
+        if files.is_empty() {
+            self.status = "Select regular files to attach.".into();
+            return iced::Task::none();
+        }
+        let (all, jobs) = self.outbox.stage(&room, files, self.media_limit);
+        if !all {
+            self.status = format!(
+                "Up to {} files per room, {} each.",
+                media::MAX_FILES,
+                media::size(self.media_limit)
+            );
+        }
+        iced::Task::batch(jobs.into_iter().map(|(id, file)| {
+            let room = room.clone();
+            iced::Task::perform(crate::preview::load(file), move |thumb| {
+                Msg::Thumbnail(room, id, thumb)
+            })
+        }))
+    }
     pub fn can_stage(&self) -> bool {
         !self.account && !self.selected.is_empty() && (!self.logged_in || self.verified)
     }
@@ -290,21 +309,6 @@ impl App {
             self.batch = None;
         }
     }
-}
-
-#[cfg(target_os = "linux")]
-pub fn wayland_drops() -> iced::Task<Msg> {
-    let (tx, rx) = async_channel::unbounded();
-    smithay_clipboard::on_file_drag(move |event| {
-        use smithay_clipboard::FileDrag;
-        let msg = match event {
-            FileDrag::Enter => Msg::HoverFiles(true),
-            FileDrag::Leave => Msg::HoverFiles(false),
-            FileDrag::Uris(s) => Msg::DropPaths(media::drop_paths(&s)),
-        };
-        let _ = tx.try_send(msg);
-    });
-    iced::Task::run(rx, |m| m)
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

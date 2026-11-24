@@ -40,7 +40,41 @@ pub fn composer_offer() -> Option<Result<Option<PasteOffer>>> {
 pub enum FileDrag {
     Enter,
     Leave,
-    Uris(String),
+    Dropped(FileDrop),
+}
+
+#[derive(Clone, Copy)]
+pub enum DropMime {
+    UriList,
+    Portal,
+}
+
+impl DropMime {
+    fn offered(types: &[String]) -> Option<Self> {
+        // Keep the existing direct path for ordinary host-to-host drops.
+        [Self::UriList, Self::Portal].into_iter()
+            .find(|mime| types.iter().any(|s| s == mime.name()))
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::UriList => "text/uri-list",
+            Self::Portal => "application/vnd.portal.filetransfer",
+        }
+    }
+}
+
+pub struct FileDrop {
+    pub mime: DropMime,
+    pub pipe: OwnedFd,
+    pub completion: DropCompletion,
+}
+
+/// Acknowledge only after consuming the payload. For portal drops this means
+/// retrieving the files, not merely reading the transfer key.
+pub struct DropCompletion(Sender<()>);
+impl DropCompletion {
+    pub fn finish(self) { let _ = self.0.send(()); }
 }
 
 type FileDragHandler = Box<dyn Fn(FileDrag) + Send + Sync>;

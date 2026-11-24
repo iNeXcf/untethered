@@ -416,9 +416,9 @@ impl DataDeviceHandler for State {
     ) {
         if let Some(notify) = crate::FILE_DRAG.get()
             && let Some(offer) = device.data::<DataDeviceData>().and_then(|d| d.drag_offer())
-            && offer.with_mime_types(|types| types.iter().any(|s| s == "text/uri-list"))
+            && let Some(mime) = offer.with_mime_types(crate::DropMime::offered)
         {
-            offer.accept_mime_type(offer.serial, Some("text/uri-list".into()));
+            offer.accept_mime_type(offer.serial, Some(mime.name().into()));
             offer.set_actions(DndAction::Copy, DndAction::Copy);
             notify(crate::FileDrag::Enter);
         }
@@ -431,33 +431,26 @@ impl DataDeviceHandler for State {
     fn motion(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice, _: f64, _: f64) {}
 
     fn drop_performed(&mut self, _: &Connection, _: &QueueHandle<Self>, device: &WlDataDevice) {
+        use sctk::reexports::calloop::channel::{self, Event};
         let Some(notify) = crate::FILE_DRAG.get() else { return };
         let Some(offer) = device.data::<DataDeviceData>().and_then(|d| d.drag_offer()) else { return };
-        if !offer.with_mime_types(|types| types.iter().any(|s| s == "text/uri-list")) { return }
-        let Ok(pipe) = offer.receive("text/uri-list".into()) else { offer.destroy(); return };
-        if set_non_blocking(pipe.as_raw_fd()).is_err() { offer.destroy(); return; }
-        let mut bytes = Vec::new();
+        let Some(mime) = offer.with_mime_types(crate::DropMime::offered) else {return};
+        let Ok(pipe) = offer.receive(mime.name().into()) else { offer.destroy(); return };
+        let (done, ack) = channel::channel::<()>();
         let transfer = offer.clone();
-        let result = self.loop_handle.insert_source(pipe, move |_, file, _| {
-            let mut buf = [0; 4096];
-            // SAFETY: the registered file is borrowed only for reading; its fd is never replaced.
-            match unsafe { file.get_mut() }.read(&mut buf) {
-                Ok(0) => {
-                    if let Ok(uris) = String::from_utf8(std::mem::take(&mut bytes)) {
-                        notify(crate::FileDrag::Uris(uris));
-                        transfer.finish();
-                    }
+        if self.loop_handle.insert_source(ack, move |event, _, _| {
+            if transfer.inner().is_alive() {
+                match event {
+                    Event::Msg(()) => transfer.finish(),
+                    Event::Closed => transfer.destroy(),
                 }
-                Ok(n) if bytes.len() + n <= 256 * 1024 => {
-                    bytes.extend_from_slice(&buf[..n]); return PostAction::Continue;
-                }
-                Err(e) if matches!(e.kind(), ErrorKind::Interrupted | ErrorKind::WouldBlock) => return PostAction::Continue,
-                _ => {}
             }
-            transfer.destroy();
-            PostAction::Remove
-        });
-        if result.is_err() { offer.destroy(); }
+        }).is_err() { offer.destroy(); return; }
+        // Handoff immediately: the UI snapshots the destination room before
+        // any reads on the pipe or D-Bus calls. No blocking in Wayland dispatch.
+        notify(crate::FileDrag::Dropped(crate::FileDrop {
+            mime, pipe: pipe.into(), completion: crate::DropCompletion(done),
+        }));
     }
 
     // The selection is finished and ready to be used.

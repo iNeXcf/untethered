@@ -40,13 +40,10 @@ pub async fn load(file: LocalFile) -> Option<Handle> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn native_thumbnail(source: &LocalFile) -> Option<Handle> {
-    let path = match &source.origin {
-        crate::media::NativeSource::Path(p) => p,
-        crate::media::NativeSource::Clipboard(bytes) => {
-            return decode(std::io::Cursor::new(bytes.as_ref()), WIDTH, HEIGHT);
-        }
-    };
-    let f = std::fs::File::open(path).ok()?;
+    if let crate::media::NativeSource::Clipboard(bytes) = &source.origin {
+        return decode(std::io::Cursor::new(bytes.as_ref()), WIDTH, HEIGHT);
+    }
+    let f = std::fs::File::open(source.origin.read_path()?).ok()?;
     let meta = f.metadata().ok()?;
     if !meta.is_file() || meta.len() != source.size || meta.len() > MAX_SOURCE_BYTES {
         return None;

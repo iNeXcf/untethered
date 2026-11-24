@@ -50,6 +50,11 @@ Uploads are sequential, with up to 10 staged files per room and a 64 MiB/file ca
 (lower if the homeserver advertises a smaller limit). Click **Save** on a received
 attachment. Preview mode simulates a send locally; it never uploads.
 
+On native Wayland you can drop a URI list or a file-transfer portal offer
+from a sandboxed app. Portal files stay bound to the room that received the
+drop, even if you navigate away before the desktop portal responds. The app
+holds a read-only handle to each selected file while it is staged.
+
 During upload the card shows the transfer percentage and a **Cancel** button.
 Cancel stops the active upload and pauses the batch, keeping the files and
 caption in the original room. **Retry** resumes the unsent files; files already

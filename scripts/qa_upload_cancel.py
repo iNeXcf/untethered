@@ -38,7 +38,7 @@ def until(label, fn, seconds=35):
 
 
 @contextmanager
-def slow_gateway(upstream,port):
+def slow_gateway(upstream,port,hold_first=None):
     records = []
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -52,6 +52,9 @@ def slow_gateway(upstream,port):
                 index = len(records)
                 record = {"expected": n, "received": 0, "partial": False}
                 records.append(record)
+                if index==0 and hold_first is not None and not hold_first.wait(timeout=25):
+                    self.send_error(504)
+                    return
                 # Both first attempts are slow. On cancellation the transport
                 # must actually close before the complete file reaches us.
                 body = bytearray()

@@ -264,8 +264,15 @@ async fn upload(
     if file.size > limit {
         return Err("File exceeds the upload limit.");
     }
-    let body = match file.origin {
-        crate::media::NativeSource::Path(path) => {
+    let body = match &file.origin {
+        crate::media::NativeSource::Clipboard(bytes) => {
+            if bytes.len() as u64 != file.size {
+                return Err("Clipboard image size mismatch.");
+            }
+            reqwest::Body::from(bytes.clone())
+        }
+        origin => {
+            let path = origin.read_path().ok_or("File source unavailable.")?;
             let f = tokio::fs::File::open(path)
                 .await
                 .map_err(|_| "File cannot be opened.")?;
@@ -274,12 +281,6 @@ async fn upload(
                 return Err("File changed. Remove and attach it again.");
             }
             reqwest::Body::from(f)
-        }
-        crate::media::NativeSource::Clipboard(bytes) => {
-            if bytes.len() as u64 != file.size {
-                return Err("Clipboard image size mismatch.");
-            }
-            reqwest::Body::from(bytes)
         }
     };
     let mut reply = http
