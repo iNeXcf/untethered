@@ -28,6 +28,74 @@ fn session() -> (
 }
 
 #[tokio::test]
+#[ignore = "run scripts/test-media-interop.py --rtc-membership with local Element Web"]
+async fn rtc_membership_seen_by_element() {
+    use untethered_iced::rtc_membership::Membership;
+    let path = std::path::PathBuf::from(env::var_os("UNTETHERED_RTC_QA").unwrap());
+    let fixture: Value =
+        serde_json::from_slice(&std::fs::read(path.join("rtc.json")).unwrap()).unwrap();
+    let room = fixture["room"].as_str().unwrap();
+    let service = url::Url::parse(fixture["service"].as_str().unwrap()).unwrap();
+    assert_eq!(service.host_str(), Some("127.0.0.1"));
+    let (mut app, rx, engine) = session();
+    wait(&mut app, &rx, "verified member of encrypted room", |a| {
+        a.verified && a.live.list.get(room).is_some_and(|r| r.encrypted)
+    })
+    .await;
+    let mut seq = 9000;
+    let mut rpc = async |cmd: &'static str, body: Value| -> Result<Value, String> {
+        seq += 1;
+        let frame = json!({"command":cmd,"request_id":seq,"data":body});
+        app.commands
+            .send(backend::Command::Rpc(frame))
+            .await
+            .map_err(|_| "closed")?;
+        tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                let f = rx.recv().await.map_err(|_| "backend exited")?;
+                if f["request_id"] == seq {
+                    match f["command"].as_str() {
+                        Some("response") => return Ok(f["data"].clone()),
+                        Some("error") => return Err(format!("{cmd} rejected: {}", f["data"])),
+                        _ => (),
+                    }
+                }
+            }
+        })
+        .await
+        .map_err(|_| format!("{cmd} timed out"))?
+    };
+    let identity = rpc("get_state", json!({})).await.unwrap();
+    let user = identity["user_id"].as_str().unwrap();
+    let device = identity["device_id"].as_str().unwrap();
+    std::fs::write(path.join("rtc-device"), device).unwrap();
+    async fn signal(path: &std::path::Path, name: &str) {
+        tokio::time::timeout(Duration::from_secs(25), async {
+            while !path.join(name).is_file() {
+                tokio::time::sleep(Duration::from_millis(40)).await;
+            }
+        })
+        .await
+        .expect("Element observer did not acknowledge membership");
+    }
+    let member = Membership::join(room, user, device, &service, 8000, &mut rpc)
+        .await
+        .unwrap();
+    signal(&path, "restart").await;
+    member.heartbeat(&mut rpc).await.unwrap();
+    std::fs::write(path.join("restarted"), "").unwrap();
+    signal(&path, "leave").await;
+    member.leave(&mut rpc).await.unwrap();
+    signal(&path, "rejoin").await;
+    let _abandoned = Membership::join(room, user, device, &service, 8000, &mut rpc)
+        .await
+        .unwrap();
+    // Stop the actual transport without sending a leave or any more heartbeats.
+    app.commands.close();
+    engine.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 #[ignore = "run scripts/test-media-interop.py --upload-cancel (disposable throttled server)"]
 async fn throttled_encrypted_upload_cancel_retry() {
     let dir =

@@ -34,12 +34,17 @@
   mid-upload produced two encrypted events in the original room, none in the
   other. Element saved both and sent those bytes back; the native KDE Save
   dialogs produced files identical to the originals.
-- **Files still to do:** real Windows Explorer drop/send/save, plus the remaining
-  unencrypted-room and limit/error-path platform acceptance checks below.
+- **Files still to do:** unencrypted-room and limit/error-path platform checks.
+  Windows runtime QA is deferred at Chris's request; a cross-build is the only
+  Windows evidence so far.
 - **Calls started:** a user-triggered MatrixRTC transport check in Account, and a
   [repeatable native audio probe](experiments/rtc-audio/README.md). Two Rust peers
-  decoded each other's encrypted audio through a test SFU. Element interop, real
-  devices, Matrix media-key distribution, ringing and call controls are not done.
+  decoded each other's encrypted audio through a test SFU. Separately, Element
+  Web 1.12.35 recognized the Rust/gomuks device in its voice-call participant
+  list, kept it through a heartbeat, and removed it on both explicit leave
+  and backend disconnect (`scripts/test-media-interop.py --rtc-membership`).
+  Element audio, Matrix media-key distribution, real devices, ringing and call
+  controls remain unverified.
 
 ## What parity means
 

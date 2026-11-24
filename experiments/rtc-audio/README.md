@@ -28,13 +28,39 @@ The isolated namespace needs an ICE interface other than bare loopback. The
 runner starts the test SFU, creates short-lived test tokens for a unique room,
 then stops the server. It does not use the homeserver or its credentials.
 
+## Replay the MatrixRTC membership check
+
+With the Python and extracted Element Web prerequisites from the
+[Element test setup](../../scripts/kwin-element.md), run from the checkout:
+
+```sh
+ELEMENT_WEB_DIR=/path/to/element-v1.12.35 \
+  uv run --python 3.13 --with matrix-synapse --with requests --with websocket-client \
+    --with playwright --with pillow --with cryptography \
+    python scripts/test-media-interop.py --rtc-membership
+```
+
+This test uses two disposable accounts in an encrypted room and no compositor
+or SFU. The Rust client uses its native backend and authenticated gomuks RPCs.
+A Chromium instance running Element reads **its own MatrixRTC participant
+list**. It checks the native user, device, member ID, room-wide voice slot and
+advertised transport. Synapse's eight-second delayed leave is renewed; the
+observer verifies the member survives the original deadline and disappears
+on explicit leave. A second join ends by disconnecting the native backend:
+Element sees the roster empty and Synapse confirms the empty state event.
+
+The probe implements the MSC3401 session membership that this Element release
+accepts in numbered room versions. It has a one-minute upper bound, even if the
+client dies before arming the delayed leave. A long call will also need to
+refresh the membership itself. The advertised transport in this check is a
+sentinel, so a roster entry does not demonstrate a media connection.
+
 ## What comes next
 
 The main client can already call gomuks `get_rtc_transports` from **Account →
-Check call server support**. The next interoperability milestone is to use
-gomuks to join the same MatrixRTC session as Element: agree on room/slot/member
-identity, publish/renew membership and delayed leave, obtain the LiveKit token,
-and bridge Element's per-sender media-key events and key indices to the native
+Check call server support**. The next interoperability milestone is to
+obtain the LiveKit token for that session through gomuks, and bridge Element's
+encrypted per-sender media-key events and key indices to the native
 provider (including rotation). The local probe provisions keys directly to test
 the media stack; it does not implement those steps. Only claim Matrix calling
 after Element ↔ Untethered exchanges encrypted audio both ways. Mic selection,

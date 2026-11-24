@@ -137,11 +137,12 @@ def main():
     args.add_argument("--native-paste",choices=("wayland","x11"))
     args.add_argument("--portal-drop",action="store_true",help="Native Wayland portal-only PNG/PDF drag with a real document portal")
     args.add_argument("--kwin-element",action="store_true",help="Drive a real Dolphin drag under KWin and round-trip both files through Element Web")
+    args.add_argument("--rtc-membership",action="store_true",help="Observe the Rust client's MatrixRTC join, heartbeat, hangup and abandoned membership in Element Web")
     args.add_argument("--upload-cancel",action="store_true",help="Test native and browser cancellation against a throttled Matrix upload")
     args=args.parse_args()
     assert BACKEND.is_file(), "Run scripts/rust-client.sh once or set UNTETHERED_BACKEND"
     dist = ROOT/"rust-client/web/dist"
-    if not args.native_paste and not args.portal_drop and not args.kwin_element:
+    if not args.native_paste and not args.portal_drop and not args.kwin_element and not args.rtc_membership:
         assert (dist/"backend/gomuks-worker.js").is_file(), "Run scripts/rust-web.sh first"
     os.umask(0o077)
     with tempfile.TemporaryDirectory(prefix="untethered-media-",dir=os.environ.get("TMPDIR")) as d:
@@ -164,6 +165,9 @@ enable_registration_without_verification: true
 trusted_key_servers: []
 federation_domain_whitelist: []
 """)
+        if args.rtc_membership:
+            with (tmp/"local.yaml").open("a") as cfg:
+                cfg.write("max_event_delay_duration: 15s\n")
         with service([sys.executable,"-m","synapse.app.homeserver","-c","hs.yaml","-c","local.yaml"],tmp) as proc:
             for _ in range(200):
                 if proc.poll() is not None:
@@ -173,6 +177,10 @@ federation_domain_whitelist: []
                     break
                 except requests.ConnectionError:
                     time.sleep(.1)
+            if args.rtc_membership:
+                from qa_rtc_membership import test
+                test(tmp,hs,ROOT,BACKEND,seed,http)
+                return
             if args.kwin_element:
                 from qa_kwin_element import test
                 test(tmp,hs,gateway_port,ROOT,BACKEND,seed)
