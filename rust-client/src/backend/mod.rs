@@ -18,6 +18,7 @@ pub enum Command {
     },
     Upload {
         id: i64,
+        cancel: Receiver<()>,
         file: crate::media::LocalFile,
         encrypt: bool,
         limit: u64,

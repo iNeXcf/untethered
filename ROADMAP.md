@@ -20,8 +20,11 @@
   `scripts/test-media-interop.py --native-paste {wayland,x11}`. Each had zero
   uploads/events while staged and one upload/encrypted image event after Send;
   downloaded ciphertext decrypted to the exact test pixels and the pasted text caption.
-- **Files still to do:** portal-only
-  drop offers, transfer percentages and cancellation after upload starts. Check real
+- **Progress, Cancel, Retry:** desktop consumes gomuks's progress stream; the
+  browser worker uses actual XHR upload events. `scripts/test-media-interop.py
+  --upload-cancel` throttles encrypted 16 MiB files: both transports closed
+  mid-body with zero new room events; each retry delivered exactly one.
+- **Files still to do:** portal-only drop offers. Check real
   KDE/KWin and Windows Explorer along with the image/PDF acceptance matrix below.
 - **Calls started:** a user-triggered MatrixRTC transport check in Account, and a
   [repeatable native audio probe](experiments/rtc-audio/README.md). Two Rust peers

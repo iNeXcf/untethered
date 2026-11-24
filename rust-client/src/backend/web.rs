@@ -105,11 +105,24 @@ pub async fn run(commands: Commands, events: Events) -> Result<(), String> {
                                 let _=result.send(image).await;
                             });continue;
                         }
-                        super::Command::Upload{id,file,encrypt,limit}=>{
+                        super::Command::Upload{id,file,encrypt,limit,cancel}=>{
                             let worker=worker.clone();let events=events.clone();
                             wasm_bindgen_futures::spawn_local(async move{
-                                if file.size>limit || crate::web_files::post_upload(&worker,id as f64,&file.file,encrypt).await.is_err() {
+                                let stop=cancel.recv().fuse();futures_util::pin_mut!(stop);
+                                let prepared=async {
+                                    file.size<=limit && crate::web_files::post_upload(&worker,id as f64,&file.file,encrypt).await.is_ok()
+                                }.fuse();futures_util::pin_mut!(prepared);
+                                let ok=futures_util::select_biased!{
+                                    _=stop=>{crate::web_files::cancel_upload(&worker,id as f64);return},
+                                    ok=prepared=>ok
+                                };
+                                if !ok {
                                     let _=events.send(json!({"command":"error","request_id":id,"data":"Upload failed."})).await;
+                                } else {
+                                    // Worker responses use the normal RPC channel. On
+                                    // completion the lease closes too; expired IDs are no-ops.
+                                    let _=stop.await;
+                                    crate::web_files::cancel_upload(&worker,id as f64);
                                 }
                             });continue;
                         }

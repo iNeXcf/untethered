@@ -77,7 +77,7 @@ fn avatar(name: &str, size: f32) -> El<'static> {
 fn label(s: &str) -> El<'_> {
     text(s).font(BOLD).size(11).color(MUTED).into()
 }
-fn attachment_card(a: &crate::media::Attachment) -> El<'_> {
+fn attachment_card<'a>(room: &str, a: &'a crate::media::Attachment) -> El<'a> {
     let name = &a.source.name;
     let ext = name
         .rsplit_once('.')
@@ -107,24 +107,37 @@ fn attachment_card(a: &crate::media::Attachment) -> El<'_> {
         .center_y(76)
         .into()
     };
+    let action = if let Some(u) = &a.upload {
+        Some(Msg::CancelUpload(room.into(), a.id, u.request))
+    } else {
+        (!a.busy).then_some(Msg::RemoveFile(a.id))
+    };
     let remove = tooltip(
-        button(text("×").size(16).font(BOLD))
-            .padding([0, 6])
-            .on_press_maybe((!a.busy).then_some(Msg::RemoveFile(a.id)))
-            .style(|_, s| button::Style {
-                background: Some(
-                    if s == button::Status::Hovered {
-                        color!(0x943e47)
-                    } else {
-                        TRAY
-                    }
-                    .into(),
-                ),
-                border: Border::default().rounded(6),
-                text_color: TEXT,
-                ..Default::default()
-            }),
-        "Remove attachment",
+        button(
+            text(if a.upload.is_some() { "Cancel" } else { "×" })
+                .size(14)
+                .font(BOLD),
+        )
+        .padding([0, 6])
+        .on_press_maybe(action)
+        .style(|_, s| button::Style {
+            background: Some(
+                if s == button::Status::Hovered {
+                    color!(0x943e47)
+                } else {
+                    TRAY
+                }
+                .into(),
+            ),
+            border: Border::default().rounded(6),
+            text_color: TEXT,
+            ..Default::default()
+        }),
+        if a.upload.is_some() {
+            "Cancel upload and keep draft"
+        } else {
+            "Remove attachment"
+        },
         tooltip::Position::Top,
     );
     let picture = stack![
@@ -145,15 +158,7 @@ fn attachment_card(a: &crate::media::Attachment) -> El<'_> {
     } else {
         name.clone()
     };
-    let state = if a.error.is_some() {
-        "Failed · retry"
-    } else if !a.busy {
-        "Ready"
-    } else if a.descriptor.is_none() {
-        "Uploading…"
-    } else {
-        "Sending…"
-    };
+    let state = a.status_label();
     let meta = text(format!("{}  ·  {state}", crate::media::size(a.source.size)))
         .size(11)
         .color(if a.error.is_some() {
@@ -166,22 +171,28 @@ fn attachment_card(a: &crate::media::Attachment) -> El<'_> {
     } else {
         meta.into()
     };
-    container(
-        column![
-            picture,
-            tooltip(
-                text(short).size(13).height(17).font(BOLD),
-                text(name).size(13),
-                tooltip::Position::Top
-            ),
-            meta
-        ]
-        .spacing(3),
-    )
-    .padding(7)
-    .width(158)
-    .style(|_| surface(SIDE, 8.))
-    .into()
+    let mut card = column![
+        picture,
+        tooltip(
+            text(short).size(13).height(17).font(BOLD),
+            text(name).size(13),
+            tooltip::Position::Top
+        ),
+        meta
+    ]
+    .spacing(3);
+    if let Some(n) = a.upload.as_ref().and_then(|u| u.percent) {
+        card = card.push(
+            iced::widget::progress_bar(0.0..=100.0, n as f32)
+                .length(Fill)
+                .girth(3),
+        );
+    }
+    container(card)
+        .padding(7)
+        .width(158)
+        .style(|_| surface(SIDE, 8.))
+        .into()
 }
 fn rail_button<'a>(glyph: String, hint: &'a str, active: bool, msg: Msg) -> El<'a> {
     let b = button(container(text(glyph).font(BOLD).color(TEXT).size(19)).center(44))
@@ -619,9 +630,10 @@ impl App {
             );
         }
         if let Some(files) = files.filter(|q| !q.is_empty()) {
-            let cards = Row::with_children(files.iter().map(attachment_card))
-                .spacing(8)
-                .padding([2, 0]);
+            let cards =
+                Row::with_children(files.iter().map(|a| attachment_card(&self.selected, a)))
+                    .spacing(8)
+                    .padding([2, 0]);
             tray = tray.push(scrollable(cards).horizontal().width(Fill).height(138));
         }
         let composer = row![
@@ -636,6 +648,9 @@ impl App {
             button(
                 text(if sending || uploading {
                     "Sending…"
+                } else if files.is_some_and(|q| q.iter().any(|a| a.cancelled || a.error.is_some()))
+                {
+                    "Retry"
                 } else {
                     "Send"
                 })

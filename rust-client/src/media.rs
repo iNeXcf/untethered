@@ -50,6 +50,36 @@ pub struct Attachment {
     pub txn: Option<String>,
     pub busy: bool,
     pub error: Option<String>,
+    pub upload: Option<UploadAttempt>,
+    pub cancelled: bool,
+}
+// Dropping this lease stops only its own transport attempt (including on
+// logout, room leave and shutdown). Retries always allocate a fresh RPC ID.
+pub struct UploadAttempt {
+    pub request: i64,
+    pub percent: Option<u8>,
+    pub _lease: async_channel::Sender<()>,
+}
+impl Attachment {
+    pub fn status_label(&self) -> String {
+        if let Some(upload) = &self.upload {
+            return match upload.percent {
+                None => "Preparing…".into(),
+                Some(100) => "Finalizing…".into(),
+                Some(n) => format!("Upload {n}%"),
+            };
+        }
+        if self.cancelled {
+            "Cancelled · retry"
+        } else if self.error.is_some() {
+            "Failed · retry"
+        } else if self.busy {
+            "Sending…"
+        } else {
+            "Ready"
+        }
+        .into()
+    }
 }
 impl Outbox {
     pub fn stage(
@@ -78,6 +108,8 @@ impl Outbox {
                 txn: None,
                 busy: false,
                 error: None,
+                upload: None,
+                cancelled: false,
             });
         }
         (all, previews)

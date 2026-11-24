@@ -50,6 +50,12 @@ Uploads are sequential, with up to 10 staged files per room and a 64 MiB/file ca
 (lower if the homeserver advertises a smaller limit). Click **Save** on a received
 attachment. Preview mode simulates a send locally; it never uploads.
 
+During upload the card shows the transfer percentage and a **Cancel** button.
+Cancel stops the active upload and pauses the batch, keeping the files and
+caption in the original room. **Retry** resumes the unsent files; files already
+confirmed in the room are not sent again. Once an attachment is sending its
+room event, it can no longer be cancelled as an upload.
+
 To send a screenshot, copy it and press **Ctrl+V in the message composer**.
 An image becomes a removable PNG attachment; plain text is inserted at the cursor.
 The image stays local until Send. Linux Wayland reads the focused clipboard

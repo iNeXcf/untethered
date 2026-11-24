@@ -29,6 +29,7 @@ extern "C" {
         file: &web_sys::File,
         encrypt: bool,
     ) -> Result<(), JsValue>;
+    pub fn cancel_upload(worker: &Worker, id: f64);
     #[wasm_bindgen(catch)]
     pub async fn save_media(
         worker: &Worker,

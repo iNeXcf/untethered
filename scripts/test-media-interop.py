@@ -4,6 +4,8 @@ Build the web client first. From the checkout:
   uv run --python 3.13 --with matrix-synapse --with requests --with websocket-client \
     --with playwright --with pillow python scripts/test-media-interop.py
 CHROMIUM and UNTETHERED_BACKEND can select local executables.
+Pass --upload-cancel to run the native and Chromium 16 MiB throttled transfer
+test instead (also needs Tesseract and the cryptography Python package).
 For the native clipboard acceptance test, pass --native-paste wayland or x11.
 It needs a debug client build plus Xvfb, xdotool, ImageMagick, and either
 sway/grim/wl-copy (Wayland) or xclip (X11); it never uses your desktop clipboard.
@@ -129,6 +131,7 @@ def check_browser(fixture, web):
 def main():
     args=argparse.ArgumentParser(description=__doc__)
     args.add_argument("--native-paste",choices=("wayland","x11"))
+    args.add_argument("--upload-cancel",action="store_true",help="Test native and browser cancellation against a throttled Matrix upload")
     args=args.parse_args()
     assert BACKEND.is_file(), "Run scripts/rust-client.sh once or set UNTETHERED_BACKEND"
     dist = ROOT/"rust-client/web/dist"
@@ -141,13 +144,15 @@ def main():
                         "-H", "test.invalid", "--report-stats", "no"], cwd=tmp, stdout=subprocess.DEVNULL, check=True)
         port = free_port()
         hs = f"http://127.0.0.1:{port}"
+        gateway_port=free_port() if args.upload_cancel else None
+        public_url=f"http://127.0.0.1:{gateway_port}" if gateway_port else hs
         (tmp/"local.yaml").write_text(f"""listeners:
   - port: {port}
     type: http
     tls: false
     bind_addresses: ["127.0.0.1"]
     resources: [{{names: [client, media]}}]
-public_baseurl: {hs}/
+public_baseurl: {public_url}/
 enable_registration: true
 enable_registration_without_verification: true
 trusted_key_servers: []
@@ -162,6 +167,12 @@ federation_domain_whitelist: []
                     break
                 except requests.ConnectionError:
                     time.sleep(.1)
+            if args.upload_cancel:
+                from qa_upload_cancel import test
+                wp=free_port()
+                with service([sys.executable,"-m","http.server",str(wp),"--bind","127.0.0.1","--directory",str(dist)],tmp):
+                    test(tmp,hs,gateway_port,f"http://127.0.0.1:{wp}",BACKEND,ROOT,seed)
+                return
             f, hdr = seed(tmp,hs)
             if args.native_paste:
                 from qa_native_paste import check_paste

@@ -26,9 +26,26 @@ export function pick(room) {
     input.onchange = () => { if (input.files.length) stage(room, input.files); };
     input.click();
 }
+const reading = new Map();
 export async function post_upload(worker, id, file, encrypt) {
-    const buffer = await file.arrayBuffer();
-    worker.postMessage({command:"wasm-upload",request_id:id,data:"",encrypt,filename:file.name,payload:new Uint8Array(buffer)},[buffer]);
+    const reader = new FileReader();
+    reading.set(id,reader);
+    try {
+        await new Promise((resolve,reject)=>{
+            reader.onload=resolve;
+            reader.onerror=reader.onabort=()=>reject(new Error("Upload preparation stopped"));
+            reader.readAsArrayBuffer(file);
+        });
+        if (reading.get(id)!==reader) throw new Error("Upload cancelled");
+        const buffer=reader.result;
+        worker.postMessage({command:"wasm-upload",request_id:id,data:"",encrypt,filename:file.name,payload:new Uint8Array(buffer)},[buffer]);
+    } finally {reading.delete(id);}
+}
+export function cancel_upload(worker,id){
+    const reader=reading.get(id);
+    reading.delete(id);
+    if (reader?.readyState===FileReader.LOADING) reader.abort();
+    worker.postMessage({command:"wasm-upload-cancel",request_id:id,data:"{}"});
 }
 export async function thumbnail(file, width, height) {
     const bitmap = await createImageBitmap(file);

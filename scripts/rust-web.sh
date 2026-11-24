@@ -13,7 +13,16 @@ fi
 [[ $(git -C "$src" rev-parse HEAD) == "$GOMUKS_COMMIT" ]] || { echo 'Unexpected gomuks checkout' >&2; exit 1; }
 cp "$src/cmd/wasmuks/media.go" "$stage/media.go"
 patch --batch --fuzz=0 "$stage/media.go" < rust-client/web/worker/media-limit.patch
-node -e 'const [src,stage]=process.argv.slice(1); process.stdout.write(JSON.stringify({Replace:{[src+"/cmd/wasmuks/media.go"]:stage+"/media.go"}}))' "$src" "$stage" > "$stage/overlay.json"
+cp "$src/cmd/wasmuks/main.go" "$stage/main.go"
+cp "$src/pkg/gomuks/mediaupload.go" "$stage/mediaupload.go"
+patch --batch --fuzz=0 "$stage/main.go" < rust-client/web/worker/upload-main.patch
+patch --batch --fuzz=0 "$stage/mediaupload.go" < rust-client/web/worker/upload-client.patch
+node -e 'const [src,stage,root]=process.argv.slice(1); process.stdout.write(JSON.stringify({Replace:{
+    [src+"/cmd/wasmuks/media.go"]:stage+"/media.go",
+    [src+"/cmd/wasmuks/main.go"]:stage+"/main.go",
+    [src+"/cmd/wasmuks/upload_transport.go"]:root+"/rust-client/web/worker/upload_transport.go",
+    [src+"/pkg/gomuks/mediaupload.go"]:stage+"/mediaupload.go"
+}}))' "$src" "$stage" "$root" > "$stage/overlay.json"
 (
     cd "$src/web"
     GOMAXPROCS=3 GOFLAGS="-p=3 '-overlay=$stage/overlay.json'" sh build-wasm.sh

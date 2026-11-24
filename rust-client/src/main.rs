@@ -54,6 +54,7 @@ enum Msg {
     Thumbnail(String, u64, Option<iced::widget::image::Handle>),
     PickFiles,
     RemoveFile(u64),
+    CancelUpload(String, u64, i64),
     SaveFile(media::Media),
     InlineReady(u64, media::PreviewRef, Option<iced::widget::image::Handle>),
     ShowInline(media::PreviewRef),
@@ -345,6 +346,11 @@ impl App {
     fn frame(&mut self, f: Value) {
         let data = &f["data"];
         match f["command"].as_str().unwrap_or("") {
+            "upload_progress" => {
+                if let (Some(id), Some(fraction)) = (f["request_id"].as_i64(), data.as_f64()) {
+                    self.upload_progress(id, fraction);
+                }
+            }
             #[cfg(target_arch = "wasm32")]
             "profile-waiting" => {
                 self.status = "Another Untethered tab is using this Matrix device. Use that tab, or close it and this one will connect automatically.".into();
@@ -419,6 +425,7 @@ impl App {
                 }
                 for left in items(&data["left_rooms"]).filter_map(Value::as_str) {
                     self.outbox.rooms.remove(left);
+                    self.pending.retain(|_,p|!matches!(p,Request::Upload(room,_)|Request::MediaSend(room,_) if room==left));
                     if self.batch.as_ref().is_some_and(|b| b.room == left) {
                         self.batch = None;
                     }
@@ -615,6 +622,7 @@ impl App {
                 for q in self.outbox.rooms.values_mut() {
                     for a in q {
                         a.busy = false;
+                        a.upload = None;
                     }
                 }
                 self.status = s;
@@ -730,6 +738,7 @@ impl App {
                     self.outbox.remove(&self.selected, id);
                 }
             }
+            Msg::CancelUpload(room, id, request) => self.cancel_upload(&room, id, request),
             Msg::SaveFile(media) if self.connected && self.logged_in => {
                 #[cfg(not(target_arch = "wasm32"))]
                 {

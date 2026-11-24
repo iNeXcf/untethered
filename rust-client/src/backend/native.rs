@@ -168,7 +168,16 @@ pub async fn run(commands: Commands, events: Events) -> Result<(), String> {
                     let http=http.clone();let cookie=cookie.clone();let events=events.clone();
                     transfers.spawn(async move {
                         let (id,result)=match op {
-                            Operation::Upload{id,file,encrypt,limit} => (id,upload(&http,addr,&cookie,file,encrypt,limit).await),
+                            Operation::Upload{id,file,encrypt,limit,cancel} => {
+                                let upload=upload(&http,addr,&cookie,file,encrypt,limit,|fraction|{
+                                    let _=events.try_send(json!({"command":"upload_progress","request_id":id,"data":fraction}));
+                                });
+                                tokio::select!{
+                                    biased;
+                                    _=cancel.recv()=>return,
+                                    result=upload=>(id,result),
+                                }
+                            }
                             Operation::Download{id,media,destination} => (id,download(&http,addr,&cookie,media,destination).await),
                             Operation::Rpc(_) | Operation::Inline{..}=>unreachable!(),
                         };
@@ -250,6 +259,7 @@ async fn upload(
     file: crate::media::LocalFile,
     encrypt: bool,
     limit: u64,
+    mut progress: impl FnMut(f64),
 ) -> Result<Value, &'static str> {
     if file.size > limit {
         return Err("File exceeds the upload limit.");
@@ -272,11 +282,12 @@ async fn upload(
             reqwest::Body::from(bytes)
         }
     };
-    let reply = http
+    let mut reply = http
         .post(format!("http://{addr}/_gomuks/upload"))
         .header("Cookie", cookie)
         .header("Content-Length", file.size)
         .query(&[
+            ("progress", "true"),
             ("filename", file.name.as_str()),
             ("encrypt", if encrypt { "true" } else { "false" }),
         ])
@@ -288,7 +299,31 @@ async fn upload(
     if !reply.status().is_success() {
         return Err("gomuks rejected the upload.");
     }
-    reply.json().await.map_err(|_| "Invalid upload response.")
+    // gomuks streams newline-separated JSON fractions from its homeserver
+    // request, followed by the media descriptor (or a Matrix error object).
+    // A 200 response alone is not upload success. Lines may span HTTP chunks.
+    let mut line = Vec::new();
+    while let Some(chunk) = reply.chunk().await.map_err(|_| "Upload interrupted.")? {
+        for piece in chunk.split_inclusive(|b| *b == b'\n') {
+            if line.len() + piece.len() > 256 * 1024 {
+                return Err("Invalid upload response.");
+            }
+            line.extend_from_slice(piece);
+            if line.ends_with(b"\n") {
+                let value: Value =
+                    serde_json::from_slice(&line).map_err(|_| "Invalid upload response.")?;
+                line.clear();
+                if let Some(fraction) = value.as_f64() {
+                    progress(fraction);
+                } else if value["msgtype"].is_string() {
+                    return Ok(value);
+                } else {
+                    return Err("gomuks rejected the upload.");
+                }
+            }
+        }
+    }
+    Err("Upload ended without a media descriptor.")
 }
 async fn download(
     http: &reqwest::Client,

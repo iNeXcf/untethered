@@ -80,6 +80,7 @@ impl App {
             return;
         };
         a.busy = true;
+        a.cancelled = false;
         a.error = None;
         if let Some(descriptor) = &a.descriptor {
             let mut content = descriptor.clone();
@@ -112,9 +113,11 @@ impl App {
             }
         } else {
             self.seq += 1;
+            let (lease, cancel) = async_channel::bounded(1);
             if self
                 .commands
                 .try_send(Command::Upload {
+                    cancel,
                     id: self.seq,
                     file: a.source.clone(),
                     encrypt,
@@ -122,6 +125,11 @@ impl App {
                 })
                 .is_ok()
             {
+                a.upload = Some(media::UploadAttempt {
+                    request: self.seq,
+                    percent: None,
+                    _lease: lease,
+                });
                 self.pending.insert(self.seq, Request::Upload(room, id));
             } else {
                 self.fail_file(&room, id, "Could not queue the upload.");
@@ -137,9 +145,43 @@ impl App {
             return;
         }
         if let Some(a) = self.outbox.get_mut(room, id) {
+            a.upload = None;
             a.descriptor = Some(value.clone());
         }
         self.advance_file();
+    }
+    pub fn cancel_upload(&mut self, room: &str, id: u64, request: i64) {
+        if !self.current_file(room, id)
+            || !matches!(self.pending.get(&request),Some(Request::Upload(r,i)) if r==room && *i==id)
+        {
+            return;
+        }
+        let Some(a) = self.outbox.get_mut(room, id) else {
+            return;
+        };
+        if !a.upload.as_ref().is_some_and(|u| u.request == request) {
+            return;
+        }
+        // Invalidate the RPC *before* releasing the transport: even a success
+        // already in the event queue must never advance to send_message.
+        self.pending.remove(&request);
+        a.upload = None;
+        a.busy = false;
+        a.cancelled = true;
+        a.error = None;
+        self.batch = None;
+    }
+    pub fn upload_progress(&mut self, request: i64, fraction: f64) {
+        if !(0.0..=1.0).contains(&fraction) {
+            return;
+        }
+        if let Some(Request::Upload(room, id)) = self.pending.get(&request)
+            && let Some(a) = self.outbox.get_mut(room, *id)
+            && let Some(upload) = &mut a.upload
+            && upload.request == request
+        {
+            upload.percent = Some((fraction * 100.).floor() as u8);
+        }
     }
     fn current_file(&self, room: &str, id: u64) -> bool {
         self.batch
@@ -240,6 +282,7 @@ impl App {
     }
     pub fn fail_file(&mut self, room: &str, id: u64, why: &str) {
         if let Some(a) = self.outbox.get_mut(room, id) {
+            a.upload = None;
             a.busy = false;
             a.error = Some(why.into());
         }
@@ -268,6 +311,68 @@ pub fn wayland_drops() -> iced::Task<Msg> {
 mod tests {
     use super::*;
     use crate::rooms::Room;
+    #[test]
+    fn cancelled_attempt_can_never_send_or_cancel_its_retry() {
+        let (tx, rx) = async_channel::bounded(8);
+        let mut app = App::new(tx);
+        app.logged_in = true;
+        app.connected = true;
+        app.verified = true;
+        app.selected = "!a".into();
+        app.live.list.insert(
+            "!a".into(),
+            Room {
+                has_metadata: true,
+                encrypted: true,
+                ..Default::default()
+            },
+        );
+        let _ = app.update(Msg::Files(
+            "!a".into(),
+            ["first.bin", "next.bin"]
+                .into_iter()
+                .map(|name| media::LocalFile {
+                    name: name.into(),
+                    size: 1,
+                    origin: media::NativeSource::Path("unused".into()),
+                })
+                .collect(),
+        ));
+        let _ = app.update(Msg::Send);
+        let Command::Upload {
+            id: first,
+            cancel: lease,
+            ..
+        } = rx.try_recv().unwrap()
+        else {
+            panic!("expected upload")
+        };
+        let attachment = app.outbox.rooms["!a"][0].id;
+        app.frame(json!({"command":"upload_progress","request_id":first,"data":0.375}));
+        assert_eq!(app.outbox.rooms["!a"][0].status_label(), "Upload 37%");
+        app.cancel_upload("!a", attachment, first);
+        assert!(lease.is_closed());
+        assert_eq!(app.outbox.rooms["!a"].len(), 2);
+        assert!(
+            rx.try_recv().is_err(),
+            "cancelling must not start the next file"
+        );
+        let _ = app.update(Msg::Send);
+        let Command::Upload {
+            id: second,
+            cancel: other,
+            ..
+        } = rx.try_recv().unwrap()
+        else {
+            panic!("expected retry")
+        };
+        app.cancel_upload("!a", attachment, first);
+        app.frame(json!({"command":"upload_progress","request_id":first,"data":0.99}));
+        app.frame(json!({"command":"response","request_id":first,"data":{"body":"demo.bin","msgtype":"m.file","file":{"url":"mxc://s/old"}}}));
+        assert!(rx.try_recv().is_err() && !other.is_closed());
+        let u = app.outbox.rooms["!a"][0].upload.as_ref().unwrap();
+        assert_eq!((u.request, u.percent), (second, None));
+    }
     #[test]
     fn accepted_event_with_gomuks_pending_sentinel_clears_the_tray_in_either_order() {
         for completion_first in [true, false] {

@@ -26,6 +26,75 @@ fn session() -> (
     let (output, rx) = async_channel::bounded(64);
     (App::new(tx), rx, tokio::spawn(backend::run(cmd, output)))
 }
+
+#[tokio::test]
+#[ignore = "run scripts/test-media-interop.py --upload-cancel (disposable throttled server)"]
+async fn throttled_encrypted_upload_cancel_retry() {
+    let dir =
+        std::path::PathBuf::from(env::var_os("UNTETHERED_UPLOAD_QA").expect("throttle fixture"));
+    let f: Value =
+        serde_json::from_slice(&std::fs::read(dir.join("fixture.json")).unwrap()).unwrap();
+    assert_eq!(
+        url::Url::parse(f["server"].as_str().unwrap())
+            .unwrap()
+            .host_str(),
+        Some("127.0.0.1")
+    );
+    let room = f["room"].as_str().unwrap();
+    let (mut app, rx, backend) = session();
+    wait(&mut app, &rx, "synced seeded test device", |a| {
+        a.verified && a.live.list.contains_key(room)
+    })
+    .await;
+    app.open(room.into());
+    app.editor = text_editor::Content::with_text("native cancel proof");
+    let path = dir.join("throttled.bin");
+    let _ = app.update(Msg::Files(
+        room.into(),
+        vec![media::LocalFile::from_path(path).unwrap()],
+    ));
+    assert!(
+        app.outbox.rooms.get(room).is_some_and(|q| q.len() == 1),
+        "file must stage before test; limit={}",
+        app.media_limit
+    );
+    let _ = app.update(Msg::Send);
+    wait(&mut app, &rx, "nonterminal progress from gomuks", |a| {
+        a.outbox.rooms[room][0]
+            .upload
+            .as_ref()
+            .and_then(|u| u.percent)
+            .is_some_and(|p| (1..100).contains(&p))
+    })
+    .await;
+    let a = &app.outbox.rooms[room][0];
+    println!("Native attachment card: {}", a.status_label());
+    let (id, request) = (a.id, a.upload.as_ref().unwrap().request);
+    let _ = app.update(Msg::CancelUpload(room.into(), id, request));
+    assert!(app.outbox.rooms[room][0].cancelled && app.batch.is_none());
+    assert_eq!(app.editor.text(), "native cancel proof");
+    // The driver independently observes a truncated TCP body and queries
+    // Synapse before letting this test retry.
+    std::fs::write(dir.join("native.cancelled"), "").unwrap();
+    tokio::time::timeout(Duration::from_secs(40), async {
+        while !dir.join("native.retry").is_file() {
+            tokio::time::sleep(Duration::from_millis(80)).await;
+        }
+    })
+    .await
+    .expect("driver allowed retry");
+    let _ = app.update(Msg::Send);
+    wait(&mut app, &rx, "single confirmed retry", |a| {
+        a.batch.is_none()
+            && a.outbox.rooms.is_empty()
+            && a.live.list[room].history.values().any(|p| {
+                p.body == "native cancel proof" && p.media.as_ref().is_some_and(|m| m.encrypted)
+            })
+    })
+    .await;
+    app.commands.close();
+    backend.await.unwrap().unwrap();
+}
 #[tokio::test]
 #[ignore = "requires a disposable loopback homeserver and a new, separate gomuks profile"]
 async fn encrypted_round_trip_and_restart() {
