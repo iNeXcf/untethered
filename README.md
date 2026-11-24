@@ -215,6 +215,14 @@ automatically when the active tab closes. If upgrading from an older build that
 reported “worker stopped,” close the old tabs and reopen the same URL. Keep the
 site data: that’s where the device’s encryption keys live.
 
+**Browser notifications:** In a room, open **Alerts → Enable browser
+notifications** and allow the site in your browser’s prompt. **Mute
+ordinary** suppresses routine messages while retaining direct mentions
+under the default Matrix mention rule. Keep Untethered open: it can notify
+from a background tab, and clicking the notification returns to its room.
+If you previously blocked notifications, change the permission in your
+browser’s site settings. [Verified in desktop Chromium on Linux](scripts/room-alerts.md#verify-browser-tab-notifications).
+
 ```sh
 rustup target add wasm32-unknown-unknown
 # Requires Trunk, wasm-bindgen-cli matching Cargo.lock, Node/npm, Go and Git.

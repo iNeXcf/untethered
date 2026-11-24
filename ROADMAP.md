@@ -168,8 +168,15 @@
   mention addressed to someone else reached the receiver but produced zero
   desktop notification calls. A second room still notified. The override
   survived restart without replaying notifications, and **Account default**
-  removed it from the homeserver. Browser, closed-app and wider notification
-  workflows remain unverified.
+  removed it from the homeserver.
+- **Browser tab notifications:** The [Chromium acceptance test](scripts/room-alerts.md#verify-browser-tab-notifications)
+  enabled the site’s real notification permission and backgrounded the
+  receiving tab. Element sent encrypted messages in the same muted room.
+  The direct mention produced exactly one visible Chromium popup; an
+  ordinary message and a mention for another user produced none. Activating
+  the popup refocused Untethered. The grant and room mute survived reload
+  without replay. Closed-tab push and other browser/platform combinations
+  remain unverified.
 
 - **Room posting enforcement:** The [two-account Synapse test](scripts/room-permissions.md)
   made an encrypted room read-only through Untethered. Synapse rejected the

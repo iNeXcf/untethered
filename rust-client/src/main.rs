@@ -17,7 +17,7 @@ mod inline;
 mod live_test;
 mod media;
 mod moderation;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_arch = "wasm32"))]
 mod notifications;
 #[cfg(not(target_arch = "wasm32"))]
 mod paste;
@@ -59,14 +59,20 @@ enum Field {
 }
 #[derive(Clone)]
 enum Msg {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
     NotificationPanel,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
     NotifyMode(String, notifications::Mode),
     #[cfg(target_os = "linux")]
     WindowFocus(bool),
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
     DesktopDelivery(bool),
+    #[cfg(target_arch = "wasm32")]
+    AllowBrowserAlerts,
+    #[cfg(target_arch = "wasm32")]
+    BrowserPermissionDone,
+    #[cfg(target_arch = "wasm32")]
+    OpenBrowserAlert(String, String),
     #[cfg(target_os = "linux")]
     WaylandDrop(async_channel::Receiver<smithay_clipboard::FileDrop>),
     #[cfg(target_os = "linux")]
@@ -187,7 +193,7 @@ impl std::fmt::Debug for Msg {
     }
 }
 enum Request {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
     NotifyRule(notifications::Change),
     #[cfg(target_os = "linux")]
     RingState(incoming::Offer),
@@ -212,7 +218,7 @@ enum Request {
     Search(String, search::Page),
 }
 struct App {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
     alerts: notifications::Alerts,
     #[cfg(target_os = "linux")]
     inbox: incoming::Inbox,
@@ -277,14 +283,19 @@ impl App {
             Task::run(events, Msg::Frame),
         ]);
         #[cfg(target_arch = "wasm32")]
-        let task = Task::batch([task, browser_verification::listen(), web_files::listen()]);
+        let task = Task::batch([
+            task,
+            browser_verification::listen(),
+            web_files::listen(),
+            notifications::browser::listen(),
+        ]);
         #[cfg(target_os = "linux")]
         let task = Task::batch([task, wayland_drop::listen()]);
         (Self::new(commands), task)
     }
     fn new(commands: Sender<backend::Command>) -> Self {
         Self {
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
             alerts: Default::default(),
             #[cfg(target_os = "linux")]
             call: None,
@@ -408,7 +419,7 @@ impl App {
         self.close_original();
         self.reset_directory();
         self.leave_permission_panel();
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
         {
             self.alerts.panel = false;
         }
@@ -593,7 +604,7 @@ impl App {
                     self.reply_drafts.clear();
                     self.reset_directory();
                     self.leave_permission_panel();
-                    #[cfg(target_os = "linux")]
+                    #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
                     self.alerts.reset();
                     self.editing = None;
                     self.close_original();
@@ -631,7 +642,7 @@ impl App {
                         .retain(|_, p| !matches!(p, Request::Members(_) | Request::Page(_)));
                 }
                 self.live.sync(data);
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
                 self.notifications_sync(data);
                 if let Some(rooms) = data["rooms"].as_object() {
                     for (room, delta) in rooms {
@@ -679,9 +690,10 @@ impl App {
                 self.reconcile();
             }
             "events_decrypted" => {
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
                 if let Some(room) = data["room_id"].as_str() {
                     self.room_alerts(room, data, true);
+                    #[cfg(target_os = "linux")]
                     self.ring_events(room, data, true);
                 }
                 for e in items(&data["events"]) {
@@ -716,7 +728,7 @@ impl App {
                 };
                 if f["command"] == "error" {
                     self.status = match p {
-                        #[cfg(target_os="linux")]
+                        #[cfg(any(target_os="linux",target_arch="wasm32"))]
                         Request::NotifyRule(_)=>"Could not save the room notification setting. Try again.",
                         #[cfg(target_os="linux")]
                         Request::RingState(i)=>{self.present_ring(i,&Value::Null);return}
@@ -759,7 +771,7 @@ impl App {
                     return;
                 }
                 match p {
-                    #[cfg(target_os = "linux")]
+                    #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
                     Request::NotifyRule(c) => self.saved_notifications(c),
                     #[cfg(target_os = "linux")]
                     Request::RingState(i) => self.present_ring(i, data),
@@ -876,9 +888,9 @@ impl App {
             _ => false,
         };
         match msg {
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
             Msg::NotificationPanel => self.alerts.panel = !self.alerts.panel,
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
             Msg::NotifyMode(room, mode) => self.set_notifications(room, mode),
             #[cfg(target_os = "linux")]
             Msg::WindowFocus(focused) => {
@@ -887,8 +899,30 @@ impl App {
                     return self.update(Msg::TalkKey(false));
                 }
             }
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
             Msg::DesktopDelivery(ok) => self.alerts.delivery_failed = !ok,
+            #[cfg(target_arch = "wasm32")]
+            Msg::AllowBrowserAlerts
+                if self.alerts.panel && self.verified && !self.alerts.asking =>
+            {
+                self.alerts.asking = true;
+                return notifications::browser::ask();
+            }
+            #[cfg(target_arch = "wasm32")]
+            Msg::BrowserPermissionDone => self.alerts.asking = false,
+            #[cfg(target_arch = "wasm32")]
+            Msg::OpenBrowserAlert(user, room)
+                if self.verified
+                    && self.matrix_id == user
+                    && self.live.list.contains_key(&room) =>
+            {
+                self.account = false;
+                self.section = Section::All;
+                self.clear_search();
+                self.close_original();
+                self.open(room);
+                return self.anchor_history();
+            }
             #[cfg(not(target_arch = "wasm32"))]
             Msg::PasteComposer if self.can_stage() && !self.pasting => {
                 self.paste_seq += 1;
@@ -1624,7 +1658,9 @@ impl App {
             Task::none()
         };
         #[cfg(target_os = "linux")]
-        let task = Task::batch([task, self.start_ringtone(), self.send_alerts()]);
+        let task = Task::batch([task, self.start_ringtone()]);
+        #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
+        let task = Task::batch([task, self.send_alerts()]);
         task
     }
     fn title(&self) -> String {

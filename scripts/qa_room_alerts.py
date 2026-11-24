@@ -51,7 +51,7 @@ class NotificationDesktop:
     def count(self):
         return self.log.read_text().count("member=Notify")
 
-    def popup(self,text):
+    def popup(self,text,appname="Untethered",activate=False,on_visible=None):
         def visible():
             if self.run(self.ctl,"count","displayed")!="1":return False
             raw=sp.check_output(["import","-window","root","png:-"],env=self.env,timeout=5)
@@ -60,10 +60,11 @@ class NotificationDesktop:
             ocr=sp.check_output(["tesseract","stdin","stdout","--psm","11"],input=buf.getvalue(),stderr=sp.DEVNULL).decode()
             return text.lower() in " ".join(ocr.lower().split())
         wait_for("visible Dunst popup: "+text,visible,15)
-        self.run(self.ctl,"close-all")
+        if on_visible:on_visible()
+        self.run(self.ctl,"action" if activate else "close-all")
         wait_for("archived desktop notification",lambda:self.run(self.ctl,"count","displayed")=="0")
         history=json.loads(self.run(self.ctl,"history"))["data"][0]
-        assert any(n["appname"]["data"]=="Untethered" and text in n["body"]["data"] for n in history),history
+        assert any(n["appname"]["data"]==appname and text in n["body"]["data"] for n in history),history
         print(f'Dunst displayed and archived "{text}".',flush=True)
 
 

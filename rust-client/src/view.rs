@@ -642,7 +642,7 @@ impl App {
         } else {
             header
         };
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
         let header = if self.logged_in && self.verified && room.is_some() {
             header.push(
                 button(text("Alerts").size(13))
@@ -755,7 +755,7 @@ impl App {
                     .style(|_| surface(TRAY, 5.)),
             );
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
         if self.alerts.panel
             && let Some(r) = room
         {
@@ -787,6 +787,31 @@ impl App {
                     .color(MUTED)
             ]
             .spacing(4);
+            #[cfg(target_arch = "wasm32")]
+            {
+                let (label, can_ask) = match crate::notifications::browser::permission().as_str() {
+                    "granted" => ("Browser notifications allowed", false),
+                    "denied" => (
+                        "Notifications blocked · change this site's browser permissions",
+                        false,
+                    ),
+                    "default" if self.alerts.asking => ("Waiting for browser permission…", false),
+                    "default" => ("Enable browser notifications", true),
+                    _ => (
+                        "Browser notifications unavailable · use a supported browser on HTTPS or localhost",
+                        false,
+                    ),
+                };
+                settings = if can_ask {
+                    settings.push(
+                        button(text(label).size(14))
+                            .style(nav(false))
+                            .on_press(Msg::AllowBrowserAlerts),
+                    )
+                } else {
+                    settings.push(text(label).size(13))
+                };
+            }
             if self.alerts.delivery_failed {
                 settings =
                     settings.push(text("Desktop notification service unavailable.").size(13));

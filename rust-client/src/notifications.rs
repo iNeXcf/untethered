@@ -4,12 +4,16 @@ use crate::{
     App, Msg, Request,
     rooms::{self, items},
 };
-use ashpd::{zbus, zvariant};
+#[cfg(target_arch = "wasm32")]
+pub mod browser;
+#[cfg(target_os = "linux")]
+mod desktop;
 use iced::Task;
+use iced::time::Instant;
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
-    time::{Duration, Instant},
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    time::Duration,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -38,7 +42,10 @@ pub struct Change {
 #[derive(Default)]
 pub struct Alerts {
     pub panel: bool,
+    #[cfg(target_os = "linux")]
     pub focused: bool,
+    #[cfg(target_arch = "wasm32")]
+    pub asking: bool,
     pub ready: bool,
     rules: BTreeMap<String, (Mode, bool)>,
     recent: VecDeque<String>,
@@ -50,10 +57,15 @@ struct Notice {
     title: String,
     body: String,
     sound: bool,
+    #[cfg(target_arch = "wasm32")]
+    room: String,
+    #[cfg(target_arch = "wasm32")]
+    event: String,
 }
 impl Alerts {
     pub fn reset(&mut self) {
         *self = Self {
+            #[cfg(target_os = "linux")]
             focused: self.focused,
             ..Default::default()
         };
@@ -200,11 +212,12 @@ impl Alerts {
                     single_line(info.display(sender), 64),
                     single_line(&info.name, 80)
                 ),
-                body: single_line(preview, 240)
-                    .replace('&', "&amp;")
-                    .replace('<', "&lt;")
-                    .replace('>', "&gt;"),
+                body: single_line(preview, 240),
                 sound,
+                #[cfg(target_arch = "wasm32")]
+                room: room.into(),
+                #[cfg(target_arch = "wasm32")]
+                event: id.into(),
             });
         }
     }
@@ -214,39 +227,6 @@ fn single_line(s: &str, limit: usize) -> String {
         .take(limit)
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect()
-}
-async fn deliver(notices: Vec<Notice>) -> zbus::Result<()> {
-    let bus = zbus::Connection::session().await?;
-    let proxy = zbus::Proxy::new(
-        &bus,
-        "org.freedesktop.Notifications",
-        "/org/freedesktop/Notifications",
-        "org.freedesktop.Notifications",
-    )
-    .await?;
-    for n in notices {
-        let hints = HashMap::from([
-            ("desktop-entry", zvariant::Value::from("untethered")),
-            ("category", zvariant::Value::from("im.received")),
-            ("suppress-sound", zvariant::Value::from(!n.sound)),
-        ]);
-        let _: u32 = proxy
-            .call(
-                "Notify",
-                &(
-                    "Untethered",
-                    0u32,
-                    "internet-chat",
-                    n.title,
-                    n.body,
-                    Vec::<String>::new(),
-                    hints,
-                    -1i32,
-                ),
-            )
-            .await?;
-    }
-    Ok(())
 }
 impl App {
     pub fn notifications_pending(&self, room: &str) -> bool {
@@ -319,7 +299,13 @@ impl App {
             return;
         }
         if let Some(room) = self.live.list.get(id) {
-            let reading = self.alerts.focused
+            #[cfg(target_os = "linux")]
+            let focused = self.alerts.focused;
+            #[cfg(target_arch = "wasm32")]
+            let focused = web_sys::window()
+                .and_then(|w| w.document())
+                .is_some_and(|d| !d.hidden() && d.has_focus().unwrap_or(false));
+            let reading = focused
                 && self.selected == id
                 && !self.account
                 && self.search.is_none()
@@ -333,10 +319,33 @@ impl App {
         if notices.is_empty() {
             return Task::none();
         }
+        #[cfg(target_arch = "wasm32")]
+        {
+            if browser::permission() != "granted" {
+                return Task::none();
+            }
+            self.alerts.delivery_failed = false;
+            for n in notices {
+                if browser::show(
+                    &self.matrix_id,
+                    &n.room,
+                    &n.event,
+                    &n.title,
+                    &n.body,
+                    !n.sound,
+                )
+                .is_err()
+                {
+                    self.alerts.delivery_failed = true;
+                }
+            }
+            Task::none()
+        }
+        #[cfg(target_os = "linux")]
         Task::perform(
             async move {
                 matches!(
-                    tokio::time::timeout(Duration::from_secs(5), deliver(notices)).await,
+                    tokio::time::timeout(Duration::from_secs(5), desktop::deliver(notices)).await,
                     Ok(Ok(()))
                 )
             },
@@ -382,10 +391,7 @@ mod tests {
         app.room_alerts("!r", &keys, true);
         app.notifications_sync(&json!({"since":"live","rooms":{"!r":{"timeline":[{"event_rowid":9}],"notifications":[{"event_rowid":9}],"events":[clear]}}}));
         assert_eq!(app.alerts.outgoing.len(), 1);
-        assert_eq!(
-            app.alerts.outgoing[0].body,
-            "Hi &lt;Alice&gt; &amp; friends"
-        );
+        assert_eq!(app.alerts.outgoing[0].body, "Hi <Alice> & friends");
         assert!(app.alerts.outgoing[0].sound);
         // A late ordinary message suppressed by a room rule remains suppressed.
         let mut muted = opaque;

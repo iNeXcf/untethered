@@ -142,6 +142,7 @@ def main():
     args.add_argument("--reactions",action="store_true",help="Toggle the same reaction from Iced and Element on an edited reply and verify ownership after reconnect")
     args.add_argument("--room-search",action="store_true",help="Find an older edited reply in the local room cache and verify the exact reading position on return")
     args.add_argument("--room-alerts",action="store_true",help="Verify per-room push rules and visible direct-mention notifications on a private Linux desktop")
+    args.add_argument("--browser-alerts",action="store_true",help="Verify a real browser notification from a hidden Untethered tab in a muted encrypted room")
     args.add_argument("--room-permissions",action="store_true",help="Restrict and restore room posting from Iced; check the member's actual Synapse send response")
     args.add_argument("--room-ban",action="store_true",help="Ban, unban and reinvite a member from Untethered; verify Synapse join enforcement and encrypted delivery")
     args.add_argument("--room-kick",action="store_true",help="Kick a member from a public room; verify denied posting, invitation-free rejoin and encrypted delivery")
@@ -188,7 +189,7 @@ def main():
         if args.rtc_audio:
             from qa_rtc_audio import configure, test as audio_test
             server_name,extra_listeners,extra_settings,rtc_service=configure(tmp,free_port)
-        if chat_test:
+        if chat_test or args.browser_alerts:
             extra_settings="rc_message: {per_second: 1000, burst_count: 1000}\n"
         subprocess.run([sys.executable, "-m", "synapse.app.homeserver", "-c", "hs.yaml", "--generate-config",
                         "-H", server_name, "--report-stats", "no"], cwd=tmp, stdout=subprocess.DEVNULL, check=True)
@@ -220,6 +221,12 @@ federation_domain_whitelist: []
                     break
                 except requests.ConnectionError:
                     time.sleep(.1)
+            if args.browser_alerts:
+                from qa_browser_alerts import check_browser_alerts
+                wp=free_port()
+                with service([sys.executable,"-m","http.server",str(wp),"--bind","127.0.0.1","--directory",str(dist)],tmp):
+                    check_browser_alerts(tmp,hs,f"http://127.0.0.1:{wp}",BACKEND,seed,http)
+                return
             if chat_test:
                 from qa_replies import test_replies
                 test_replies(tmp,hs,ROOT,BACKEND,seed,http,gateway_port,reactions=args.reactions,room_search=args.room_search,alerts=args.room_alerts,permissions=args.room_permissions,ban=args.room_ban,kick=args.room_kick)
