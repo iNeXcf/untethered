@@ -2,6 +2,21 @@
 // or the media keys. Never replace any track, codec, or encoded-frame transform.
 (() => {
     let peerConnections = 0;
+    const pcs = new Set();
+    // Resolve the transport used by each active audio RTP report, not a
+    // gathered candidate that the ICE agent might never have selected.
+    window.qaIceRoutes = async () => (await Promise.all([...pcs].map(async pc => {
+        if (pc.connectionState !== "connected") return [];
+        const stats = await pc.getStats();
+        return [...stats.values()].filter(r=>r.kind==="audio" &&
+            ((r.type==="inbound-rtp" && r.packetsReceived>0) || (r.type==="outbound-rtp" && r.packetsSent>0)))
+            .map(r=>{
+                const pair = stats.get(stats.get(r.transportId)?.selectedCandidatePairId);
+                const c = stats.get(pair?.localCandidateId);
+                return {direction:r.type.split("-")[0],local:c?.candidateType,relayProtocol:c?.relayProtocol,
+                    state:pair?.state,url:c?.url?.split("?")[0]};
+            });
+    }))).flat();
     const listen = pc => pc.addEventListener("track", async ({track,receiver}) => {
         if (track.kind !== "audio") return;
         // A new track event, even with the same remote track label, is not
@@ -45,6 +60,6 @@
         track.addEventListener("ended",()=>{clearInterval(timer);void ctx.close();},{once:true});
     });
     window.RTCPeerConnection = new Proxy(window.RTCPeerConnection, {
-        construct(target,args,newTarget) { const pc = Reflect.construct(target,args,newTarget);peerConnections++;listen(pc);return pc; }
+        construct(target,args,newTarget) { const pc = Reflect.construct(target,args,newTarget);peerConnections++;pcs.add(pc);listen(pc);return pc; }
     });
 })();

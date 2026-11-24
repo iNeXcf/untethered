@@ -597,6 +597,8 @@ async fn call(
         renewed: lease_started,
     };
     heartbeat.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+    #[cfg(debug_assertions)]
+    let trace_ice = std::env::var("UNTETHERED_QA_ICE_STATS").as_deref() == Ok("1");
     loop {
         install(w, &provider, peer_device, &peer.member, peer_id)?;
         let interrupted = tokio::select! {
@@ -610,6 +612,10 @@ async fn call(
                     LeaseState::Offline=>true,
                     LeaseState::PeerLeft=>return Ok(ENDED),
                     LeaseState::Valid=>{
+                        #[cfg(debug_assertions)]
+                        if trace_ice && playing && recovering.is_none() {
+                            trace_selected_ice(lk).await;
+                        }
                         if restoring && let Some((mic,track))=encrypted_tracks(lk,&my_id,peer_id)? {
                             audio.spawn(capture(mic));audio.spawn(playback(track));
                             playing=true;recovering=None;status(events,w.room,"Connected").await;
@@ -645,6 +651,62 @@ async fn call(
             playing = false;
             status(events, w.room, "Reconnecting…").await;
             heartbeat.reset_immediately();
+        }
+    }
+}
+
+/// Opt-in acceptance diagnostics. Never log the entire stats report: candidate
+/// addresses, TURN URLs, ICE fragments and certificates do not belong in logs.
+#[cfg(debug_assertions)]
+async fn trace_selected_ice(lk: &Room) {
+    use livekit::webrtc::stats::{IceCandidatePairState, RtcStats};
+    let Ok(Ok(stats)) = time::timeout(SECOND, lk.get_stats()).await else {
+        return;
+    };
+    for report in [&stats.publisher_stats, &stats.subscriber_stats] {
+        for r in report {
+            let (direction, stream, packets) = match r {
+                RtcStats::InboundRtp(r) => ("inbound", &r.stream, r.received.packets_received),
+                RtcStats::OutboundRtp(r) => ("outbound", &r.stream, r.sent.packets_sent),
+                _ => continue,
+            };
+            if stream.kind != "audio" || packets == 0 {
+                continue;
+            }
+            let Some(pair_id) = report.iter().find_map(|v| match v {
+                RtcStats::Transport(t) if t.rtc.id == stream.transport_id => {
+                    Some(&t.transport.selected_candidate_pair_id)
+                }
+                _ => None,
+            }) else {
+                continue;
+            };
+            let Some(local_id) = report.iter().find_map(|v| match v {
+                RtcStats::CandidatePair(p)
+                    if &p.rtc.id == pair_id
+                        && p.candidate_pair.state == Some(IceCandidatePairState::Succeeded) =>
+                {
+                    Some(&p.candidate_pair.local_candidate_id)
+                }
+                _ => None,
+            }) else {
+                continue;
+            };
+            if let Some(c) = report.iter().find_map(|v| match v {
+                RtcStats::LocalCandidate(c) if &c.rtc.id == local_id => Some(&c.local_candidate),
+                _ => None,
+            }) && let Some(kind) = c.candidate_type
+            {
+                let proto = match c.relay_protocol {
+                    Some(livekit::webrtc::stats::IceServerTransportProtocol::Udp) => "Udp",
+                    Some(livekit::webrtc::stats::IceServerTransportProtocol::Tcp) => "Tcp",
+                    Some(livekit::webrtc::stats::IceServerTransportProtocol::Tls) => "Tls",
+                    None => "None",
+                };
+                eprintln!(
+                    "RTC selected audio {direction} local={kind:?} relay_protocol={proto} packets={packets}"
+                );
+            }
         }
     }
 }

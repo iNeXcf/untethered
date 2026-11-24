@@ -81,14 +81,21 @@
   the unselected output. Both encrypted track IDs and the connection stayed
   intact; the system defaults were unchanged. Removing a selected mic while
   muted left capture closed on unmute; selecting a working input restored it.
-  Physical hardware and TURN-only calls remain open.
+  Physical hot-unplug remains unverified.
 - **Linux network recovery:** `run_element.sh --call-reconnect` disconnected
   the desktop's private link to Matrix and LiveKit for 6.5 seconds while
   Element stayed online. RTP stopped, both ends went silent and the call bar
   showed **Reconnecting**. After restoration, Element decoded a new 730 Hz
   tone and the desktop played 960 Hz. Both microphones used GCM; the same two
   Matrix devices stayed in the call and the timeline contained one ring.
-  Hangup released both streams. Relay-required calls are still unverified.
+  Hangup released both streams.
+- **TURN-only Linux ↔ Element calls:** [The relay test](experiments/rtc-audio/README.md#verify-turn-only-calls)
+  blocks direct ICE before dialing, in separate namespaces for the desktop
+  and Element Web 1.12.35. With either client initiating, both selected
+  `relay/udp` for incoming and outgoing audio and both microphone tracks
+  used GCM. Blocking just coturn silenced both ends; restoring it delivered
+  a new 730 Hz desktop tone to Element and the 960 Hz return tone to Linux.
+  TURN/TCP and TURN/TLS were not exercised.
 
 ## What parity means
 

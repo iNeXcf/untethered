@@ -51,7 +51,7 @@ extra_well_known_client_content:
     return name,listen,settings,jwt
 
 
-def test(tmp, hs, name, jwt, root, backend, seed, http, service, *, desktop=False,incoming=False,controls=False,devices=False,reconnect=False):
+def test(tmp, hs, name, jwt, root, backend, seed, http, service, *, desktop=False,incoming=False,controls=False,devices=False,reconnect=False,turn=False):
     native,hdr=seed(tmp,hs)
     peer_dir=tmp/"peer";peer_dir.mkdir()
     peer,ph=seed(peer_dir,hs)
@@ -93,6 +93,9 @@ rtc:
         w.setparams((1,2,48000,0,"NONE","not compressed"))
         w.writeframes(array.array("h",(round(8500*math.sin(i*math.tau*960/48000)) for i in range(48000))).tobytes())
     with ExitStack() as stack:
+        if turn:
+            from qa_rtc_turn import configure_turn,relay_clients
+            configure_turn(tmp,stack,service)
         stack.enter_context(service([os.environ["LIVEKIT_SERVER"],"--config",str(tmp/"lk.yaml")],tmp))
         auth=stack.enter_context(service([os.environ["LK_JWT_SERVICE"]],tmp,env={**os.environ,
             "LIVEKIT_JWT_BIND":urlsplit(jwt).netloc,"LIVEKIT_URL":"ws://127.0.0.1:18820","LIVEKIT_KEY":"testkey",
@@ -104,11 +107,16 @@ rtc:
             except requests.ConnectionError:return False
         wait_for("authorization service",ready)
         web=stack.enter_context(element_server(hs,server_name=name,rtc_service=jwt))
+        links=None
+        chrome=shutil.which("chromium")
+        if turn:
+            ports=[urlsplit(u).port for u in (hs,jwt,web,"https://"+name)]+[18820]
+            links,chrome=relay_clients(stack,tmp,ports)
         pw=stack.enter_context(sync_playwright())
         leaf=x509.load_pem_x509_certificate((tmp/"tls.crt").read_bytes())
         spki=leaf.public_key().public_bytes(serialization.Encoding.DER,serialization.PublicFormat.SubjectPublicKeyInfo)
         pin=base64.b64encode(hashlib.sha256(spki).digest()).decode()
-        browser=pw.chromium.launch(executable_path=shutil.which("chromium"),args=["--use-fake-device-for-media-stream",
+        browser=pw.chromium.launch(executable_path=chrome,args=["--use-fake-device-for-media-stream",
             "--ignore-certificate-errors-spki-list="+pin,"--use-fake-ui-for-media-stream","--mute-audio",
             "--use-file-for-fake-audio-capture="+str(wav),"--autoplay-policy=no-user-gesture-required"])
         stack.callback(browser.close)
@@ -118,7 +126,7 @@ rtc:
         if desktop:
             from qa_desktop_dm import desktop_call
             ports=[urlsplit(hs).port,urlsplit(jwt).port,urlsplit("https://"+name).port,18820] if reconnect else None
-            desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,incoming=incoming,controls=controls,devices=devices,network_ports=ports)
+            desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,incoming=incoming,controls=controls,devices=devices,network_ports=ports,relay_links=links)
             return
         sockets=[]
         def watch_sfu(ws):

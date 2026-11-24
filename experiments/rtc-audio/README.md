@@ -73,6 +73,34 @@ the new tone at Element and 12 of the 960 Hz return tone at the desktop, both
 GCM tracks, unchanged MatrixRTC membership and exactly one ring event. These
 are short-outage checks; they do not exercise TURN or resume an expired call.
 
+### Verify TURN-only calls
+
+With the debug Linux desktop build and desktop test environment above, install
+`coturn`, `nftables`, iproute2 and `nsenter`. Run the GUI tests one at a time:
+
+```sh
+sh experiments/rtc-audio/run_element.sh --call-turn
+sh experiments/rtc-audio/run_element.sh --call-turn --incoming-dm
+```
+
+The real desktop/gomuks and Chromium/Element clients run on separate private
+subnets. Before dialing, each client gets default-deny IPv4/IPv6 firewall
+rules: only local IPC, the test services' TCP signaling ports and authenticated
+UDP TURN at `192.0.2.3:3478` are reachable. LiveKit advertises a disposable
+coturn 4.19.2 instance; each firewall counts drops to the SFU's direct media
+ports. The runner does not force either client's ICE policy.
+
+At both clients, active inbound/outbound RTP stats are traced through their
+transport's `selectedCandidatePairId` to the **local relay candidate**. The
+Rust debug build's opt-in `UNTETHERED_QA_ICE_STATS=1` diagnostic reports only
+direction, candidate type, relay protocol and packet count. The assertion
+requires `relay/udp` in all four cases, with live traffic at both firewalls.
+Element must decode 480 Hz and the Linux speaker must render 960 Hz. Blocking
+only TURN on the desktop must silence **both** while the call stays joined.
+After unblocking, the runner verifies a newly injected 730 Hz at Element and
+960 Hz at the desktop for 12 fresh 100 ms windows, with GCM on both microphone
+publications. This covers TURN/UDP, not TURN/TCP or TURN/TLS.
+
 ## Replay the Element ↔ Rust encrypted audio test
 
 From the checkout, with Chromium, OpenSSL, iproute2, the pinned gomuks backend,
@@ -170,5 +198,5 @@ sentinel, so a roster entry does not demonstrate a media connection.
 ## What comes next
 
 Element and Untethered can each initiate DM calls while both apps are open.
-Next verify relay-required audio. Physical hot-unplug behavior
-and Windows runtime testing are not covered by the virtual-device tests.
+The isolated relay test covers both caller directions. Physical hot-unplug
+behavior and Windows runtime testing are not covered by the virtual-device tests.

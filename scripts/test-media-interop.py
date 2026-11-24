@@ -144,9 +144,10 @@ def main():
     args.add_argument("--call-controls",action="store_true",help="Measure Linux mute/deafen and track continuity during a live encrypted call with Element")
     args.add_argument("--call-devices",action="store_true",help="Switch two microphones and two speakers using the Linux call bar during a live encrypted call with Element")
     args.add_argument("--call-reconnect",action="store_true",help="Cut the Linux desktop's private network link during an encrypted Element call, then verify automatic two-way recovery")
+    args.add_argument("--call-turn",action="store_true",help="Block direct ICE from both clients and verify selected TURN routes and encrypted audio")
     args.add_argument("--upload-cancel",action="store_true",help="Test native and browser cancellation against a throttled Matrix upload")
     args=args.parse_args()
-    if args.call_controls or args.call_devices or args.call_reconnect: args.desktop_dm=True
+    if args.call_controls or args.call_devices or args.call_reconnect or args.call_turn: args.desktop_dm=True
     if args.desktop_dm or args.incoming_dm: args.rtc_audio=True
     assert BACKEND.is_file(), "Run scripts/rust-client.sh once or set UNTETHERED_BACKEND"
     dist = ROOT/"rust-client/web/dist"
@@ -191,7 +192,7 @@ federation_domain_whitelist: []
                 except requests.ConnectionError:
                     time.sleep(.1)
             if args.rtc_audio:
-                audio_test(tmp,hs,server_name,rtc_service,ROOT,BACKEND,seed,http,service,desktop=args.desktop_dm or args.incoming_dm,incoming=args.incoming_dm,controls=args.call_controls,devices=args.call_devices,reconnect=args.call_reconnect)
+                audio_test(tmp,hs,server_name,rtc_service,ROOT,BACKEND,seed,http,service,desktop=args.desktop_dm or args.incoming_dm,incoming=args.incoming_dm,controls=args.call_controls,devices=args.call_devices,reconnect=args.call_reconnect,turn=args.call_turn)
                 return
             if args.rtc_membership:
                 from qa_rtc_membership import test

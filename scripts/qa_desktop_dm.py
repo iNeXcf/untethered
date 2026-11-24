@@ -48,7 +48,7 @@ def sfu_audio(secret):
     return result
 
 
-def desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,*,incoming=False,controls=False,devices=False,network_ports=None):
+def desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,*,incoming=False,controls=False,devices=False,network_ports=None,relay_links=None):
     env=isolated_env(tmp,backend,"x11")
     start_display(stack,tmp,env,"x11",1280,900)
     sock=Path(env["XDG_RUNTIME_DIR"])/"qa-pulse"
@@ -78,7 +78,7 @@ def desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,*,incoming=Fa
     def inject(feed,hz):
         def pcm(freq):return array.array("h",(round(9000*math.sin(i*math.tau*freq/48000)) for i in range(4800))).tobytes()
         tone=pcm(hz)
-        changed=pcm(730) if network_ports else tone
+        changed=pcm(730) if network_ports or relay_links else tone
         try:
             while True:feed.stdin.write(changed if new_tone.is_set() else tone)
         except (OSError,ValueError):pass
@@ -113,7 +113,13 @@ def desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,*,incoming=Fa
     if network_ports:
         from qa_rtc_link import desktop_network
         prefix,outage=desktop_network(stack,network_ports)
-    client=stack.enter_context(child([*prefix,root/"rust-client/target/debug/untethered-iced"],env))
+    native_log=tmp/"native-rtc.log"
+    logs={}
+    if relay_links:
+        prefix=relay_links["desktop"].prefix
+        env["UNTETHERED_QA_ICE_STATS"]="1"
+        logs["stderr"]=stack.enter_context(native_log.open("w"))
+    client=stack.enter_context(child([*prefix,root/"rust-client/target/debug/untethered-iced"],env,**logs))
     def window():
         assert client.poll() is None,"desktop exited"
         return cmd("xdotool","search","--onlyvisible","--name","Untethered.*media-proof",text=True).stdout.strip()
@@ -139,9 +145,13 @@ def desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,*,incoming=Fa
         return [s for s in json.loads(cmd("pactl","-f","json","list",kind,check=True).stdout)
                 if s["properties"].get("application.name")=="Untethered"]
     assert roster()==[] and not streams("source-outputs")
+    def check_relay(widget):
+        if relay_links:
+            from qa_rtc_turn import verify_turn
+            verify_turn(relay_links,widget,lambda:speakers[0],new_tone,native_log,roster,lambda:sfu_audio(secret),(alice,bob))
     try:
         if incoming:
-            reverse_call(stack,page,room,alice,bob,secret,find,click,roster,streams,chime,received,env,cmd)
+            reverse_call(stack,page,room,alice,bob,secret,find,click,roster,streams,chime,received,env,cmd,check_relay)
             return
         ring_started=threading.Event()
         page.on("console",lambda m:ring_started.set() if "LegacyCallHandler.play(ringAudio): playing audio successfully" in m.text else None)
@@ -170,7 +180,9 @@ def desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,*,incoming=Fa
         assert len(tracks)==2 and all(v==["GCM"] for v in tracks.values()) and {p.rsplit(":",1)[0] for p in tracks}=={alice,bob}, tracks
         print("Element accepted; Element measured 480 Hz on received WebRTC audio, desktop speaker monitor measured 960 Hz for 600 ms.",flush=True)
         print("LiveKit independently reports GCM on both microphone publications.",flush=True)
-        if network_ports:
+        if relay_links:
+            check_relay(widget)
+        elif network_ports:
             reconnect_call(page,widget,room,lambda:speakers[0],new_tone,outage,find,streams,secret,alice,bob)
         elif devices:
             def select(port,option):
@@ -208,13 +220,17 @@ def desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,*,incoming=Fa
             received.clear()
             assert received.wait(3)
             print("Both tones still present past the original 60-second membership expiry.",flush=True)
-        if devices or network_ports:widget.get_by_role("button",name="End call",exact=True).click(timeout=8000)
+        if devices or network_ports or relay_links:widget.get_by_role("button",name="End call",exact=True).click(timeout=8000)
         else:click("Hang")
         wait_for("desktop and Element left DM call",lambda:roster()==[],22)
         wait_for("desktop released both audio devices",lambda:not streams("source-outputs") and not streams("sink-inputs"))
         wait_for("desktop ready to call again",lambda:find("Voice"),8)
         print("Hangup → empty Element call roster, 0 desktop capture/playback streams; call control available again.",flush=True)
     except Exception:
+        if relay_links:
+            from qa_rtc_turn import counters
+            print("Relay-only counters:",{k:counters(v) for k,v in relay_links.items()},flush=True)
+            print("Native ICE:",[l for l in native_log.read_text(errors="replace").splitlines() if l.startswith("RTC selected audio")][-8:],flush=True)
         print("Desktop visible labels:", " ".join(t for t,_,_ in words()),flush=True)
         print("Element roster:",roster(),"incoming toast:",page.locator(".mx_IncomingCallToast_content").all_text_contents(),flush=True)
         print("Membership timeline:",page.evaluate("""room=>window.mxMatrixClientPeg.get().getRoom(room)
@@ -383,7 +399,7 @@ def audio_controls(widget,click,speaker,streams,secret,sockets,alice,bob,change_
     print("No reconnect: same Element receiver, SSRC and signaling sockets; both original GCM track and participant SIDs retained.",flush=True)
 
 
-def reverse_call(stack,page,room,alice,bob,secret,find,click,roster,streams,chime,received,env,cmd):
+def reverse_call(stack,page,room,alice,bob,secret,find,click,roster,streams,chime,received,env,cmd,check_relay):
     from playwright.sync_api import Error as BrowserError
     # Count stream creations too: polling an empty list after Decline alone
     # would miss a microphone that briefly opened and was then closed.
@@ -441,6 +457,7 @@ def reverse_call(stack,page,room,alice,bob,secret,find,click,roster,streams,chim
     tracks=sfu_audio(secret)
     assert len(tracks)==2 and all(v==["GCM"] for v in tracks.values()) and {p.rsplit(":",1)[0] for p in tracks}=={alice,bob},tracks
     print("Second Element call: Accept opened 1 microphone; Element decoded 480 Hz, desktop played 960 Hz; both tracks GCM.",flush=True)
+    check_relay(widget)
     widget.get_by_role("button",name="End call",exact=True).click(timeout=8000)
     wait_for("both devices left after Element hung up",lambda:roster()==[],20)
     wait_for("desktop audio closed",lambda:not streams("source-outputs") and not streams("sink-inputs"))
