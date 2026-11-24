@@ -32,10 +32,10 @@ impl Membership {
             delay_id: String::new(),
         };
         let join = json!({
-            "application":"m.call", "scope":"m.room", "call_id":"", "m.call.intent":"m.audio",
+            "application":"m.call", "scope":"m.room", "call_id":"", "m.call.intent":"audio",
             "device_id":device, "membershipID":format!("{user}:{device}"), "expires":60_000,
             "focus_active":{"type":"livekit","focus_selection":"multi_sfu"},
-            "foci_preferred":[{"type":"livekit","livekit_service_url":livekit_service.as_str()}]
+            "foci_preferred":[{"type":"livekit","livekit_service_url":livekit_service.as_str().trim_end_matches('/')}]
         });
         rpc("set_state", this.state(join)).await?;
         let mut delayed = this.state(json!({}));

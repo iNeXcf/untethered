@@ -1,12 +1,47 @@
 # CALL-01: native encrypted audio probe
 
-This standalone crate tests the media half of a future Matrix call without adding
-a WebRTC binary or its build requirements to the main chat client. Two Rust
-LiveKit 0.12 peers use separate, ephemeral participant keys, publish 480 Hz and
-960 Hz PCM, and check that each remote GCM-encrypted track decodes to the other
-peer's frequency. No microphone, speakers, real Matrix account, or call invite.
+This standalone crate tests the media path before adding WebRTC to the chat
+client. The Linux interoperability test uses **one Rust participant and one
+unmodified Element Call widget**. The older two-Rust-peer test remains useful
+for diagnosing transport problems independently of Matrix.
 
-## Replay the Linux test
+## Replay the Element ↔ Rust encrypted audio test
+
+From the checkout, with Chromium, OpenSSL, iproute2, the pinned gomuks backend,
+and the Python dependencies used by the membership check below:
+
+```sh
+cargo build --locked -j2 --manifest-path experiments/rtc-audio/Cargo.toml
+ELEMENT_WEB_DIR=/path/to/element-v1.12.35 \
+  LIVEKIT_SERVER=/path/to/livekit-server \
+  LK_JWT_SERVICE=/path/to/lk-jwt-service_linux_amd64 \
+  PYTHON=/path/to/qa/venv/bin/python \
+  sh experiments/rtc-audio/run_element.sh
+```
+
+Verified with LiveKit 1.13.11 and `element-hq/lk-jwt-service` 0.10.0. The
+runner starts a private network namespace, Synapse, the SFU, its authorization
+service, and two disposable accounts. Element's **Voice call** button opens
+the bundled widget with a 960 Hz WAV as its test microphone. On Linux the
+Rust peer joins the same MatrixRTC slot, requests an OpenID token from gomuks
+and exchanges it at the advertised `/sfu/get` endpoint. The authorization
+service verifies the token against Synapse over TLS and issues the SFU JWT.
+Neither peer is provisioned with the other's media key.
+
+Both peers publish GCM-encrypted audio using per-participant keys and HKDF.
+The Rust peer accepts Element's key only from an encrypted to-device event
+matching the room, sender and participating device/member. The test requires:
+
+- Rust decodes Element's **960 Hz** tone across 20 consecutive PCM frames.
+- With Rust's key withheld, the widget receives at least **60 RTP packets**,
+  with no sustained **480 Hz** tone in its inbound audio.
+- After gomuks sends the key to that Element device, the widget measures
+  **480 Hz** for ten consecutive spectra of its received WebRTC track.
+
+This is a synthetic microphone on a local ICE network. It does not exercise
+real capture/playback hardware, TURN, incoming DM ringing or live key rotation.
+
+## Replay the two-Rust-peer test
 
 Install the build prerequisites for the LiveKit Rust SDK (including Clang, CMake,
 and a C++ toolchain for the underlying WebRTC library). Put a `livekit-server`
@@ -57,12 +92,7 @@ sentinel, so a roster entry does not demonstrate a media connection.
 
 ## What comes next
 
-The main client can already call gomuks `get_rtc_transports` from **Account →
-Check call server support**. The next interoperability milestone is to
-obtain the LiveKit token for that session through gomuks, and bridge Element's
-encrypted per-sender media-key events and key indices to the native
-provider (including rotation). The local probe provisions keys directly to test
-the media stack; it does not implement those steps. Only claim Matrix calling
-after Element ↔ Untethered exchanges encrypted audio both ways. Mic selection,
-ringing, mute/deafen, network changes, relay tests and Windows runtime tests
-remain part of that milestone.
+Move the proven signaling and media path into the desktop client. Keep the
+active call independent of navigation; handle ongoing key changes, microphone
+and output devices, mute/deafen, DM ringing and hangup. Verify relay-required
+audio separately. Windows runtime testing is deferred.

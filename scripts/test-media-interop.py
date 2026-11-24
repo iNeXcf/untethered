@@ -138,23 +138,29 @@ def main():
     args.add_argument("--portal-drop",action="store_true",help="Native Wayland portal-only PNG/PDF drag with a real document portal")
     args.add_argument("--kwin-element",action="store_true",help="Drive a real Dolphin drag under KWin and round-trip both files through Element Web")
     args.add_argument("--rtc-membership",action="store_true",help="Observe the Rust client's MatrixRTC join, heartbeat, hangup and abandoned membership in Element Web")
+    args.add_argument("--rtc-audio",action="store_true",help="Verify encrypted Rust ↔ Element Call tones using real LiveKit and Matrix OpenID authorization")
     args.add_argument("--upload-cancel",action="store_true",help="Test native and browser cancellation against a throttled Matrix upload")
     args=args.parse_args()
     assert BACKEND.is_file(), "Run scripts/rust-client.sh once or set UNTETHERED_BACKEND"
     dist = ROOT/"rust-client/web/dist"
-    if not args.native_paste and not args.portal_drop and not args.kwin_element and not args.rtc_membership:
+    if not any((args.native_paste,args.portal_drop,args.kwin_element,args.rtc_membership,args.rtc_audio)):
         assert (dist/"backend/gomuks-worker.js").is_file(), "Run scripts/rust-web.sh first"
     os.umask(0o077)
     with tempfile.TemporaryDirectory(prefix="untethered-media-",dir=os.environ.get("TMPDIR")) as d:
         tmp = Path(d)
+        server_name="test.invalid"
+        extra_listeners=extra_settings=""
+        if args.rtc_audio:
+            from qa_rtc_audio import configure, test as audio_test
+            server_name,extra_listeners,extra_settings,rtc_service=configure(tmp,free_port)
         subprocess.run([sys.executable, "-m", "synapse.app.homeserver", "-c", "hs.yaml", "--generate-config",
-                        "-H", "test.invalid", "--report-stats", "no"], cwd=tmp, stdout=subprocess.DEVNULL, check=True)
+                        "-H", server_name, "--report-stats", "no"], cwd=tmp, stdout=subprocess.DEVNULL, check=True)
         port = free_port()
         hs = f"http://127.0.0.1:{port}"
         gateway_port=free_port() if args.upload_cancel or args.portal_drop or args.kwin_element else None
         public_url=f"http://127.0.0.1:{gateway_port}" if gateway_port else hs
         (tmp/"local.yaml").write_text(f"""listeners:
-  - port: {port}
+{extra_listeners}  - port: {port}
     type: http
     tls: false
     bind_addresses: ["127.0.0.1"]
@@ -164,10 +170,10 @@ enable_registration: true
 enable_registration_without_verification: true
 trusted_key_servers: []
 federation_domain_whitelist: []
-""")
-        if args.rtc_membership:
+{extra_settings}""")
+        if args.rtc_membership or args.rtc_audio:
             with (tmp/"local.yaml").open("a") as cfg:
-                cfg.write("max_event_delay_duration: 15s\n")
+                cfg.write("max_event_delay_duration: 1h\n" if args.rtc_audio else "max_event_delay_duration: 15s\n")
         with service([sys.executable,"-m","synapse.app.homeserver","-c","hs.yaml","-c","local.yaml"],tmp) as proc:
             for _ in range(200):
                 if proc.poll() is not None:
@@ -177,6 +183,9 @@ federation_domain_whitelist: []
                     break
                 except requests.ConnectionError:
                     time.sleep(.1)
+            if args.rtc_audio:
+                audio_test(tmp,hs,server_name,rtc_service,ROOT,BACKEND,seed,http,service)
+                return
             if args.rtc_membership:
                 from qa_rtc_membership import test
                 test(tmp,hs,ROOT,BACKEND,seed,http)

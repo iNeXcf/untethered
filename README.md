@@ -79,6 +79,8 @@ downloads in both directions using the two clients’ visible controls.
 **Calls (experimental):** Open your account via the bottom-left profile button and
 choose **Check call server support** to query gomuks for MatrixRTC transports.
 This checks discovery only; it doesn't ring anyone or open a microphone.
+The [Linux audio interoperability test](experiments/rtc-audio/README.md) has
+verified two-way encrypted audio between the Rust media probe and Element Call.
 
 ![Untethered room preview in the Rust frontend](rust-client/docs/preview.png)
 

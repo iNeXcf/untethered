@@ -1,0 +1,152 @@
+"""End-to-end encrypted audio with the Element Call distribution embedded in Element Web."""
+import array
+import base64
+import hashlib
+import json
+import math
+import os
+import re
+import secrets
+import shutil
+import subprocess as sp
+import wave
+from contextlib import ExitStack
+from urllib.parse import quote, urlsplit
+
+import requests
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization
+from playwright.sync_api import Error as PlaywrightError, sync_playwright
+from qa_kwin_element import element_server, login_element
+from qa_native_paste import wait_for
+
+
+def configure(tmp, free_port):
+    links=json.loads(sp.check_output(["ip","-j","link","show"]))
+    assert {x["ifname"] for x in links} == {"lo","rtc-test"}, "Run in the private QA network namespace"
+    assert "192.0.2.2/24" in sp.check_output(["ip","-br","addr","show","rtc-test"],text=True)
+    name=f"127.0.0.1:{free_port()}"
+    jwt=f"http://127.0.0.1:{free_port()}"
+    def openssl(*args):
+        sp.run(["openssl",*args],cwd=tmp,check=True,stdout=sp.DEVNULL,stderr=sp.DEVNULL)
+    openssl("req","-x509","-newkey","rsa:2048","-nodes","-days","1","-subj","/CN=RTC QA CA",
+            "-addext","basicConstraints=critical,CA:TRUE","-keyout","ca.key","-out","ca.crt")
+    openssl("req","-new","-newkey","rsa:2048","-nodes","-subj","/CN=127.0.0.1","-keyout","tls.key","-out","tls.csr")
+    (tmp/"ext").write_text("subjectAltName=IP:127.0.0.1\nbasicConstraints=critical,CA:FALSE\nextendedKeyUsage=serverAuth\n")
+    openssl("x509","-req","-in","tls.csr","-CA","ca.crt","-CAkey","ca.key","-CAcreateserial",
+            "-days","1","-extfile","ext","-out","tls.crt")
+    # OpenID userinfo must actually be served by Synapse on the federation listener.
+    listen=f"""  - port: {urlsplit("https://"+name).port}
+    type: http
+    tls: true
+    bind_addresses: ["127.0.0.1"]
+    resources: [{{names: [openid, client]}}]
+"""
+    settings=f"""tls_certificate_path: {tmp}/tls.crt
+tls_private_key_path: {tmp}/tls.key
+extra_well_known_client_content:
+  org.matrix.msc4143.rtc_foci: [{{type: livekit, livekit_service_url: "{jwt}"}}]
+"""
+    return name,listen,settings,jwt
+
+
+def test(tmp, hs, name, jwt, root, backend, seed, http, service):
+    native,hdr=seed(tmp,hs)
+    peer_dir=tmp/"peer";peer_dir.mkdir()
+    peer,ph=seed(peer_dir,hs)
+    room=native["room"]
+    api=hs+"/_matrix/client/v3/rooms/"+quote(room,safe="")
+    bob="@"+peer["username"]+":"+name
+    http("POST",api+"/invite",headers=hdr,json={"user_id":bob})
+    http("POST",api+"/join",headers=ph,json={})
+    power=http("GET",api+"/state/m.room.power_levels",headers=hdr).json()
+    power["events"]["org.matrix.msc3401.call.member"]=0
+    power["events"]["org.matrix.msc4171.rtc.notification"]=0
+    http("PUT",api+"/state/m.room.power_levels",headers=hdr,json=power)
+    assert http("GET",api+"/state/m.room.encryption",headers=ph).json()["algorithm"]=="m.megolm.v1.aes-sha2"
+    secret=secrets.token_hex(32)
+    (tmp/"lk.yaml").write_text(f"""port: 18820
+bind_addresses: ["127.0.0.1"]
+keys: {{testkey: "{secret}"}}
+rtc:
+  tcp_port: 18821
+  udp_port: 18822
+  node_ip: 192.0.2.2
+  enable_loopback_candidate: true
+  ips: {{includes: ["192.0.2.2/32"]}}
+""")
+    wav=tmp/"element-mic.wav"
+    with wave.open(str(wav),"wb") as w:
+        w.setparams((1,2,48000,0,"NONE","not compressed"))
+        w.writeframes(array.array("h",(round(8500*math.sin(i*math.tau*960/48000)) for i in range(48000))).tobytes())
+    with ExitStack() as stack:
+        stack.enter_context(service([os.environ["LIVEKIT_SERVER"],"--config",str(tmp/"lk.yaml")],tmp))
+        auth=stack.enter_context(service([os.environ["LK_JWT_SERVICE"]],tmp,env={**os.environ,
+            "LIVEKIT_JWT_BIND":urlsplit(jwt).netloc,"LIVEKIT_URL":"ws://127.0.0.1:18820","LIVEKIT_KEY":"testkey",
+            "LIVEKIT_SECRET":secret,"LIVEKIT_FULL_ACCESS_HOMESERVERS":name,"SSL_CERT_FILE":str(tmp/"ca.crt"),
+            "LIVEKIT_LOG_LEVEL":"warn"}))
+        def ready():
+            assert auth.poll() is None, "lk-jwt-service exited"
+            try:return requests.get(jwt+"/healthz",timeout=2).ok
+            except requests.ConnectionError:return False
+        wait_for("authorization service",ready)
+        web=stack.enter_context(element_server(hs,server_name=name,rtc_service=jwt))
+        pw=stack.enter_context(sync_playwright())
+        leaf=x509.load_pem_x509_certificate((tmp/"tls.crt").read_bytes())
+        spki=leaf.public_key().public_bytes(serialization.Encoding.DER,serialization.PublicFormat.SubjectPublicKeyInfo)
+        pin=base64.b64encode(hashlib.sha256(spki).digest()).decode()
+        browser=pw.chromium.launch(executable_path=shutil.which("chromium"),args=["--use-fake-device-for-media-stream",
+            "--ignore-certificate-errors-spki-list="+pin,"--use-fake-ui-for-media-stream","--mute-audio",
+            "--use-file-for-fake-audio-capture="+str(wav),"--autoplay-policy=no-user-gesture-required"])
+        stack.callback(browser.close)
+        ctx=browser.new_context(permissions=["microphone","camera"])
+        ctx.add_init_script(path=root/"scripts/qa_rtc_pcm.js")
+        page=login_element(ctx,web,peer,room)
+        dev=page.evaluate("window.mxMatrixClientPeg.get().getDeviceId()")
+        call=page.get_by_role("button",name="Voice call",exact=True)
+        call.click(timeout=12000)
+        def widget_joined():
+            for f in page.frames:
+                if f==page.main_frame:continue
+                join=f.get_by_role("button",name=re.compile(r"^(Join|Join call|Start call|Enter call)$",re.I))
+                try:
+                    if join.count() and join.first.is_visible():join.first.click(timeout=1000)
+                except PlaywrightError:
+                    if not f.is_detached():raise
+            session=page.evaluate("""room=>{const c=window.mxMatrixClientPeg.get();return c.matrixRTC.getRoomSession(c.getRoom(room)).memberships.map(m=>m.deviceId)}""",room)
+            return dev in session
+        wait_for("Element Call publishes membership",widget_joined,30)
+        widget=next(f for f in page.frames if urlsplit(f.url).path.startswith("/widgets/element-call/"))
+        print("Element Call joined the encrypted room using its test microphone.",flush=True)
+        key=secrets.token_hex(32)
+        engine=stack.enter_context(service([backend,"--desktop"],tmp,stdout=sp.PIPE,env={
+            **os.environ,"GOMUKS_ROOT":str(tmp/"seed"),"GOMUKS_DESKTOP_KEY":key}))
+        addr=json.loads(engine.stdout.readline())["address"]
+        session=http("POST",f"http://{addr}/_gomuks/auth?insecure_cookie=true",auth=("desktop-key",key))
+        probe=sp.Popen([root/"experiments/rtc-audio/target/debug/untethered-rtc-probe","--element"],
+                       stdin=sp.PIPE,text=True)
+        def stop_probe():
+            if probe.poll() is None:probe.terminate()
+            probe.wait(timeout=8)
+        stack.callback(stop_probe)
+        probe.stdin.write(json.dumps({"ws":f"ws://{addr}/_gomuks/websocket","cookie":session.cookies["gomuks_auth"],
+            "room":room,"service":jwt,"user":bob,"device":dev})+"\n")
+        probe.stdin.flush()
+        def inbound():
+            assert probe.poll() is None, "native probe exited before negative control"
+            if not widget.evaluate("typeof window.qaInbound === 'function'"):return False
+            packets=widget.evaluate("window.qaInbound()")
+            spectra=widget.evaluate("window.qaSpectra || 0")
+            assert not widget.evaluate("!!window.qaReceived480"),"Element decoded the tone without its sender key"
+            if packets>=60 and spectra>=15:return packets
+        packets=wait_for("Element receiving encrypted RTP before key delivery",inbound,40)
+        print(f"Withheld native sender key: {packets} inbound RTP packets, no decoded 480 Hz tone.",flush=True)
+        probe.stdin.write("release-sender-key\n");probe.stdin.flush()
+        def decoded():
+            assert probe.poll() is None, "native probe exited before Element decoded its tone"
+            return widget.evaluate("window.qaReceived480 === true")
+            return False
+        wait_for("Element decoded native 480 Hz on inbound WebRTC track",decoded,45)
+        print("Element decoded 480 Hz from Rust in 10 consecutive audio spectra.",flush=True)
+        probe.stdin.write("element-decoded\n");probe.stdin.close()
+        assert probe.wait(timeout=30)==0,"native side did not decode 960 Hz from Element"

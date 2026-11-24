@@ -43,8 +43,13 @@
   Web 1.12.35 recognized the Rust/gomuks device in its voice-call participant
   list, kept it through a heartbeat, and removed it on both explicit leave
   and backend disconnect (`scripts/test-media-interop.py --rtc-membership`).
-  Element audio, Matrix media-key distribution, real devices, ringing and call
-  controls remain unverified.
+  The **Linux Rust ↔ Element Call audio test** now passes with the embedded
+  Element Call widget, gomuks Olm sender-key exchange, and OpenID authorization
+  through lk-jwt-service 0.10.0. Rust measured Element's 960 Hz on decoded PCM;
+  Element received encrypted RTP without decoding Rust's 480 Hz until the key
+  arrived, then measured it on the inbound track. These are disposable local
+  devices and synthetic tones. Key rotation, real capture/playback, ringing,
+  relay-required connectivity and the Iced call controls remain open.
 
 ## What parity means
 

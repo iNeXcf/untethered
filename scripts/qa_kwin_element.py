@@ -21,12 +21,16 @@ from qa_upload_cancel import slow_gateway
 
 
 @contextmanager
-def element_server(hs):
+def element_server(hs, *, server_name="test.invalid", rtc_service=None):
     directory=Path(os.environ["ELEMENT_WEB_DIR"]).resolve()
     assert (directory/"index.html").is_file(), "Set ELEMENT_WEB_DIR to an extracted Element Web release"
-    config={"default_server_config":{"m.homeserver":{"base_url":hs,"server_name":"test.invalid"}},
+    config={"default_server_config":{"m.homeserver":{"base_url":hs,"server_name":server_name}},
             "disable_guests":True,"brand":"Element","disable_telemetry":True,"default_federate":False,
             "integrations_ui_url":None,"integrations_rest_url":None,"room_directory":{"servers":[]}}
+    if rtc_service:
+        config["default_server_config"]["org.matrix.msc4143.rtc_foci"]=[{"type":"livekit","livekit_service_url":rtc_service}]
+        config["element_call"]={"use_exclusively":True}
+        config["setting_defaults"]={"feature_element_call_react":False}
     class Handler(http.server.SimpleHTTPRequestHandler):
         def __init__(self,*a,**kw):super().__init__(*a, directory=directory, **kw)
         def log_message(self,*args):pass

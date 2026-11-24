@@ -58,7 +58,7 @@ def test(tmp, hs, root, backend, seed, http):
                     until("Element RTC roster join", lambda: len(roster()) == 1, 90)
                     device = (tmp/"rtc-device").read_text()
                     wanted = [{"user": user, "device": device, "member": f"{user}:{device}",
-                               "slot": "m.call#ROOM", "intent": "m.audio", "service": service}]
+                               "slot": "m.call#ROOM", "intent": "audio", "service": service}]
                     assert roster() == wanted, roster()
                     print("Element RTC roster: exactly one native voice member; device, slot and transport match.", flush=True)
                     start = time.monotonic()
