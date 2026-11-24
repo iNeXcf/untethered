@@ -541,6 +541,80 @@ ApplicationWindow {
     }
 
     Dialog {
+        id: screenShare
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        implicitWidth: Math.min(window.width - 48, 440)
+        title: "Share your screen"
+        modal: true
+        standardButtons: Dialog.Cancel
+        property var request: null
+
+        function choose(row) {
+            const pending = request
+            const sharingScreen = sourceType.currentIndex === 0
+            const model = sharingScreen ? pending?.screensModel : pending?.windowsModel
+            const source = model?.index(row, 0)
+            if (!source?.valid)
+                return
+            request = null
+            close()
+            if (sharingScreen)
+                pending.selectScreen(source)
+            else
+                pending.selectWindow(source)
+        }
+
+        onClosed: {
+            request?.cancel()
+            request = null
+        }
+
+        Connections {
+            target: window
+            function onCallOpenChanged() {
+                if (!window.callOpen && screenShare.request) {
+                    screenShare.request.cancel()
+                    screenShare.request = null
+                    screenShare.close()
+                }
+            }
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 8
+            TabBar {
+                id: sourceType
+                Layout.fillWidth: true
+                TabButton { text: "Screens" }
+                TabButton { text: "Windows" }
+            }
+            ListView {
+                id: screenSources
+                Layout.fillWidth: true
+                Layout.preferredHeight: 200
+                clip: true
+                model: sourceType.currentIndex === 0 ? screenShare.request?.screensModel ?? null
+                    : screenShare.request?.windowsModel ?? null
+                delegate: NavigationButton {
+                    required property int index
+                    required property var model
+                    width: screenSources.width
+                    text: model.display || (sourceType.currentIndex === 0 ? "Screen " : "Window ") + (index + 1)
+                    onClicked: screenShare.choose(index)
+                }
+                ScrollBar.vertical: ScrollBar {}
+                Label {
+                    anchors.centerIn: parent
+                    visible: screenSources.count === 0
+                    color: window.muted
+                    text: sourceType.currentIndex === 0 ? "No screens available" : "No windows available"
+                }
+            }
+        }
+    }
+
+    Dialog {
         id: imageViewer
         parent: Overlay.overlay
         anchors.centerIn: parent
@@ -1108,6 +1182,7 @@ ApplicationWindow {
                                 backgroundColor: window.color
                                 audioMuted: window.callOutputMuted
                                 settings.javascriptCanOpenWindows: false
+                                settings.screenCaptureEnabled: true
                                 url: chat.callUrl
                                 property string loadError: ""
                                 property bool pageReady: false
@@ -1175,8 +1250,18 @@ ApplicationWindow {
                                     }
                                 }
                                 onNavigationRequested: request => {
-                                    if (request.isMainFrame && !chat.isCallOrigin(request.url))
+                                    if (!chat.isCallOrigin(request.url)
+                                            && (request.isMainFrame || request.url.toString() !== "about:blank"))
                                         request.reject()
+                                }
+                                onDesktopMediaRequested: request => {
+                                    if (!window.callOpen || !window.showCall || screenShare.request) {
+                                        request.cancel()
+                                        return
+                                    }
+                                    screenShare.request = request
+                                    sourceType.currentIndex = 0
+                                    screenShare.open()
                                 }
                                 onPermissionRequested: request => {
                                     let devices = ""
