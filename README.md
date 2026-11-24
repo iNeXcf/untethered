@@ -146,6 +146,11 @@ PipeWire connection. Other participants see a **Camera** tile with your name.
 **Stop camera** releases capture and removes the tile while voice continues.
 Camera and window sharing have independent controls and encrypted tracks.
 
+Incoming video appears in a grid in the voice room. Click any tile to
+enlarge it; the other feeds stay live as thumbnails. Click a thumbnail to
+switch focus, or **Back to grid** to see everyone at equal size. Your choice
+only changes your view. If the focused feed ends, the grid returns automatically.
+
 ![Untethered room preview in the Rust frontend](rust-client/docs/preview.png)
 
 ## Browser

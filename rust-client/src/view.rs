@@ -1,4 +1,6 @@
 use super::{App, Msg, Request, Section, rooms::Room};
+#[cfg(target_os = "linux")]
+mod video_wall;
 use chrono::{DateTime, Local};
 use iced::{
     Alignment::Center,
@@ -677,19 +679,9 @@ impl App {
         #[cfg(target_os = "linux")]
         if let Some(call) = &self.call
             && call.room == self.selected
+            && let Some(wall) = room.and_then(|r| video_wall::view(call, r))
         {
-            for (caption, frame) in call.previews.tiles() {
-                chat = chat.push(
-                    column![
-                        text(caption).size(13),
-                        image(frame)
-                            .height(210)
-                            .width(Fill)
-                            .content_fit(iced::ContentFit::Contain)
-                    ]
-                    .padding([4, 16]),
-                );
-            }
+            chat = chat.push(wall);
         }
         if !self.status.is_empty() && !self.status.starts_with("Starting") {
             chat = chat.push(

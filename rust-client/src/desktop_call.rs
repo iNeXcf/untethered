@@ -35,7 +35,7 @@ use untethered_iced::rtc_membership::{EVENT_TYPE, Membership};
 use url::Url;
 mod channel;
 mod room_video;
-pub(super) use room_video::{Previews, VideoInput};
+pub(super) use room_video::{Feed, Previews, VideoInput};
 
 pub enum Target {
     Dm {

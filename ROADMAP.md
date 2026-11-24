@@ -127,8 +127,14 @@
   rendered changing green/magenta → orange/blue frames from a single GCM
   camera publication. Turning the camera off removed the reader, PipeWire
   capture links, SFU video publication and remote tiles; all six audio paths
-  remained live on the original tracks. Physical webcams and multi-camera
-  grid/focus layouts have not been verified.
+  remained live on the original tracks. Physical webcams remain unverified.
+- **Linux multi-camera layouts:** In the [grid/focus test](experiments/rtc-audio/README.md#verify-multi-camera-grid-and-focus),
+  Alice rendered Bruno and Clara side by side, enlarged each in turn and
+  switched back to the grid. Both feeds changed on-screen in each layout,
+  including the unfocused thumbnail, with the same two encrypted video
+  tracks and all six audio paths live. When Clara left with her camera
+  focused, her capture was released; Alice returned to the grid and saw
+  Bruno's next pattern on his original track.
 
 ## What parity means
 

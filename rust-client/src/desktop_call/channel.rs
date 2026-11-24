@@ -237,15 +237,12 @@ impl Subscriptions {
                         )),
                         RemoteTrack::Video(track) => self.jobs.spawn(room_video::display(
                             track,
-                            format!(
-                                "{} · {}",
-                                if publication.source() == TrackSource::Camera {
-                                    "Camera"
-                                } else {
-                                    "Shared window"
-                                },
-                                keys.members[&id.0].user
-                            ),
+                            keys.members[&id.0].user.clone(),
+                            if publication.source() == TrackSource::Camera {
+                                VideoInput::Camera
+                            } else {
+                                VideoInput::Window
+                            },
                             previews.clone(),
                             notices.events.clone(),
                         )),

@@ -90,6 +90,8 @@ enum Msg {
     #[cfg(target_os = "linux")]
     ToggleVideo(desktop_call::VideoInput),
     #[cfg(target_os = "linux")]
+    FocusVideo(uuid::Uuid, Option<String>),
+    #[cfg(target_os = "linux")]
     AudioDevices,
     #[cfg(target_os = "linux")]
     ToggleMixer,
@@ -902,6 +904,14 @@ impl App {
                     && !call.cancel.is_closed()
                 {
                     call.audio.send_if_modified(|s| s.hold(down));
+                }
+            }
+            #[cfg(target_os = "linux")]
+            Msg::FocusVideo(id, sid) => {
+                if let Some(call) = &self.call
+                    && call.id == id
+                {
+                    call.previews.focus(sid);
                 }
             }
             #[cfg(target_os = "linux")]

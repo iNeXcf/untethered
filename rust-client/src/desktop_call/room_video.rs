@@ -34,7 +34,7 @@ pub(crate) enum VideoInput {
 }
 impl VideoInput {
     pub(crate) const ALL: [Self; 2] = [Self::Window, Self::Camera];
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Window => "Shared window",
             Self::Camera => "Camera",
@@ -75,12 +75,30 @@ pub(crate) struct Status {
     pub live: bool,
 }
 
-type Tiles = BTreeMap<String, (String, Handle)>;
+#[derive(Clone)]
+pub(crate) struct Feed {
+    pub sid: String,
+    pub user: String,
+    pub source: VideoInput,
+    pub frame: Handle,
+}
+#[derive(Default)]
+struct Wall {
+    feeds: BTreeMap<String, Feed>,
+    focus: Option<String>,
+}
 #[derive(Clone, Default)]
-pub(crate) struct Previews(Arc<Mutex<Tiles>>);
+pub(crate) struct Previews(Arc<Mutex<Wall>>);
 impl Previews {
-    pub(crate) fn tiles(&self) -> Vec<(String, Handle)> {
-        self.0.lock().unwrap().values().cloned().collect()
+    pub(crate) fn snapshot(&self) -> (Option<String>, Vec<Feed>) {
+        let wall = self.0.lock().unwrap();
+        (wall.focus.clone(), wall.feeds.values().cloned().collect())
+    }
+    pub(crate) fn focus(&self, sid: Option<String>) {
+        let mut wall = self.0.lock().unwrap();
+        if sid.as_ref().is_none_or(|s| wall.feeds.contains_key(s)) {
+            wall.focus = sid;
+        }
     }
 }
 struct Tile {
@@ -90,13 +108,19 @@ struct Tile {
 }
 impl Drop for Tile {
     fn drop(&mut self) {
-        self.views.0.lock().unwrap().remove(&self.sid);
+        let mut wall = self.views.0.lock().unwrap();
+        wall.feeds.remove(&self.sid);
+        if wall.focus.as_ref() == Some(&self.sid) {
+            wall.focus = None;
+        }
+        drop(wall);
         let _ = self.events.try_send(json!({"command":"video_redraw"}));
     }
 }
 pub(super) async fn display(
     track: RemoteVideoTrack,
-    caption: String,
+    user: String,
+    source: VideoInput,
     views: Previews,
     events: Sender<Value>,
 ) -> Result<()> {
@@ -135,10 +159,22 @@ pub(super) async fn display(
             ow as i32,
             oh as i32,
         );
-        tile.views.0.lock().unwrap().insert(
-            tile.sid.clone(),
-            (caption.clone(), Handle::from_rgba(ow, oh, rgba)),
-        );
+        let frame = Handle::from_rgba(ow, oh, rgba);
+        let mut wall = tile.views.0.lock().unwrap();
+        if let Some(feed) = wall.feeds.get_mut(&tile.sid) {
+            feed.frame = frame;
+        } else {
+            wall.feeds.insert(
+                tile.sid.clone(),
+                Feed {
+                    sid: tile.sid.clone(),
+                    user: user.clone(),
+                    source,
+                    frame,
+                },
+            );
+        }
+        drop(wall);
         let _ = tile.events.try_send(json!({"command":"video_redraw"}));
     }
 }

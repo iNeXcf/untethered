@@ -134,7 +134,7 @@ def check_speaking(desks,names):
     stage(set())
 
 
-def test_group(tmp,hs,name,root,backend,seed,http,secret,*,share=False,camera=False,ptt=False):
+def test_group(tmp,hs,name,root,backend,seed,http,secret,*,share=False,camera=False,ptt=False,layout=False):
     dirs=[tmp/f"p{i}" for i in range(3)]
     for p in dirs:p.mkdir()
     credentials=[seed(p,hs) for p in dirs]
@@ -181,7 +181,7 @@ def test_group(tmp,hs,name,root,backend,seed,http,secret,*,share=False,camera=Fa
     with ExitStack() as stack:
         sock=tmp/"pulse"
         for i,d in enumerate(dirs):
-            wayland=(share or camera) and i==0
+            wayland=((share or camera) and i==0) or (layout and i in (1,2))
             env=isolated_env(d,backend,"wayland" if wayland else "x11");env.update(TOKIO_WORKER_THREADS="2",RAYON_NUM_THREADS="2",GOMAXPROCS="2")
             if not wayland:start_display(stack,d,env,"x11")
             env.update(PULSE_SERVER="unix:"+str(sock),PULSE_SOURCE=f"Mic{i}.monitor",PULSE_SINK=f"Out{i}")
@@ -235,6 +235,9 @@ def test_group(tmp,hs,name,root,backend,seed,http,secret,*,share=False,camera=Fa
             if ptt:
                 from qa_room_ptt import check_ptt
                 check_ptt(stack,desks,audio_counts,lambda:publications(3)==tracks)
+            elif layout:
+                from qa_room_layout import check_layout
+                check_layout(stack,desks,users,secret,tracks,publications)
             elif not share and not camera:
                 from qa_room_volume import check_volume
                 check_volume(desks)
@@ -247,7 +250,7 @@ def test_group(tmp,hs,name,root,backend,seed,http,secret,*,share=False,camera=Fa
             if camera:
                 from qa_room_camera import room_camera
                 room_camera(stack,desks,secret,tracks,publications)
-            desks[2].click("leave")
+            if not layout:desks[2].click("leave")
             wait_for("third device left MatrixRTC",lambda:members()==sorted(users[:2]))
             remaining=wait_for("third device left SFU",lambda:publications(2))
             assert remaining==original

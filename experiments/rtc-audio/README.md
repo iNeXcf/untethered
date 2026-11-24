@@ -124,6 +124,24 @@ camera** must remove the capture process, camera links, SFU video track and
 both remote tiles while leaving the virtual camera available. Changing mic
 tones verifies all six audio paths both during video and after stopping it.
 
+### Verify multi-camera grid and focus
+
+Run `sh experiments/rtc-audio/run_element.sh --room-layout` with the same
+KWin camera prerequisites. Bruno and Clara each have a private compositor,
+session bus, Camera portal and virtual PipeWire camera. Alice views both feeds
+on a third native desktop. The fixture reads Alice's Iced captions, clicks
+the actual tiles and measures two adjacent color fields per camera in **one
+screenshot per observation**. Both patterns change in the grid and again in
+each focus view. The selected feed must be visibly larger and the thumbnail
+must show the other camera's fresh pixels. Both GCM camera track IDs and all
+three original microphone IDs must survive switching.
+
+All three speaker monitors are checked in consecutive 100 ms windows for the
+whole layout-switch sequence. Clara then leaves with her camera still focused.
+Her capture link and reader must disappear; Alice must return to the grid,
+see a new pattern from Bruno on his original video track, and hear his new
+mic tone while Clara's speaker stays silent.
+
 ### Verify mute and deafen
 
 Use `sh experiments/rtc-audio/run_element.sh --call-controls` with the same
