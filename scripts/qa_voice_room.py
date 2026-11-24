@@ -20,6 +20,8 @@ MEMBER = "org.matrix.msc3401.call.member"
 TONES = (410, 670, 1030, 530, 830)
 PCM = [array.array("h", (round(7000 * math.sin(n * math.tau * hz / 48000))
                         for n in range(4800))).tobytes() for hz in TONES]
+SILENCE = len(PCM)
+PCM.append(bytes(len(PCM[0])))
 # 100 ms, every fourth sample. Bin amplitudes distinguish both superimposed
 # tones from one stream, our own echo, comfort noise, and stale queued audio.
 BINS = [[cmath.exp(-1j * math.tau * hz * n / 12000) for n in range(1200)] for hz in TONES]
@@ -94,6 +96,39 @@ class Desktop:
         windows=list(self.windows)
         return len(windows)==12 and all(all(a>500 if f in expected else a<200 for a,f in zip(amps,TONES))
                                         for amps in windows)
+
+
+def check_speaking(desks,names):
+    def highlights(peer):
+        words=[(word,x,y) for word,x,y in peer.words() if 70<x<280]
+        rows={i:y for i,name in enumerate(names) for word,_,y in words if word==name.lower()}
+        badges=[y for word,_,y in words if word=="speaking"]
+        active={i for i,y in rows.items() if any(abs(y-b)<=5 for b in badges)}
+        # Missing rows, extra labels and unattached badges are failures too.
+        return active if len(rows)==len(names) and len(badges)==len(active) else None
+    def verify(active):
+        wait_for("decoded sound matches selected inputs",lambda:all(
+            d.hears({TONES[j] for j in active if j!=i}) for i,d in enumerate(desks)),12)
+        expected=", ".join(names[i] for i in sorted(active)) or "silence"
+        wait_for(f"all three speaking rosters: {expected}",lambda:all(highlights(d)==active for d in desks),12)
+        print(f"Speaking indicators: {expected}; all 3 rendered rosters matched, with decoded audio checked at each client.",flush=True)
+    def stage(active):
+        for i,d in enumerate(desks):d.tone=i if i in active else SILENCE
+        verify(active)
+    stage(set())
+    for i in range(len(desks)):
+        stage({i})
+        stage(set())
+    stage({0,2})
+    stage({2})
+    # Clara's input stays loud during mute. An open input or a recent
+    # speaker flag alone must not keep a muted name lit.
+    desks[2].click("mute")
+    verify(set())
+    desks[2].click("unmute")
+    verify({2})
+    print("Mute cleared Clara on all 3 rosters with her input still active; unmute restored her label.",flush=True)
+    stage(set())
 
 
 def test_group(tmp,hs,name,root,backend,seed,http,secret,*,share=False,camera=False):
@@ -189,6 +224,9 @@ def test_group(tmp,hs,name,root,backend,seed,http,secret,*,share=False,camera=Fa
             for i,heard in enumerate(expected):
                 print(f"Client {i+1}: sent {TONES[i]} Hz; speaker received {sorted(heard)} Hz, no self tone (12 consecutive 100 ms windows).",flush=True)
             print("Three joined devices, three GCM microphones, two playback streams per client; zero ring or other non-state events.",flush=True)
+            if not share and not camera:
+                check_speaking(desks,names)
+                assert publications(3)==tracks
             if share:
                 from qa_window_share import window_share
                 window_share(stack,desks,secret,tracks,publications)

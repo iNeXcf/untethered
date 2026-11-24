@@ -464,10 +464,30 @@ impl App {
                     .filter(|(_, expires)| *expires > crate::desktop_call::now())
                     .map(|(user, _)| user)
                     .collect();
+                let speakers = self
+                    .call
+                    .as_ref()
+                    .filter(|c| c.group && c.room == *id)
+                    .map(|c| c.speaking.borrow());
                 for user in participants {
-                    links = links.push(
-                        container(text(r.display(user)).size(13).color(MUTED)).padding([0, 28]),
-                    );
+                    let speaking = speakers.as_ref().is_some_and(|s| s.contains(user));
+                    let mut line = row![
+                        text(r.display(user))
+                            .width(Fill)
+                            .size(13)
+                            .color(if speaking { TEXT } else { MUTED })
+                    ]
+                    .spacing(4)
+                    .align_y(Center);
+                    if speaking {
+                        line =
+                            line.push(text("Speaking").size(12).font(BOLD).color(color!(0x65d99c)));
+                    }
+                    links = links.push(container(line).width(Fill).padding(iced::Padding {
+                        left: 28.,
+                        right: 10.,
+                        ..Default::default()
+                    }));
                 }
             }
         }

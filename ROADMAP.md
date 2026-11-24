@@ -102,8 +102,10 @@
   all six sender→listener paths carried the correct tones (410, 670, 1030 Hz);
   the SFU reported three GCM microphones, and room history had zero rings.
   After the third participant left, the other two exchanged fresh tones on
-  their original tracks. Speaking indicators, per-user volume and push-to-talk
-  remain open.
+  their original tracks. On all three rendered rosters the **Speaking** label
+  followed each mic in turn and cleared after silence. Two simultaneous
+  speakers showed two labels; silencing one left the other highlighted.
+  Per-user volume and push-to-talk remain open.
 - **Linux portal window sharing:** [The three-client window test](experiments/rtc-audio/README.md#verify-portal-window-sharing)
   uses a private KDE Wayland picker and PipeWire. Cancelling creates no video
   publication. Selecting a window publishes one GCM screen track; both other

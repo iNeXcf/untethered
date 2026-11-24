@@ -197,9 +197,13 @@ impl Subscriptions {
         mode: &watch::Receiver<AudioMode>,
         notices: &DeviceNotices,
         previews: &Previews,
-    ) -> Result<()> {
+    ) -> Result<BTreeSet<String>> {
         let mut live = BTreeSet::new();
+        let mut speaking = BTreeSet::new();
         for (id, p) in lk.remote_participants() {
+            // Speaker notifications may be deltas. Use each device's current
+            // flag, and attribute only admitted, encrypted microphone tracks.
+            let active = p.is_speaking();
             for (sid, publication) in p.track_publications() {
                 let wanted = keys.ready.contains(&id.0)
                     && matches!(
@@ -217,6 +221,12 @@ impl Subscriptions {
                     publication.set_subscribed(wanted);
                 }
                 if wanted && let Some(track) = publication.track() {
+                    if active
+                        && publication.source() == TrackSource::Microphone
+                        && !publication.is_muted()
+                    {
+                        speaking.insert(keys.members[&id.0].user.clone());
+                    }
                     live.insert(sid.clone());
                     self.tracks.entry(sid).or_insert_with(|| match track {
                         RemoteTrack::Audio(track) => {
@@ -248,7 +258,7 @@ impl Subscriptions {
                 false
             }
         });
-        Ok(())
+        Ok(speaking)
     }
 }
 
@@ -259,7 +269,7 @@ pub(super) async fn joined(
     events: &Sender<Value>,
     media: &mut Option<Room>,
     mut mode: watch::Receiver<AudioMode>,
-    previews: Previews,
+    views: GroupViews,
 ) -> Result<&'static str> {
     let mut keys = GroupKeys::new(s)?;
     let (lk, mut rtc, src, mic) = publish_mic(s, &keys.provider, media, false).await?;
@@ -297,7 +307,19 @@ pub(super) async fn joined(
             }
         }
         keys.receive(w)?;
-        subscriptions.sync(lk, &keys, &mode, &notices, &previews)?;
+        let mut speaking = subscriptions.sync(lk, &keys, &mode, &notices, &views.previews)?;
+        if lk.local_participant().is_speaking() && !mic.is_muted() && !mode.borrow().mic_off() {
+            speaking.insert(s.user.clone());
+        }
+        if views.speakers.send_if_modified(|shown| {
+            if *shown == speaking {
+                return false;
+            }
+            *shown = speaking;
+            true
+        }) {
+            let _ = events.send(json!({"command":"voice_redraw"})).await;
+        }
         let requests = mode.borrow_and_update().video;
         share
             .select(requests[VideoInput::Window as usize], lk)

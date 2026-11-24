@@ -83,11 +83,16 @@ pub struct ActiveCall {
     pub speaker_error: bool,
     pub video_status: [room_video::Status; 2],
     pub previews: Previews,
+    pub speaking: watch::Receiver<std::collections::BTreeSet<String>>,
+}
+struct GroupViews {
+    previews: Previews,
+    speakers: watch::Sender<std::collections::BTreeSet<String>>,
 }
 pub struct Controls {
     cancel: Receiver<()>,
     audio: watch::Receiver<AudioMode>,
-    previews: Previews,
+    views: GroupViews,
 }
 impl crate::App {
     pub(super) fn start_voice(&mut self, room: String, target: Target) {
@@ -102,10 +107,14 @@ impl crate::App {
         let (cancel, rx) = async_channel::bounded(1);
         let (audio, mode) = watch::channel(AudioMode::default());
         let previews = Previews::default();
+        let (speakers, speaking) = watch::channel(Default::default());
         let controls = Controls {
             cancel: rx,
             audio: mode,
-            previews: previews.clone(),
+            views: GroupViews {
+                previews: previews.clone(),
+                speakers,
+            },
         };
         if self
             .commands
@@ -132,6 +141,7 @@ impl crate::App {
                 speaker_error: false,
                 video_status: Default::default(),
                 previews,
+                speaking,
             });
         } else {
             self.status = "Could not queue the voice call.".into();
@@ -449,7 +459,7 @@ pub async fn run(
     let Controls {
         cancel,
         audio,
-        previews,
+        views,
     } = controls;
     let (dm_peer, incoming) = match &target {
         Target::Channel => (None, None),
@@ -503,7 +513,7 @@ pub async fn run(
         match dm_peer {
             Some(_) => call(&mut w, &s, &mut member, events, &mut media, incoming, audio).await,
             None => {
-                channel::joined(&mut w, &s, &mut member, events, &mut media, audio, previews).await
+                channel::joined(&mut w, &s, &mut member, events, &mut media, audio, views).await
             }
         }
     };
