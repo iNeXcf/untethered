@@ -40,6 +40,8 @@ const RING: &str = "org.matrix.msc4075.rtc.notification";
 const SLOT_ID: &str = "m.call#ROOM";
 const ENDED: &str = "Call ended.";
 const SECOND: Duration = Duration::from_secs(1);
+const LEASE: Duration = Duration::from_secs(16);
+const RECOVERY_LIMIT: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Default)]
 pub struct AudioMode {
@@ -436,14 +438,22 @@ pub async fn run(
     }
     // Element may send its key as soon as it sees our membership.
     let prior = w.rpc("listen_to_device", json!(true)).await?;
-    let mut member =
-        match Membership::join(room, &s.user, &s.device, &s.focus, 16_000, &mut w).await {
-            Ok(member) => member,
-            Err(_) => {
-                let _ = w.rpc("listen_to_device", prior).await;
-                return Err("Could not join the MatrixRTC call.");
-            }
-        };
+    let mut member = match Membership::join(
+        room,
+        &s.user,
+        &s.device,
+        &s.focus,
+        LEASE.as_millis() as u32,
+        &mut w,
+    )
+    .await
+    {
+        Ok(member) => member,
+        Err(_) => {
+            let _ = w.rpc("listen_to_device", prior).await;
+            return Err("Could not join the MatrixRTC call.");
+        }
+    };
     let mut media = None;
     let result = tokio::select! {biased;_=cancel.recv()=>Ok(ENDED),r=call(&mut w,&s,&mut member,events,&mut media,incoming.as_ref(),audio)=>r};
     if let Some(lk) = media {
@@ -479,7 +489,7 @@ async fn call(
     } else {
         Value::Null
     };
-    let mut renew = Instant::now();
+    let lease_started = Instant::now();
     let mut heartbeat = time::interval(SECOND * 4);
     let mut poll = time::interval(SECOND);
     let answer=time::timeout(SECOND*45,async {
@@ -491,7 +501,8 @@ async fn call(
                     if let Some(e)=state.iter().find(|e|e["sender"]==w.peer && active_member(e) && incoming.is_none_or(|i|i.matches_member(e))){
                         let c=&e["content"];let device=c["device_id"].as_str().unwrap();
                         let id=format!("{}:{device}",w.peer);
-                        return Ok((device.to_owned(),c["membershipID"].as_str().unwrap_or(&id).to_owned(),id));
+                        return Ok(PeerSession{device:device.to_owned(),member:c["membershipID"].as_str().unwrap_or(&id).to_owned(),
+                            identity:id,created:created(e).ok_or("Unknown peer session.")?});
                     }
                     if incoming.is_some(){return Err("The caller has left.")}
                 }
@@ -500,13 +511,15 @@ async fn call(
         }
     }).await.map_err(|_|"No answer.")??;
     status(events, w.room, "Connecting").await;
-    let (peer_device, peer_member, peer_id) = answer;
+    let peer = &answer;
+    let peer_device = peer.device.as_str();
+    let peer_id = peer.identity.as_str();
     let provider = rtc_keys::provider();
     let my_id = format!("{}:{}", s.user, s.device);
     let key = SenderKey::fresh(0)?;
     w.rpc(
         "send_to_device",
-        key.to_device(w.room, &my_id, &s.device, w.peer, &peer_device),
+        key.to_device(w.room, &my_id, &s.device, w.peer, peer_device),
     )
     .await?;
     fn install(
@@ -529,7 +542,7 @@ async fn call(
         Ok(installed)
     }
     time::timeout(SECOND*14,async {
-        while !install(w,&provider,&peer_device,&peer_member,&peer_id)? {
+        while !install(w,&provider,peer_device,&peer.member,peer_id)? {
             tokio::select!{r=w.frame()=>{r?;},_=heartbeat.tick()=>m.heartbeat(&mut *w).await.map_err(|_|"Lost call membership.")?}
         }
         Ok::<(),&'static str>(())
@@ -567,44 +580,187 @@ async fn call(
     if publication.encryption_type() != EncryptionType::Gcm {
         return Err("Microphone encryption unavailable.");
     }
-    let mut audio = JoinSet::new();
     let notices = DeviceNotices {
         events: events.clone(),
         room: w.room.to_owned(),
     };
-    audio.spawn(controlled_capture(
-        src,
-        publication,
-        mode.clone(),
-        notices.clone(),
-    ));
+    let mut audio = JoinSet::new();
+    let capture =
+        |publication| controlled_capture(src.clone(), publication, mode.clone(), notices.clone());
+    let playback = |track| play(track, mode.clone(), notices.clone());
+    audio.spawn(capture(publication));
     let mut playing = false;
+    let mut recovering: Option<Instant> = None;
+    let mut rtc_up = true;
+    let mut lease = LeaseWatch {
+        confirmed: Instant::now(),
+        renewed: lease_started,
+    };
+    heartbeat.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
     loop {
-        install(w, &provider, &peer_device, &peer_member, &peer_id)?;
-        tokio::select! {
-            e=w.frame()=>{e?;}
+        install(w, &provider, peer_device, &peer.member, peer_id)?;
+        let interrupted = tokio::select! {
+            e=w.frame()=>{e?;false}
             _=heartbeat.tick()=>{
-                if renew.elapsed()>SECOND*36 {m.renew(&mut *w).await.map_err(|_|"Failed to renew call membership.")?;renew=Instant::now();}
-                else {m.heartbeat(&mut *w).await.map_err(|_|"Lost call membership.")?;}
-                let state=w.state(false).await?;check_dm(&state,&s.user,w.peer)?;
-                if !state.iter().any(|e|e["sender"]==w.peer && e["content"]["device_id"]==peer_device && active_member(e)){return Ok(ENDED)}
+                if recovering.is_some_and(|since| since.elapsed()>=RECOVERY_LIMIT) {
+                    return Err("Could not reconnect to the call.");
+                }
+                let restoring=recovering.is_some() && rtc_up && lk.connection_state()==ConnectionState::Connected;
+                match lease.check(w,m,&s.user,peer,restoring).await? {
+                    LeaseState::Offline=>true,
+                    LeaseState::PeerLeft=>return Ok(ENDED),
+                    LeaseState::Valid=>{
+                        if restoring && let Some((mic,track))=encrypted_tracks(lk,&my_id,peer_id)? {
+                            audio.spawn(capture(mic));audio.spawn(playback(track));
+                            playing=true;recovering=None;status(events,w.room,"Connected").await;
+                        }
+                        false
+                    }
+                }
             }
-            job=audio.join_next()=>return match job {
-                Some(Ok(Ok(())))=>Ok(ENDED), // remote audio stream ended
-                Some(Ok(Err(why)))=>Err(why),
-                _=>Err("Audio device stopped.")
+            job=audio.join_next(),if !audio.is_empty()=>match job {
+                Some(Ok(Ok(())))=>true, // stream ended: membership distinguishes a leave from a restart
+                Some(Ok(Err(why)))=>return Err(why),
+                _=>return Err("Audio device stopped.")
             },
             event=rtc.recv()=>match event {
-                Some(RoomEvent::TrackSubscribed{track:RemoteTrack::Audio(track),participant,publication,..}) if participant.identity().0==peer_id && !playing=>{
+                Some(RoomEvent::Reconnecting)=>{rtc_up=false;true}
+                Some(RoomEvent::Reconnected)=>{rtc_up=true;heartbeat.reset_immediately();false}
+                Some(RoomEvent::TrackSubscribed{track:RemoteTrack::Audio(track),participant,publication,..}) if participant.identity().0==peer_id && !playing && recovering.is_none()=>{
                     if publication.encryption_type()!=EncryptionType::Gcm{return Err("Peer did not encrypt audio.")}
-                    audio.spawn(play(track,mode.clone(),notices.clone()));playing=true;status(events,w.room,"Connected").await;
+                    audio.spawn(playback(track));playing=true;status(events,w.room,"Connected").await;false
                 }
-                Some(RoomEvent::ParticipantDisconnected(p)) if p.identity().0==peer_id=>return Ok(ENDED),
-                None|Some(RoomEvent::Disconnected{..}|RoomEvent::Reconnecting)=>return Err("Call connection lost."),
-                _=>()
+                Some(RoomEvent::TrackUnsubscribed{track:RemoteTrack::Audio(_),participant,..}) if participant.identity().0==peer_id=>true,
+                Some(RoomEvent::ParticipantDisconnected(p)) if p.identity().0==peer_id=>true,
+                None|Some(RoomEvent::Disconnected{..})=>return Err("Call connection lost."),
+                _=>false
             }
+        };
+        if interrupted && recovering.is_none() {
+            recovering = Some(Instant::now());
+            // Cancel and drain both device tasks before any replacement is
+            // started. Their pacat children are kill-on-drop. Keep user routes,
+            // mute/deafen, the E2EE provider and the SDK reconnect loop alive.
+            audio.shutdown().await;
+            playing = false;
+            status(events, w.room, "Reconnecting…").await;
+            heartbeat.reset_immediately();
         }
     }
+}
+
+struct PeerSession {
+    device: String,
+    member: String,
+    identity: String,
+    created: u64,
+}
+fn created(event: &Value) -> Option<u64> {
+    event["content"]["created_ts"]
+        .as_u64()
+        .or_else(|| event["timestamp"].as_u64())
+}
+impl PeerSession {
+    // User/device IDs alone could also describe a *new* call after hangup.
+    fn matches(&self, user: &str, event: &Value) -> bool {
+        let c = &event["content"];
+        event["sender"] == user
+            && active_member(event)
+            && c["device_id"] == self.device
+            && c["membershipID"].as_str().unwrap_or(&self.identity) == self.member
+            && created(event) == Some(self.created)
+    }
+}
+
+struct LeaseWatch {
+    confirmed: Instant,
+    renewed: Instant,
+}
+enum LeaseState {
+    Valid,
+    PeerLeft,
+    Offline,
+}
+impl LeaseWatch {
+    async fn check(
+        &mut self,
+        w: &mut Wire<'_>,
+        m: &mut Membership,
+        user: &str,
+        peer: &PeerSession,
+        restoring: bool,
+    ) -> Result<LeaseState> {
+        if self.confirmed.elapsed() >= LEASE {
+            return Err("Call membership expired while offline.");
+        }
+        let started = Instant::now();
+        // Never replace an expired membership to recover a call. Retry the
+        // existing delayed leave first. Late RPC replies have unique request IDs.
+        if !matches!(
+            time::timeout(SECOND * 2, m.heartbeat(&mut *w)).await,
+            Ok(Ok(()))
+        ) {
+            return Ok(LeaseState::Offline);
+        }
+        self.confirmed = started;
+        let Ok(state) = w.state(restoring).await else {
+            return Ok(LeaseState::Offline);
+        };
+        check_dm(&state, user, w.peer)?;
+        if !state.iter().any(|e| peer.matches(w.peer, e)) {
+            return Ok(LeaseState::PeerLeft);
+        }
+        if restoring
+            && !state
+                .iter()
+                .any(|e| e["sender"] == user && e["event_id"] == m.event_id && active_member(e))
+        {
+            return Err("Our call membership is no longer active.");
+        }
+        if self.renewed.elapsed() > SECOND * 36 {
+            m.renew(&mut *w)
+                .await
+                .map_err(|_| "Failed to renew call membership.")?;
+            self.renewed = started;
+        }
+        Ok(LeaseState::Valid)
+    }
+}
+
+/// A resume may preserve tracks; a full SDK restart may assign new SIDs.
+/// Only rebind the authenticated peer's current encrypted audio in this Room.
+fn encrypted_tracks(
+    lk: &Room,
+    me: &str,
+    peer: &str,
+) -> Result<Option<(LocalTrackPublication, RemoteAudioTrack)>> {
+    let local = lk.local_participant();
+    if local.identity().0 != me || !lk.e2ee_manager().enabled() {
+        return Err("Could not restore encrypted call tracks.");
+    }
+    let ours = local
+        .track_publications()
+        .into_values()
+        .find(|p| p.source() == TrackSource::Microphone && p.track().is_some());
+    let theirs = lk
+        .remote_participants()
+        .get(&peer.to_owned().into())
+        .and_then(|p| {
+            p.track_publications()
+                .into_values()
+                .find(|p| p.kind() == TrackKind::Audio && p.is_subscribed())
+        });
+    let (Some(mic), Some(pubn)) = (ours, theirs) else {
+        return Ok(None);
+    };
+    if mic.encryption_type() != EncryptionType::Gcm || pubn.encryption_type() != EncryptionType::Gcm
+    {
+        return Err("Could not restore encrypted call tracks.");
+    }
+    Ok(match pubn.track() {
+        Some(RemoteTrack::Audio(track)) => Some((mic, track)),
+        _ => None,
+    })
 }
 
 #[derive(Clone)]
@@ -769,6 +925,28 @@ async fn play(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovery_accepts_lease_renewal_but_not_a_new_call_from_the_same_device() {
+        let stamp = now();
+        let peer = PeerSession {
+            device: "D".into(),
+            member: "@b:chat:D".into(),
+            identity: "@b:chat:D".into(),
+            created: stamp,
+        };
+        let mut e = json!({"event_id":"$original","type":EVENT_TYPE,"sender":"@b:chat","timestamp":stamp,
+            "content":{"application":"m.call","scope":"m.room","call_id":"","device_id":"D","expires":60000}});
+        assert!(peer.matches("@b:chat", &e));
+        e["event_id"] = "$renewed".into();
+        e["timestamp"] = (stamp + 1).into();
+        e["content"]["created_ts"] = stamp.into();
+        assert!(peer.matches("@b:chat", &e));
+        e["content"]["created_ts"] = (stamp + 1).into();
+        assert!(!peer.matches("@b:chat", &e));
+        e["content"] = json!({});
+        assert!(!peer.matches("@b:chat", &e));
+    }
 
     #[test]
     fn stale_direct_chat_marker_cannot_ring_a_group_or_clear_room() {

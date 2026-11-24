@@ -81,7 +81,14 @@
   the unselected output. Both encrypted track IDs and the connection stayed
   intact; the system defaults were unchanged. Removing a selected mic while
   muted left capture closed on unmute; selecting a working input restored it.
-  Physical hardware, recovery after disconnect and TURN-only calls remain open.
+  Physical hardware and TURN-only calls remain open.
+- **Linux network recovery:** `run_element.sh --call-reconnect` disconnected
+  the desktop's private link to Matrix and LiveKit for 6.5 seconds while
+  Element stayed online. RTP stopped, both ends went silent and the call bar
+  showed **Reconnecting**. After restoration, Element decoded a new 730 Hz
+  tone and the desktop played 960 Hz. Both microphones used GCM; the same two
+  Matrix devices stayed in the call and the timeline contained one ring.
+  Hangup released both streams. Relay-required calls are still unverified.
 
 ## What parity means
 

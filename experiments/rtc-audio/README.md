@@ -58,6 +58,21 @@ It also selects a spare mic while muted and removes it before unmuting.
 There must be no fallback capture: Element stays silent, playback continues,
 and explicitly choosing a working mic restores audio on the same track.
 
+### Verify recovery after a network interruption
+
+For the desktop network recovery test, run
+`sh experiments/rtc-audio/run_element.sh --call-reconnect` with the desktop
+prerequisites, plus `nsenter`, `ss` with socket-destroy support and `nft`.
+The runner gives Untethered and its gomuks child their own network namespace
+and veth; Element, Synapse and LiveKit stay online in the outer test namespace.
+It takes the link down for at least 6.5 s and discards the desktop's established
+SFU signaling socket. The test observes **Reconnecting**, no arriving RTP,
+silence and closed desktop audio devices. It changes the test mic from 480 Hz
+to 730 Hz while disconnected. After link-up it requires 12 fresh samples of
+the new tone at Element and 12 of the 960 Hz return tone at the desktop, both
+GCM tracks, unchanged MatrixRTC membership and exactly one ring event. These
+are short-outage checks; they do not exercise TURN or resume an expired call.
+
 ## Replay the Element ↔ Rust encrypted audio test
 
 From the checkout, with Chromium, OpenSSL, iproute2, the pinned gomuks backend,
@@ -155,5 +170,5 @@ sentinel, so a roster entry does not demonstrate a media connection.
 ## What comes next
 
 Element and Untethered can each initiate DM calls while both apps are open.
-Next verify reconnect and relay-required audio. Physical hot-unplug behavior
+Next verify relay-required audio. Physical hot-unplug behavior
 and Windows runtime testing are not covered by the virtual-device tests.

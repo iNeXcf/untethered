@@ -19,7 +19,7 @@ import requests
 from qa_native_paste import child, isolated_env, start_display, wait_for
 
 
-def sfu_publications(secret):
+def sfu_participants(secret):
     def query(method,params,grant):
         def b64(v):
             return base64.urlsafe_b64encode(v).rstrip(b"=")
@@ -34,7 +34,11 @@ def sfu_publications(secret):
     assert len(rooms)==1
     name=rooms[0]["name"]
     peers=query("ListParticipants",{"room":name},{"roomAdmin":True,"room":name})["participants"]
-    return [(p["identity"],p["sid"],t) for p in peers for t in p.get("tracks",[]) if t.get("type","AUDIO")=="AUDIO"]
+    return peers
+
+
+def sfu_publications(secret):
+    return [(p["identity"],p["sid"],t) for p in sfu_participants(secret) for t in p.get("tracks",[]) if t.get("type","AUDIO")=="AUDIO"]
 
 
 def sfu_audio(secret):
@@ -44,7 +48,7 @@ def sfu_audio(secret):
     return result
 
 
-def desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,*,incoming=False,controls=False,devices=False):
+def desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,*,incoming=False,controls=False,devices=False,network_ports=None):
     env=isolated_env(tmp,backend,"x11")
     start_display(stack,tmp,env,"x11",1280,900)
     sock=Path(env["XDG_RUNTIME_DIR"])/"qa-pulse"
@@ -70,10 +74,13 @@ def desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,*,incoming=Fa
         cmd("pactl","set-default-sink","QASpeaker",check=True)
     # Play only into the null mic sink; monitor only the separate speaker sink.
     args=["--raw","--rate=48000","--channels=1","--format=s16le","--latency-msec=40"]
+    new_tone=threading.Event()
     def inject(feed,hz):
-        tone=array.array("h",(round(9000*math.sin(i*math.tau*hz/48000)) for i in range(4800))).tobytes()
+        def pcm(freq):return array.array("h",(round(9000*math.sin(i*math.tau*freq/48000)) for i in range(4800))).tobytes()
+        tone=pcm(hz)
+        changed=pcm(730) if network_ports else tone
         try:
-            while True:feed.stdin.write(tone)
+            while True:feed.stdin.write(changed if new_tone.is_set() else tone)
         except (OSError,ValueError):pass
     received=threading.Event()
     chime=threading.Event()
@@ -102,7 +109,11 @@ def desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,*,incoming=Fa
         stack.callback(end,monitor)
         threading.Thread(target=inject,args=(feed,(480,730)[idx]),daemon=True).start()
         threading.Thread(target=observe,args=(monitor,idx),daemon=True).start()
-    client=stack.enter_context(child([root/"rust-client/target/debug/untethered-iced"],env))
+    prefix=[]
+    if network_ports:
+        from qa_rtc_link import desktop_network
+        prefix,outage=desktop_network(stack,network_ports)
+    client=stack.enter_context(child([*prefix,root/"rust-client/target/debug/untethered-iced"],env))
     def window():
         assert client.poll() is None,"desktop exited"
         return cmd("xdotool","search","--onlyvisible","--name","Untethered.*media-proof",text=True).stdout.strip()
@@ -159,7 +170,9 @@ def desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,*,incoming=Fa
         assert len(tracks)==2 and all(v==["GCM"] for v in tracks.values()) and {p.rsplit(":",1)[0] for p in tracks}=={alice,bob}, tracks
         print("Element accepted; Element measured 480 Hz on received WebRTC audio, desktop speaker monitor measured 960 Hz for 600 ms.",flush=True)
         print("LiveKit independently reports GCM on both microphone publications.",flush=True)
-        if devices:
+        if network_ports:
+            reconnect_call(page,widget,room,lambda:speakers[0],new_tone,outage,find,streams,secret,alice,bob)
+        elif devices:
             def select(port,option):
                 # Click the actual pick list next to the label; then click a
                 # matching item in its overlay (not the other closed pick list).
@@ -195,7 +208,7 @@ def desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,*,incoming=Fa
             received.clear()
             assert received.wait(3)
             print("Both tones still present past the original 60-second membership expiry.",flush=True)
-        if devices:widget.get_by_role("button",name="End call",exact=True).click(timeout=8000)
+        if devices or network_ports:widget.get_by_role("button",name="End call",exact=True).click(timeout=8000)
         else:click("Hang")
         wait_for("desktop and Element left DM call",lambda:roster()==[],22)
         wait_for("desktop released both audio devices",lambda:not streams("source-outputs") and not streams("sink-inputs"))
@@ -212,6 +225,65 @@ def desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,*,incoming=Fa
                 .getLiveTimeline().getEvents().filter(e=>e.getType().includes("notification")||e.getType().includes("decline"))
                 .map(e=>[e.getType(),e.getContent().notification_type,e.getContent()["m.call.intent"],e.getWireType()])""",room),flush=True)
         raise
+
+
+def reconnect_call(page,widget,room,speaker,new_tone,outage,find,streams,secret,alice,bob):
+    def matrix():
+        return page.evaluate("""room=>{const c=window.mxMatrixClientPeg.get(), r=c.getRoom(room);
+          return [c.matrixRTC.getRoomSession(r).memberships.map(m=>[m.userId,m.deviceId,m.memberId]).sort(),
+            r.getLiveTimeline().getEvents().filter(e=>e.getType()==='org.matrix.msc4075.rtc.notification' &&
+              e.getContent().notification_type==='ring').map(e=>e.getId())]}""",room)
+    members,rings=matrix()
+    assert len(rings)==1 and len(members)==2 and {m[0] for m in members}=={alice,bob}
+    expected={m[0]+":"+m[1] for m in members}
+    before=sfu_participants(secret)
+    assert len(before)==2 and {p["identity"] for p in before}==expected
+    assert all([t.get("encryption") for t in p.get("tracks",[])]==["GCM"] for p in before)
+    page.evaluate("""room=>{const c=window.mxMatrixClientPeg.get(),s=c.matrixRTC.getRoomSession(c.getRoom(room));
+        const snapshot=()=>s.memberships.map(m=>[m.userId,m.deviceId,m.memberId]).sort();
+        const before=JSON.stringify(snapshot());window.qaRosterChanged=false;
+        s.on("memberships_changed",()=>{if(JSON.stringify(snapshot())!==before)window.qaRosterChanged=true;});
+    }""",room)
+    def check_rosters():
+        assert not page.evaluate("window.qaRosterChanged"),"MatrixRTC roster changed during the outage"
+        assert matrix()==[members,rings],"Matrix participant or ring count changed"
+        peers=sfu_participants(secret)
+        ids=[p["identity"] for p in peers]
+        assert set(ids)<=expected and len(set(ids))==len(ids),"unexpected or duplicate SFU participant"
+        return peers
+    def stats():return widget.evaluate("window.qaAudioStats()")
+    initial=stats()
+    assert initial["run480"] and speaker()[1]>0
+    start=time.monotonic()
+    with outage():
+        def silent():
+            check_rosters()
+            return stats()["quiet"]>=12 and speaker()[2]>=12
+        wait_for("both clients lost audio after cable cut",silent,10)
+        wait_for("Linux reconnect indication",lambda:find("Reconnecting"),9)
+        frozen=stats()["packets"]
+        new_tone.set()
+        while time.monotonic()-start<6.5:
+            check_rosters()
+            assert stats()["packets"]==frozen and stats()["hits730"]==0
+            page.wait_for_timeout(200)
+        assert stats()["packets"]==frozen,"inbound audio packets continued during outage"
+        assert not streams("source-outputs") and not streams("sink-inputs")
+        print("Link down: both outputs silent, RTP stopped, desktop showed Reconnecting and released audio devices; switched test mic to 730 Hz.",flush=True)
+    restored=time.monotonic()
+    print(f"Restored desktop link after {restored-start:.1f} s; no user action on either client.",flush=True)
+    first=speaker()[0]
+    def recovered():
+        peers=check_rosters()
+        s=stats()
+        if len(peers)!=2 or s["run730"]<12 or min(speaker()[0]-first,speaker()[1])<12:return False
+        return all([t.get("encryption") for t in p.get("tracks",[])]==["GCM"] for p in peers)
+    wait_for("two encrypted tones recovered without redial",recovered,42)
+    wait_for("Linux call bar connected again",lambda:find("Connected"),5)
+    assert matrix()==[members,rings]
+    assert len(streams("source-outputs"))==len(streams("sink-inputs"))==1
+    print(f"Recovered in {time.monotonic()-restored:.1f} s: new 730 Hz at Element, fresh 960 Hz at desktop for 1.2 s; "
+          "two GCM microphones, two original Matrix devices, exactly one ring.",flush=True)
 
 
 def continuity(widget,secret,sockets,alice,bob):

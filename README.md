@@ -100,6 +100,11 @@ independently. Each starts on **System default**. Switching affects only this
 call, keeps its encrypted tracks connected, and preserves mute/deafen.
 **Refresh devices** updates the list after plugging in or removing a device.
 
+During a brief network interruption, the Linux call bar shows **Reconnecting**
+and releases the audio devices. If both devices are still in the same Matrix
+call when connectivity returns, encrypted audio resumes automatically. Once
+membership has expired, starting another call requires a new **Voice call**.
+
 The [desktop call tests](experiments/rtc-audio/README.md) drive both clients'
 actual call controls and measure audio through isolated Linux devices.
 
