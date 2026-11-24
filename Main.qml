@@ -567,19 +567,41 @@ ApplicationWindow {
                 visible: chat.selected !== ""
                 Layout.fillWidth: true
                 Layout.margins: 16
-                TextField {
-                    id: composer
+                ScrollView {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 44
-                    leftPadding: 12
-                    background: Rectangle {
-                        radius: 9
-                        color: window.fieldSurface
-                        border.color: composer.activeFocus ? window.accent : window.divider
+                    Layout.preferredHeight: Math.max(44, Math.min(168, composer.implicitHeight))
+                    contentWidth: availableWidth
+                    ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                    ScrollBar.vertical.policy: ScrollBar.AsNeeded
+
+                    TextArea {
+                        id: composer
+                        leftPadding: 12
+                        rightPadding: 16
+                        topPadding: 10
+                        bottomPadding: 10
+                        wrapMode: TextEdit.Wrap
+                        textFormat: TextEdit.PlainText
+                        background: Rectangle {
+                            radius: 9
+                            color: window.fieldSurface
+                            border.color: composer.activeFocus ? window.accent : window.divider
+                        }
+                        placeholderText: chat.roomName ? "Message " + chat.roomName : "Write a message"
+                        Accessible.name: placeholderText
+                        enabled: chat.ready
+
+                        Keys.onPressed: event => {
+                            const enter = event.key === Qt.Key_Return || event.key === Qt.Key_Enter
+                            if (!enter || composer.inputMethodComposing
+                                    || (event.modifiers & ~Qt.KeypadModifier) !== Qt.NoModifier)
+                                return
+
+                            event.accepted = true
+                            if (!event.isAutoRepeat && sendButton.enabled)
+                                sendButton.clicked()
+                        }
                     }
-                    placeholderText: chat.roomName ? "Message " + chat.roomName : "Write a message"
-                    enabled: chat.ready
-                    onAccepted: sendButton.clicked()
                 }
                 Button {
                     id: sendButton
