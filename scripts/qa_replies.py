@@ -15,10 +15,10 @@ from qa_native_paste import child,isolated_env,start_display,wait_for
 from qa_upload_cancel import slow_gateway
 
 
-def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False):
+def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False,room_search=False):
     paths=[]
     def observe(method,path):
-        if method=="GET" and "/context/" in path:paths.append(unquote(path))
+        if room_search or method=="GET" and "/context/" in path:paths.append(unquote(path))
     with ExitStack() as stack:
         proxy,_=stack.enter_context(slow_gateway(hs,port,observe_path=observe))
         native,hdr=seed(tmp,proxy)
@@ -73,6 +73,15 @@ def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False):
                 print("Native visible words:",[w for w,_,_ in words()],flush=True);raise
         def click(pos):x("mousemove","--window",win,*map(str,pos),"click","1")
         def lines(words,label):return [(x,y) for v,x,y in words if v==label and x>280]
+        if room_search:
+            from qa_room_search import check_room_search
+            def restart_native():
+                nonlocal win
+                native_life.close()
+                win=launch()
+            check_room_search(tmp,hs,page,room,native,hdr,http,messages,restart_native,words,locate,click,
+                              lambda *args:x(*[win if arg=="WIN" else arg for arg in args]),paths)
+            return
         if reactions:
             from qa_reactions import check_reactions
             def restart():

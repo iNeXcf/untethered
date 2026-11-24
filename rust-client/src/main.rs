@@ -22,6 +22,7 @@ mod preview;
 mod reactions;
 mod replies;
 mod rooms;
+mod search;
 mod transfers;
 mod view;
 #[cfg(target_os = "linux")]
@@ -128,6 +129,14 @@ enum Msg {
     Jump(String),
     Latest,
     Preceding,
+    OpenSearch,
+    SearchReady(String, search::Bookmark),
+    SearchInput(String),
+    RunSearch(bool),
+    SearchCoverage,
+    SearchHit(String),
+    SearchResults,
+    ReturnToReading,
     More,
     Copy,
     TogglePeople,
@@ -177,6 +186,7 @@ enum Request {
     Context(String, String),
     Edit(String, String),
     Reaction(reactions::Toggle),
+    Search(String, search::Page),
 }
 struct App {
     #[cfg(target_os = "linux")]
@@ -207,6 +217,7 @@ struct App {
     drafts: BTreeMap<String, String>,
     reply_drafts: BTreeMap<String, rooms::Quote>,
     original: Option<replies::Original>,
+    search: Option<search::Search>,
     editing: Option<edits::Editing>,
     reaction_picker: Option<reactions::Picker>,
     editor: text_editor::Content,
@@ -274,6 +285,7 @@ impl App {
             drafts: Default::default(),
             reply_drafts: Default::default(),
             original: None,
+            search: None,
             editing: None,
             reaction_picker: None,
             editor: text_editor::Content::new(),
@@ -363,6 +375,7 @@ impl App {
             return;
         }
         self.close_original();
+        self.clear_search();
         self.editing = None;
         self.drafts
             .insert(self.selected.clone(), self.editor.text());
@@ -536,6 +549,7 @@ impl App {
                     }
                     self.pending.retain(|_, p| matches!(p, Request::Login));
                     self.drafts.clear();
+                    self.clear_search();
                     self.reply_drafts.clear();
                     self.editing = None;
                     self.close_original();
@@ -562,6 +576,7 @@ impl App {
             "sync_complete" => {
                 if data["clear_state"] == true {
                     self.close_original();
+                    self.clear_search();
                     #[cfg(target_os = "linux")]
                     self.clear_ring();
                     self.loaded.clear();
@@ -682,6 +697,7 @@ impl App {
                         Request::Context(..)=>"Could not load the original message. Try again from the reply.",
                         Request::Edit(room,id)=>{self.finish_edit(f["request_id"].as_i64().unwrap(),&room,&id,&Value::Null);return}
                         Request::Reaction(op)=>{self.finish_reaction(op,&Value::Null);return}
+                        Request::Search(room,kind)=>{self.fail_search(&room,kind);return}
                     }
                     .into();
                     return;
@@ -718,6 +734,7 @@ impl App {
                     }
                     Request::Context(room, id) => self.show_context(room, id, data),
                     Request::Reaction(op) => self.finish_reaction(op, data),
+                    Request::Search(room, kind) => self.search_response(room, kind, data),
                     Request::Edit(room, id) => {
                         self.finish_edit(f["request_id"].as_i64().unwrap(), &room, &id, data)
                     }
@@ -1281,6 +1298,32 @@ impl App {
                 }
             }
             Msg::Draft(a) => self.editor.perform(a),
+            Msg::OpenSearch => return self.begin_search(),
+            Msg::SearchReady(room, b) => return self.search_ready(room, b),
+            Msg::SearchInput(input) => {
+                if let Some(s) = &mut self.search {
+                    s.input = input;
+                }
+            }
+            Msg::RunSearch(more) => self.submit_search(more),
+            Msg::SearchCoverage => {
+                self.start_coverage();
+                return operation::focus("room-search-input");
+            }
+            Msg::SearchHit(id) => {
+                if self
+                    .search
+                    .as_ref()
+                    .is_some_and(|s| s.room == self.selected && s.hits.iter().any(|h| h.id == id))
+                {
+                    self.jump(id);
+                    if self.original.is_some() {
+                        return self.anchor_history();
+                    }
+                }
+            }
+            Msg::SearchResults => self.close_original(),
+            Msg::ReturnToReading => return self.return_to_reading(),
             Msg::ReactionPicker(id) => {
                 if self.visible_post(&id).is_some_and(|p| p.reactable) {
                     self.reaction_picker = (!self
@@ -1345,6 +1388,9 @@ impl App {
                     .or_else(|| self.original.as_ref()?.slice.as_ref()?.quote(&id))
                 {
                     self.reply_drafts.insert(self.selected.clone(), q);
+                    if self.search.is_some() {
+                        return self.return_to_reading().chain(operation::focus("composer"));
+                    }
                     self.close_original();
                     return operation::focus("composer");
                 }

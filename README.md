@@ -47,6 +47,13 @@ is outside the loaded timeline, Untethered loads that part of the room’s
 history through gomuks. **Preceding messages** shows what led up to it, and
 **Back to latest** returns to the conversation.
 
+**Room search:** Click **Search** in the room header, enter a word or phrase,
+and press Enter. Results come from this device’s gomuks history and use the
+current text of edited messages. **Check coverage** shows the number of
+readable messages cached for this room and the oldest date it found. Open
+a result to see it in context. **Back to results** keeps your query;
+**Return to timeline** takes you back to where you were reading.
+
 **Edits:** Click **Edit** on one of your sent text messages or replies. Press
 Enter or **Save edit** to update it in place; **Cancel** or Escape discards
 the change. Editing leaves your unsent composer draft alone. An edited reply

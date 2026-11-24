@@ -1,5 +1,6 @@
 use super::{App, Msg, Request, Section, rooms::Room};
 mod reaction_bar;
+mod room_search;
 #[cfg(target_os = "linux")]
 mod video_wall;
 use chrono::{DateTime, Local};
@@ -622,6 +623,18 @@ impl App {
         ]
         .spacing(9)
         .align_y(Center);
+        let header = if self.logged_in && self.verified && room.is_some() {
+            header.push(
+                button(text("Search").size(13))
+                    .style(nav(self.search.is_some()))
+                    .on_press_maybe(
+                        (self.search.is_none() && self.original.is_none())
+                            .then_some(Msg::OpenSearch),
+                    ),
+            )
+        } else {
+            header
+        };
         #[cfg(target_os = "linux")]
         let header = if self.call.is_none()
             && self.verified
@@ -689,7 +702,18 @@ impl App {
                 container(text(&self.status).size(13).color(color!(0xffc785))).padding([5, 16]),
             );
         }
-        let body: El = if let Some(r) = room {
+        let body: El = if let Some(s) = &self.search
+            && self.original.is_none()
+            && let Some(r) = room
+        {
+            room_search::view(
+                s,
+                r,
+                self.pending
+                    .values()
+                    .any(|p| matches!(p, Request::Context(..))),
+            )
+        } else if let Some(r) = room {
             self.conversation(r)
         } else {
             container(
@@ -932,12 +956,21 @@ impl App {
             }
             if original.is_some_and(|c| Some(&c.event) == p.event_id.as_ref()) {
                 feed = feed.push(
-                    text("Original message")
-                        .size(13)
-                        .color(color!(0xa8b1ff))
-                        .font(BOLD),
+                    text(
+                        if self.search.as_ref().is_some_and(|s| {
+                            s.hits.iter().any(|h| Some(&h.id) == p.event_id.as_ref())
+                        }) {
+                            "Search match"
+                        } else {
+                            "Original message"
+                        },
+                    )
+                    .size(13)
+                    .color(color!(0xa8b1ff))
+                    .font(BOLD),
                 );
             }
+            let mut entry = Column::new().spacing(2);
             if group {
                 let info = row![
                     text(name).size(16).font(BOLD).color(TEXT),
@@ -947,7 +980,7 @@ impl App {
                 ]
                 .spacing(9)
                 .align_y(Center);
-                feed = feed.push(
+                entry = entry.push(
                     container(
                         row![
                             avatar(name, 36.),
@@ -958,7 +991,7 @@ impl App {
                     .padding([5, 0]),
                 );
             } else {
-                feed = feed.push(row![Space::new().width(36), message.width(Fill)].spacing(13));
+                entry = entry.push(row![Space::new().width(36), message.width(Fill)].spacing(13));
             }
             prev = Some((&p.sender, p.time, day));
             if let Some(file) = &p.media {
@@ -985,9 +1018,9 @@ impl App {
                         .style(nav(false))
                         .into()
                     };
-                    feed = feed.push(row![Space::new().width(36), preview].spacing(13));
+                    entry = entry.push(row![Space::new().width(36), preview].spacing(13));
                 }
-                feed = feed.push(
+                entry = entry.push(
                     row![
                         Space::new().width(36),
                         button(
@@ -1004,6 +1037,12 @@ impl App {
                     .spacing(13),
                 );
             }
+            let entry = container(entry).width(Fill);
+            feed = feed.push(if let Some(id) = &p.event_id {
+                entry.id(iced::widget::Id::from(format!("post-{id}")))
+            } else {
+                entry
+            });
         }
         let feed = scrollable(feed).height(Fill).id(self.timeline_id());
         let feed = if original.is_some() {
@@ -1024,10 +1063,22 @@ impl App {
                     .on_press(Msg::Preceding),
                 );
             }
-            let header = header
-                .push(button("Back to latest").on_press(Msg::Latest))
-                .spacing(5)
-                .align_y(Center);
+            let header = if self.search.is_some() {
+                header
+                    .push(
+                        button("Back to results")
+                            .style(nav(false))
+                            .on_press(Msg::SearchResults),
+                    )
+                    .push(
+                        button("Return to timeline")
+                            .style(nav(false))
+                            .on_press(Msg::ReturnToReading),
+                    )
+            } else {
+                header.push(button("Back to latest").on_press(Msg::Latest))
+            };
+            let header = header.spacing(5).align_y(Center);
             viewport = viewport.push(container(header).padding([4, 16]));
         }
         if self

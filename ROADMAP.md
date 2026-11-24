@@ -155,6 +155,13 @@
   again, both showed 1 and only Element still owned the reaction. Synapse
   confirmed no reactions targeted the replacement, quoted message or sibling reply.
 
+- **Room-scoped local message search:** The [Linux desktop search test](scripts/room-search.md)
+  found an edited encrypted reply after restart with 150 newer messages.
+  The old wording no longer matched, and a matching message cached in another
+  encrypted room did not appear. Only opening the result fetched its context,
+  using the base reply ID. **Return to timeline** restored the same message
+  at the same pixel position after three arrivals and a five-line edit above it.
+
 ## What parity means
 
 A small community should be able to move its everyday conversations here: find a server and its channels, talk in DMs, drop a screenshot, join friends in voice, share a screen, catch up on mentions, and moderate its space. Test those workflows side by side with Discord. A button that looks right but doesn't work with another Matrix client isn't parity.
