@@ -1077,6 +1077,41 @@ ApplicationWindow {
                                 (() => {
                                     const frame = document.querySelector(".right-panel-content.element-call iframe");
                                     const widget = frame?.contentDocument;
+                                    if (!widget) return {};
+
+                                    // A spotlight and its inset can render the same camera track.
+                                    // Keep the larger tile and leave distinct tracks alone, even for the same account.
+                                    const primaryTile = new Map();
+                                    const duplicateTiles = new Set();
+                                    for (const video of widget.querySelectorAll('video[data-source="camera"]')) {
+                                        const track = video.srcObject?.getVideoTracks?.()[0];
+                                        const tile = video.closest('[data-testid="videoTile"]');
+                                        if (!track || !tile) continue;
+                                        if (!tile.getClientRects().length) continue;
+                                        const rect = tile.getBoundingClientRect();
+                                        const area = rect.width * rect.height;
+                                        if (!area) continue;
+                                        const primary = primaryTile.get(track.id);
+                                        if (!primary) primaryTile.set(track.id, {tile, area});
+                                        else if (primary.tile !== tile && area > primary.area) {
+                                            duplicateTiles.add(primary.tile);
+                                            primaryTile.set(track.id, {tile, area});
+                                        } else if (primary.tile !== tile) duplicateTiles.add(tile);
+                                    }
+                                    let style = widget.getElementById("untethered-duplicate-video-style");
+                                    if (!style) {
+                                        style = widget.createElement("style");
+                                        style.id = "untethered-duplicate-video-style";
+                                        style.textContent = "[data-untethered-duplicate-video] { visibility: hidden !important; }";
+                                        widget.head.append(style);
+                                    }
+                                    for (const tile of widget.querySelectorAll("[data-untethered-duplicate-video]")) {
+                                        if (!duplicateTiles.has(tile))
+                                            tile.removeAttribute("data-untethered-duplicate-video");
+                                    }
+                                    for (const tile of duplicateTiles)
+                                        tile.setAttribute("data-untethered-duplicate-video", "");
+
                                     const ids = {
                                         microphone: "incall_mute",
                                         camera: "incall_videomute",
