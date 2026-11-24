@@ -34,6 +34,11 @@ No desktop gomuks process or proxy is needed. Its Matrix device lives in the
 browser's origin-private storage, independently of the desktop profile. Use a
 modern browser at `localhost` or an HTTPS origin.
 
+Only one tab can use the browser device at once. Another tab waits and connects
+automatically when the active tab closes. If upgrading from an older build that
+reported “worker stopped,” close the old tabs and reopen the same URL. Keep the
+site data: that’s where the device’s encryption keys live.
+
 ```sh
 rustup target add wasm32-unknown-unknown
 # Requires Trunk, wasm-bindgen-cli matching Cargo.lock, Node/npm, Go and Git.

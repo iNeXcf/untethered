@@ -4,6 +4,49 @@ use serde_json::{Value, json};
 use wasm_bindgen::{JsCast, closure::Closure};
 use web_sys::{ErrorEvent, MessageEvent, Worker, WorkerOptions, WorkerType};
 
+// Report a category, not arbitrary exception text (which can contain URLs
+// and homeserver data). Go exit codes are from StartClientWithoutExit.
+fn worker_failure(reason: &str, phase: &str) -> String {
+    let s = reason.to_ascii_lowercase();
+    let hint = if s.contains("nomodificationallowederror")
+        || s.contains("another open access handle")
+    {
+        "The browser database is in use. Close older Untethered tabs or windows, then reload this one."
+    } else if s.contains("quotaexceedederror") {
+        "The browser ran out of storage. Free disk space, then reload."
+    } else if s.contains("required opfs")
+        || s.contains("too old for opfs")
+        || s.contains("web locks api unavailable")
+    {
+        "This browser lacks the local file storage or locking features gomuks requires. Use a current browser on HTTPS or localhost."
+    } else if s.contains("securityerror")
+        || s.contains("notallowederror")
+        || s.contains("access is denied")
+    {
+        "Browser storage access was denied. Allow site storage for this origin, then reload."
+    } else if s.contains("fetch")
+        || s.contains("mime")
+        || s.contains("networkerror")
+        || s.contains("compileerror")
+    {
+        "A backend file could not be loaded. Hard-refresh this tab to fetch the current web build."
+    } else if s.contains("go process exited (10)") {
+        "gomuks could not open the local database (exit 10)."
+    } else if s.contains("go process exited (11)") {
+        "gomuks could not read the stored account (exit 11)."
+    } else if s.contains("go process exited (12)") {
+        "gomuks could not start the saved Matrix session (exit 12). Check that the homeserver is reachable from this browser, then reload."
+    } else if s.contains("runtimeerror")
+        || s.contains("out of memory")
+        || s.contains("go process exited (2)")
+    {
+        "The WebAssembly backend crashed. Reload this tab to retry."
+    } else {
+        "The browser backend exited unexpectedly. Reload this tab to retry."
+    };
+    format!("{hint} [web: {phase}]")
+}
+
 pub async fn run(commands: Commands, events: Events) -> Result<(), String> {
     let options = WorkerOptions::new();
     options.set_type(WorkerType::Module);
@@ -19,12 +62,15 @@ pub async fn run(commands: Commands, events: Events) -> Result<(), String> {
             .ok_or("Invalid worker frame.");
         let _ = in_tx.try_send(result);
     });
-    let error = Closure::<dyn FnMut(ErrorEvent)>::new(move |_| {
-        let _ = errors.try_send(Err("gomuks worker failed to load."));
+    let error = Closure::<dyn FnMut(ErrorEvent)>::new(move |event: ErrorEvent| {
+        let _ = errors.try_send(Ok(
+            json!({"command":"wasm-connection","data":{"connected":false,"error":event.message()}}),
+        ));
     });
     worker.set_onmessage(Some(receive.as_ref().unchecked_ref()));
     worker.set_onerror(Some(error.as_ref().unchecked_ref()));
     let result = async {
+        let mut phase = "worker startup";
         loop {
             select! {
                 message = incoming.recv().fuse() => {
@@ -32,8 +78,15 @@ pub async fn run(commands: Commands, events: Events) -> Result<(), String> {
                     if let Some(data) = frame["data"].as_str() {
                         frame["data"] = serde_json::from_str(data).map_err(|_| "Invalid worker data.")?;
                     }
-                    if frame["command"] == "wasm-connection" && frame["data"]["connected"] == false {
-                        return Err("gomuks worker stopped. Check browser storage permissions and reload.".into());
+                    match frame["command"].as_str() {
+                        Some("profile-waiting") => phase = "waiting for another tab",
+                        Some("profile-opening") => phase = "opening browser storage",
+                        Some("wasm-connection") if frame["data"]["connected"] == false => {
+                            return Err(worker_failure(frame["data"]["error"].as_str().unwrap_or(""),phase));
+                        }
+                        Some("wasm-connection") if frame["data"]["connected"] == true => phase = "loading Matrix session",
+                        Some("client_state") => phase = "running",
+                        _ => {}
                     }
                     if events.send(frame).await.is_err() { return Ok(()); }
                 }
@@ -46,6 +99,8 @@ pub async fn run(commands: Commands, events: Events) -> Result<(), String> {
             }
         }
     }.await;
+    worker.set_onmessage(None);
+    worker.set_onerror(None);
     worker.terminate();
     result
 }

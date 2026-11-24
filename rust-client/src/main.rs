@@ -289,6 +289,14 @@ impl App {
     fn frame(&mut self, f: Value) {
         let data = &f["data"];
         match f["command"].as_str().unwrap_or("") {
+            #[cfg(target_arch = "wasm32")]
+            "profile-waiting" => {
+                self.status = "Another Untethered tab is using this Matrix device. Use that tab, or close it and this one will connect automatically.".into();
+            }
+            #[cfg(target_arch = "wasm32")]
+            "profile-opening" => {
+                self.status = "Opening your browser’s Matrix device…".into();
+            }
             "client_state" => {
                 let was = self.logged_in;
                 self.connected = true;
