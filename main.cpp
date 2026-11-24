@@ -32,6 +32,7 @@ class Chat : public QObject {
     Q_PROPERTY(QUrl callUrl MEMBER callUrl NOTIFY callControlsChanged)
     Q_PROPERTY(QString callRoomName MEMBER callRoomName NOTIFY callControlsChanged)
     Q_PROPERTY(QString callTransportStatus MEMBER callTransportStatus NOTIFY callControlsChanged)
+    Q_PROPERTY(QStringList callParticipants MEMBER callParticipants NOTIFY callParticipantsChanged)
     Q_PROPERTY(QString imageUploadRoom MEMBER imageUploadRoom NOTIFY changed)
     Q_PROPERTY(bool verified MEMBER verified NOTIFY changed)
     Q_PROPERTY(QString status MEMBER status NOTIFY changed)
@@ -51,6 +52,8 @@ public:
             key += QByteArray::number(QRandomGenerator::system()->generate(), 16).rightJustified(8, '0');
         http.setProxy(QNetworkProxy::NoProxy);
         socket.setProxy(QNetworkProxy::NoProxy);
+        callMembersTimer.setInterval(6000);
+        connect(&callMembersTimer, &QTimer::timeout, this, &Chat::refreshCallParticipants);
         connect(&process, &QProcess::readyReadStandardOutput, this, &Chat::readStartup);
         connect(&process, &QProcess::readyReadStandardError, this, [this] { process.readAllStandardError(); });
         connect(&process, &QProcess::errorOccurred, this, [this](auto) { setStatus("Could not start the local gomuks backend."); });
@@ -70,6 +73,7 @@ public:
             ping.stop();
             ready = false;
             pending.clear();
+            callMemberRequest = 0;
             if (callTransportRequest != 0)
                 finishCallTransportDiscovery(tr("Could not check the homeserver’s MatrixRTC transport."));
             logoutRequest = 0;
@@ -190,13 +194,22 @@ public:
             query += "&updateTo=" + QUrl::toPercentEncoding(frontendETag);
         callUrl.setQuery(QString::fromLatin1(query));
         callRoomName = roomName;
+        callRoomId = selected;
         discoverCallTransports();
+        refreshCallParticipants();
+        callMembersTimer.start();
     }
 
     Q_INVOKABLE void closeCall() {
         if (callUrl.isEmpty()) return;
         callUrl.clear();
         callRoomName.clear();
+        callRoomId.clear();
+        callMembersTimer.stop();
+        callMemberRequest = 0;
+        callStickyMembers = {};
+        callParticipants.clear();
+        emit callParticipantsChanged();
         callTransports.clear();
         callTransportRequest = 0;
         callTransportStatus.clear();
@@ -406,8 +419,89 @@ signals:
     void olderMessagesLoading();
     void imageSent(const QString &room);
     void callControlsChanged();
+    void callParticipantsChanged();
 
 private:
+    void requestCallMembers(const QString &command) {
+        const int request = callMemberRequest = transmit(command, {{"room_id", callRoomId}});
+        QTimer::singleShot(5000, this, [this, request] {
+            if (callMemberRequest == request) callMemberRequest = 0;
+        });
+    }
+
+    void refreshCallParticipants() {
+        if (!ready || loggingOut() || callRoomId.isEmpty() || callMemberRequest != 0) return;
+        callStickyMembers = {};
+        waitingForCallState = false;
+        requestCallMembers("get_sticky_events");
+    }
+
+    void readCallParticipants(const QJsonArray &legacyState) {
+        const auto now = QDateTime::currentMSecsSinceEpoch();
+        QMap<QString, QMap<QString, QJsonObject>> latest;
+        for (const auto &entry : callStickyMembers) {
+            const auto event = entry.toObject();
+            const auto type = event["type"].toString();
+            if ((type != "m.rtc.member" && type != "org.matrix.msc4143.rtc.member")
+                || !event["redacted_by"].toString().isEmpty()) continue;
+            const auto sender = event["sender"].toString();
+            const auto content = event["content"].toObject();
+            const auto id = content["member"].toObject()["id"].toString();
+            const auto slot = content["slot_id"].toString();
+            if (sender.isEmpty() || id.isEmpty() || (slot != "m.call#room" && slot != "m.call#ROOM")) continue;
+            auto &current = latest[sender][id];
+            const auto stamp = event["timestamp"].toInteger();
+            if (current.isEmpty() || stamp > current["timestamp"].toInteger()
+                || (stamp == current["timestamp"].toInteger()
+                    && event["event_id"].toString() > current["event_id"].toString()))
+                current = event;
+        }
+
+        QSet<QString> participants;
+        for (auto user = latest.cbegin(); user != latest.cend(); ++user) {
+            for (const auto &event : user.value()) {
+                const auto member = event["content"].toObject()["member"].toObject();
+                const auto duration = event["sticky_duration_ms"].toInteger();
+                const auto timestamp = event["timestamp"].toInteger();
+                if (member["membership"].toString() == "join" && duration > 0 && timestamp > 0
+                    && duration > now - timestamp) {
+                    participants.insert(user.key());
+                    break;
+                }
+            }
+        }
+
+        for (const auto &entry : legacyState) {
+            const auto event = entry.toObject();
+            const auto type = event["type"].toString();
+            if ((type != "org.matrix.msc3401.call.member" && type != "m.call.member")
+                || !event["redacted_by"].toString().isEmpty()) continue;
+            const auto sender = event["sender"].toString();
+            const auto content = event["content"].toObject();
+            const auto duration = content["expires"].toInteger(4 * 60 * 60 * 1000);
+            const auto created = content["created_ts"].toInteger(event["timestamp"].toInteger());
+            if (!sender.isEmpty() && content["application"].toString() == "m.call"
+                && content["call_id"].toString().isEmpty() && !content["device_id"].toString().isEmpty()
+                && duration > 0 && created > 0 && duration > now - created)
+                participants.insert(sender);
+        }
+
+        QStringList names;
+        const auto profiles = roomProfiles.value(callRoomId);
+        for (const auto &user : participants) {
+            const auto member = profiles.value(user);
+            const auto membership = member["membership"].toString();
+            if (!membership.isEmpty() && membership != "join") continue;
+            const auto name = member["displayname"].toString();
+            names.append(name.isEmpty() ? user : name);
+        }
+        names.sort(Qt::CaseInsensitive);
+        if (names != callParticipants) {
+            callParticipants = names;
+            emit callParticipantsChanged();
+        }
+    }
+
     void discoverCallTransports() {
         callTransports.clear();
         const int request = callTransportRequest = transmit("get_rtc_transports", {});
@@ -619,6 +713,19 @@ private:
                 }
                 return;
             }
+            if (callMemberRequest != 0 && id == callMemberRequest) {
+                callMemberRequest = 0;
+                const auto events = frame["data"].toArray();
+                if (waitingForCallState) {
+                    if (name == "response" || !callStickyMembers.isEmpty())
+                        readCallParticipants(events);
+                } else {
+                    callStickyMembers = events;
+                    waitingForCallState = true;
+                    requestCallMembers("get_room_state");
+                }
+                return;
+            }
             if (callTransportRequest != 0 && id == callTransportRequest) {
                 if (name == "error" || !data["rtc_transports"].isArray())
                     finishCallTransportDiscovery(tr("Could not check the homeserver’s MatrixRTC transport."));
@@ -685,6 +792,7 @@ private:
             const auto edges = data["space_edges"].toObject();
             for (auto it = edges.begin(); it != edges.end(); ++it) spaces.insert(it.key(), it.value());
             for (const auto &room : data["left_rooms"].toArray()) {
+                if (callRoomId == room.toString()) closeCall();
                 rooms.remove(room.toString());
                 history.remove(room.toString());
                 roomProfiles.remove(room.toString());
@@ -715,7 +823,12 @@ private:
     QWebSocket socket;
     QUrl callUrl;
     QString frontendETag;
-    QString callRoomName, callTransportStatus;
+    QString callRoomName, callRoomId, callTransportStatus;
+    QTimer callMembersTimer;
+    int callMemberRequest = 0;
+    bool waitingForCallState = false;
+    QJsonArray callStickyMembers;
+    QStringList callParticipants;
     QList<QUrl> callTransports;
     int callTransportRequest = 0;
     QTimer startup, ping;

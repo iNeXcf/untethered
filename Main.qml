@@ -1175,6 +1175,38 @@ ApplicationWindow {
                             }
                         }
 
+                        ListView {
+                            id: callMembers
+                            visible: count > 0
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 34
+                            Layout.leftMargin: 10
+                            Layout.rightMargin: 10
+                            clip: true
+                            orientation: ListView.Horizontal
+                            spacing: 6
+                            model: chat.callParticipants
+                            Accessible.name: "Call participants"
+                            delegate: Rectangle {
+                                required property string modelData
+                                width: Math.min(220, participantName.implicitWidth + 18)
+                                height: 27
+                                radius: 7
+                                color: window.activeSurface
+                                Label {
+                                    id: participantName
+                                    anchors.fill: parent
+                                    anchors.leftMargin: 9
+                                    anchors.rightMargin: 9
+                                    text: parent.modelData
+                                    textFormat: Text.PlainText
+                                    elide: Text.ElideRight
+                                    verticalAlignment: Text.AlignVCenter
+                                }
+                            }
+                            ScrollBar.horizontal: ScrollBar {}
+                        }
+
                         Label {
                             text: chat.callTransportStatus
                             visible: text !== ""
