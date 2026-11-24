@@ -60,8 +60,15 @@
   Clicking **Hang up** in Iced emptied the Element roster and released both
   audio streams. Replay with `run_element.sh --desktop-dm` in
   [the RTC test guide](experiments/rtc-audio/README.md). Input/output were
-  private PulseAudio devices. Element-initiated calls into Iced, physical
-  hardware, mute/deafen, device selection and TURN-only calls are still open.
+  private PulseAudio devices.
+- **Incoming Linux desktop DM call:** `run_element.sh --incoming-dm` starts
+  two calls from Element. On the first, Iced rang audibly and **Decline**
+  delivered one encrypted decline referencing the invitation; no capture
+  stream opened. On the second, **Accept** opened one microphone, transmitted
+  480 Hz to Element and played Element’s 960 Hz. LiveKit reported GCM on
+  both audio tracks. Hanging up in Element cleared both devices and released
+  desktop audio. Physical hardware, mute/deafen, device selection, recovery
+  after disconnect and TURN-only calls remain open.
 
 ## What parity means
 

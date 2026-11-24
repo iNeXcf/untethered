@@ -7,6 +7,8 @@ mod browser_verification;
 mod desktop_call;
 #[cfg(not(target_arch = "wasm32"))]
 mod fonts;
+#[cfg(target_os = "linux")]
+mod incoming;
 mod inline;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod live_test;
@@ -73,6 +75,10 @@ enum Msg {
     VoiceCall,
     #[cfg(target_os = "linux")]
     EndCall,
+    #[cfg(target_os = "linux")]
+    DecideRing(String, bool),
+    #[cfg(target_os = "linux")]
+    RingExpired(String),
     Frame(Value),
     Stopped(String),
     Section(Section),
@@ -110,6 +116,10 @@ impl std::fmt::Debug for Msg {
     }
 }
 enum Request {
+    #[cfg(target_os = "linux")]
+    RingState(incoming::Offer),
+    #[cfg(target_os = "linux")]
+    DeclineSent,
     Upload(String, u64),
     MediaSend(String, u64),
     Download,
@@ -123,6 +133,8 @@ enum Request {
     Send(String, String),
 }
 struct App {
+    #[cfg(target_os = "linux")]
+    inbox: incoming::Inbox,
     #[cfg(target_os = "linux")]
     call: Option<(String, String, Sender<()>)>,
     #[cfg(target_os = "linux")]
@@ -184,6 +196,8 @@ impl App {
         Self {
             #[cfg(target_os = "linux")]
             call: None,
+            #[cfg(target_os = "linux")]
+            inbox: Default::default(),
             #[cfg(target_os = "linux")]
             drop_epoch: 0,
             #[cfg(not(target_arch = "wasm32"))]
@@ -400,6 +414,10 @@ impl App {
                 self.connected = true;
                 self.logged_in = data["is_logged_in"] == true;
                 self.verified = data["is_verified"] == true;
+                #[cfg(target_os = "linux")]
+                if !self.verified {
+                    self.clear_ring();
+                }
                 let vs = &data["verification_state"];
                 self.recovery_unavailable = vs["state_checked"] == true && vs["has_ssss"] == false;
                 if self.verified || !self.logged_in {
@@ -446,6 +464,8 @@ impl App {
             }
             "sync_complete" => {
                 if data["clear_state"] == true {
+                    #[cfg(target_os = "linux")]
+                    self.clear_ring();
                     self.loaded.clear();
                     self.selected.clear();
                     self.pending
@@ -454,6 +474,10 @@ impl App {
                 self.live.sync(data);
                 if let Some(rooms) = data["rooms"].as_object() {
                     for (room, delta) in rooms {
+                        #[cfg(target_os = "linux")]
+                        if data["clear_state"] != true && data["catchup"] != true {
+                            self.ring_events(room, delta, false);
+                        }
                         if self.outbox.rooms.contains_key(room) {
                             for e in items(&delta["events"]).filter(|e| rooms::server_confirmed(e))
                             {
@@ -463,6 +487,15 @@ impl App {
                     }
                 }
                 for left in items(&data["left_rooms"]).filter_map(Value::as_str) {
+                    #[cfg(target_os = "linux")]
+                    if self
+                        .inbox
+                        .ringing
+                        .as_ref()
+                        .is_some_and(|(i, _)| i.room == left)
+                    {
+                        self.clear_ring()
+                    }
                     self.outbox.rooms.remove(left);
                     self.pending.retain(|_,p|!matches!(p,Request::Upload(room,_)|Request::MediaSend(room,_) if room==left));
                     if self.batch.as_ref().is_some_and(|b| b.room == left) {
@@ -472,6 +505,10 @@ impl App {
                 self.reconcile();
             }
             "events_decrypted" => {
+                #[cfg(target_os = "linux")]
+                if let Some(room) = data["room_id"].as_str() {
+                    self.ring_events(room, data, true);
+                }
                 for e in items(&data["events"]) {
                     self.live.event(&data["room_id"], e);
                 }
@@ -499,6 +536,10 @@ impl App {
                 };
                 if f["command"] == "error" {
                     self.status = match p {
+                        #[cfg(target_os="linux")]
+                        Request::RingState(i)=>{self.present_ring(i,&Value::Null);return}
+                        #[cfg(target_os="linux")]
+                        Request::DeclineSent=>"Could not notify the caller that you declined.",
                         Request::MediaSend(ref room,id) if data.as_str()==Some("event was already sent successfully") &&
                             self.outbox.get_mut(room,id).is_some_and(|a|a.txn.is_some()) => {
                             self.finish_delivery(room,id,true);return
@@ -530,6 +571,10 @@ impl App {
                     return;
                 }
                 match p {
+                    #[cfg(target_os = "linux")]
+                    Request::RingState(i) => self.present_ring(i, data),
+                    #[cfg(target_os = "linux")]
+                    Request::DeclineSent => self.status = "Call declined.".into(),
                     Request::MediaConfig => {
                         if let Some(n) = data["m.upload.size"].as_u64().filter(|n| *n > 0) {
                             self.media_limit = media::MAX_BYTES.min(n);
@@ -550,9 +595,7 @@ impl App {
                             })
                             .count();
                         self.rtc_status = if n > 0 {
-                            format!(
-                                "Found {n} LiveKit call transport(s). Audio interoperability is not tested yet."
-                            )
+                            format!("Found {n} LiveKit call transport(s).")
                         } else {
                             "No supported LiveKit transport advertised by this endpoint.".into()
                         };
@@ -657,6 +700,7 @@ impl App {
                 #[cfg(target_os = "linux")]
                 {
                     self.call = None;
+                    self.clear_ring();
                 }
                 self.stopped = true;
                 self.connected = false;
@@ -676,6 +720,8 @@ impl App {
             Msg::Close => {
                 self.closing = true;
                 #[cfg(target_os = "linux")]
+                self.clear_ring();
+                #[cfg(target_os = "linux")]
                 if let Some((_, _, cancel)) = &self.call {
                     cancel.close();
                     return Task::none();
@@ -686,7 +732,25 @@ impl App {
                 }
             }
             #[cfg(target_os = "linux")]
-            Msg::VoiceCall if self.call.is_none() && self.verified && self.connected => {
+            Msg::DecideRing(id, accept) => self.decide_ring(&id, accept),
+            #[cfg(target_os = "linux")]
+            Msg::RingExpired(id) => {
+                if self
+                    .inbox
+                    .ringing
+                    .as_ref()
+                    .is_some_and(|(i, _)| i.event == id)
+                {
+                    self.clear_ring();
+                }
+            }
+            #[cfg(target_os = "linux")]
+            Msg::VoiceCall
+                if self.call.is_none()
+                    && self.inbox.ringing.is_none()
+                    && self.verified
+                    && self.connected =>
+            {
                 if let Some(peer) = self
                     .live
                     .list
@@ -702,6 +766,7 @@ impl App {
                             room: room.clone(),
                             peer,
                             cancel: rx,
+                            incoming: None,
                         })
                         .is_ok()
                     {
@@ -1022,11 +1087,14 @@ impl App {
                 doc.set_title(&title);
             }
         }
-        if refresh_inline {
+        let task = if refresh_inline {
             self.schedule_inline()
         } else {
             Task::none()
-        }
+        };
+        #[cfg(target_os = "linux")]
+        let task = Task::batch([task, self.start_ringtone()]);
+        task
     }
     fn title(&self) -> String {
         let page = if self.account || self.logged_in && !self.verified {

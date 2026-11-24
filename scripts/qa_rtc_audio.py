@@ -51,7 +51,7 @@ extra_well_known_client_content:
     return name,listen,settings,jwt
 
 
-def test(tmp, hs, name, jwt, root, backend, seed, http, service, *, desktop=False):
+def test(tmp, hs, name, jwt, root, backend, seed, http, service, *, desktop=False,incoming=False):
     native,hdr=seed(tmp,hs)
     peer_dir=tmp/"peer";peer_dir.mkdir()
     peer,ph=seed(peer_dir,hs)
@@ -68,6 +68,11 @@ def test(tmp, hs, name, jwt, root, backend, seed, http, service, *, desktop=Fals
     power=http("GET",api+"/state/m.room.power_levels",headers=hdr).json()
     power["events"]["org.matrix.msc3401.call.member"]=0
     power["events"]["org.matrix.msc4075.rtc.notification"]=0
+    power["events"]["org.matrix.msc4143.rtc.slot"]=0
+    if incoming:
+        # Element rings via a room mention. Permit that in this two-person
+        # disposable room without granting the peer admin/moderation powers.
+        power.setdefault("notifications",{})["room"]=0
     http("PUT",api+"/state/m.room.power_levels",headers=hdr,json=power)
     assert http("GET",api+"/state/m.room.encryption",headers=ph).json()["algorithm"]=="m.megolm.v1.aes-sha2"
     secret=secrets.token_hex(32)
@@ -110,7 +115,7 @@ rtc:
         page=login_element(ctx,web,peer,room)
         if desktop:
             from qa_desktop_dm import desktop_call
-            desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret)
+            desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,incoming=incoming)
             return
         sockets=[]
         def watch_sfu(ws):

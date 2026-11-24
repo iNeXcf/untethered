@@ -140,9 +140,10 @@ def main():
     args.add_argument("--rtc-membership",action="store_true",help="Observe the Rust client's MatrixRTC join, heartbeat, hangup and abandoned membership in Element Web")
     args.add_argument("--rtc-audio",action="store_true",help="Verify encrypted Rust ↔ Element Call tones using real LiveKit and Matrix OpenID authorization")
     args.add_argument("--desktop-dm",action="store_true",help="Drive the Iced DM call controls and Element's incoming call prompt with isolated audio")
+    args.add_argument("--incoming-dm",action="store_true",help="Ring the Iced desktop twice from Element, decline then accept and hang up")
     args.add_argument("--upload-cancel",action="store_true",help="Test native and browser cancellation against a throttled Matrix upload")
     args=args.parse_args()
-    if args.desktop_dm: args.rtc_audio=True
+    if args.desktop_dm or args.incoming_dm: args.rtc_audio=True
     assert BACKEND.is_file(), "Run scripts/rust-client.sh once or set UNTETHERED_BACKEND"
     dist = ROOT/"rust-client/web/dist"
     if not any((args.native_paste,args.portal_drop,args.kwin_element,args.rtc_membership,args.rtc_audio)):
@@ -186,7 +187,7 @@ federation_domain_whitelist: []
                 except requests.ConnectionError:
                     time.sleep(.1)
             if args.rtc_audio:
-                audio_test(tmp,hs,server_name,rtc_service,ROOT,BACKEND,seed,http,service,desktop=args.desktop_dm)
+                audio_test(tmp,hs,server_name,rtc_service,ROOT,BACKEND,seed,http,service,desktop=args.desktop_dm or args.incoming_dm,incoming=args.incoming_dm)
                 return
             if args.rtc_membership:
                 from qa_rtc_membership import test

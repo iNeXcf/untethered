@@ -38,7 +38,7 @@ const RING: &str = "org.matrix.msc4075.rtc.notification";
 const SLOT_ID: &str = "m.call#ROOM";
 const ENDED: &str = "Call ended.";
 const SECOND: Duration = Duration::from_secs(1);
-fn now() -> u64 {
+pub(super) fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -174,7 +174,7 @@ fn focus(list: &Value) -> Option<Url> {
         .filter(|t| t["type"] == "livekit")
         .find_map(|t| Url::parse(t["livekit_service_url"].as_str()?).ok())
 }
-fn check_dm(state: &[Value], user: &str, peer: &str) -> Result<()> {
+pub(super) fn check_dm(state: &[Value], user: &str, peer: &str) -> Result<()> {
     let joined: Vec<_> = state
         .iter()
         .filter(|e| e["type"] == "m.room.member" && e["content"]["membership"] == "join")
@@ -192,7 +192,7 @@ fn check_dm(state: &[Value], user: &str, peer: &str) -> Result<()> {
     }
     Ok(())
 }
-fn active_member(e: &Value) -> bool {
+pub(super) fn active_member(e: &Value) -> bool {
     let c = &e["content"];
     e["type"] == EVENT_TYPE
         && c["application"] == "m.call"
@@ -213,7 +213,7 @@ struct Session {
     sfu: String,
     token: String,
 }
-async fn prepare(w: &mut Wire<'_>) -> Result<Session> {
+async fn prepare(w: &mut Wire<'_>, incoming: Option<&crate::incoming::Offer>) -> Result<Session> {
     let identity = w.rpc("get_state", json!({})).await?;
     if identity["is_verified"] != true {
         return Err("Verify the Matrix device before calling.");
@@ -222,7 +222,11 @@ async fn prepare(w: &mut Wire<'_>) -> Result<Session> {
     let device = identity["device_id"].as_str().ok_or("No Matrix device.")?;
     let state = w.state(true).await?;
     check_dm(&state, user, w.peer)?;
-    if state.iter().any(active_member) {
+    if let Some(i) = incoming {
+        if !i.valid_state(&state, user) {
+            return Err("The caller is no longer ringing.");
+        }
+    } else if state.iter().any(active_member) {
         return Err("A call is already active in this DM.");
     }
     let hs = Url::parse(identity["homeserver_url"].as_str().unwrap_or(""))
@@ -265,6 +269,23 @@ async fn prepare(w: &mut Wire<'_>) -> Result<Session> {
     let focus = service
         .filter(|s| allowed(s, "https", "http", local))
         .ok_or("No supported MatrixRTC LiveKit service advertised.")?;
+    if let Some(i) = incoming
+        && !state.iter().filter(|e| i.matches_member(e)).any(|e| {
+            crate::rooms::items(&e["content"]["foci_preferred"]).any(|f| {
+                f["type"] == "livekit"
+                    && f["livekit_service_url"]
+                        .as_str()
+                        .and_then(|s| Url::parse(s).ok())
+                        .is_some_and(|u| {
+                            u.as_str().trim_end_matches('/') == focus.as_str().trim_end_matches('/')
+                        })
+            })
+        })
+    {
+        return Err(
+            "The caller is using another call server; multi-server calls are not supported yet.",
+        );
+    }
     let openid = w.rpc("request_openid_token", json!({})).await?;
     let auth: Value = http
         .post(format!("{}/sfu/get", focus.as_str().trim_end_matches('/')))
@@ -284,7 +305,9 @@ async fn prepare(w: &mut Wire<'_>) -> Result<Session> {
         .as_str()
         .ok_or("Missing SFU authorization.")?
         .to_owned();
-    w.open_slot(&state).await?;
+    if incoming.is_none() {
+        w.open_slot(&state).await?;
+    }
     Ok(Session {
         user: user.into(),
         device: device.into(),
@@ -305,6 +328,7 @@ pub async fn run(
     peer: &str,
     cancel: Receiver<()>,
     events: &Sender<Value>,
+    incoming: Option<crate::incoming::Offer>,
 ) -> Result<&'static str> {
     let mut req = format!("ws://{addr}/_gomuks/websocket")
         .into_client_request()
@@ -325,28 +349,28 @@ pub async fn run(
         keys: vec![],
         decline_for: None,
     };
-    let s = tokio::select! {biased; _=cancel.recv()=>return Ok(ENDED),s=prepare(&mut w)=>s?};
+    let s = tokio::select! {biased; _=cancel.recv()=>return Ok(ENDED),s=prepare(&mut w,incoming.as_ref())=>s?};
     if cancel.is_closed() {
         return Ok(ENDED);
     }
-    let mut member = Membership::join(room, &s.user, &s.device, &s.focus, 16_000, &mut w)
-        .await
-        .map_err(|_| "Could not join the MatrixRTC call.")?;
-    let prior = w.rpc("listen_to_device", json!(true)).await;
+    // Element may send its key as soon as it sees our membership.
+    let prior = w.rpc("listen_to_device", json!(true)).await?;
+    let mut member =
+        match Membership::join(room, &s.user, &s.device, &s.focus, 16_000, &mut w).await {
+            Ok(member) => member,
+            Err(_) => {
+                let _ = w.rpc("listen_to_device", prior).await;
+                return Err("Could not join the MatrixRTC call.");
+            }
+        };
     let mut media = None;
-    let result = if prior.is_ok() {
-        tokio::select! {biased;_=cancel.recv()=>Ok(ENDED),r=call(&mut w,&s,&mut member,events,&mut media)=>r}
-    } else {
-        Err("Could not enable encrypted call signaling.")
-    };
+    let result = tokio::select! {biased;_=cancel.recv()=>Ok(ENDED),r=call(&mut w,&s,&mut member,events,&mut media,incoming.as_ref())=>r};
     if let Some(lk) = media {
         let _ = time::timeout(SECOND * 4, lk.close()).await;
     }
     // Dropping call() already stopped the audio jobs. Publish leave even on error/cancel.
     let leave = member.leave(&mut w).await;
-    if let Ok(old) = prior {
-        let _ = w.rpc("listen_to_device", old).await;
-    }
+    let _ = w.rpc("listen_to_device", prior).await;
     leave.map_err(|_| "Disconnected; homeserver will expire call membership.")?;
     result
 }
@@ -356,17 +380,23 @@ async fn call(
     m: &mut Membership,
     events: &Sender<Value>,
     media: &mut Option<Room>,
+    incoming: Option<&crate::incoming::Offer>,
 ) -> Result<&'static str> {
-    let notification = w
-        .rpc(
-            "send_event",
-            json!({"room_id":w.room,"type":RING,"synchronous":true,"content":{
+    let notification = if incoming.is_none() {
+        let n = w
+            .rpc(
+                "send_event",
+                json!({"room_id":w.room,"type":RING,"synchronous":true,"content":{
         "slot_id":SLOT_ID,"notification_type":"ring","m.mentions":{"user_ids":[w.peer]},
         "m.relates_to":{"rel_type":"m.reference","event_id":m.event_id},
         "m.call.intent":"audio","sender_ts":now(),"lifetime":45_000,"msc4354_sticky_key":SLOT_ID}}),
-        )
-        .await?;
-    status(events, w.room, "Ringing").await;
+            )
+            .await?;
+        status(events, w.room, "Ringing").await;
+        n
+    } else {
+        Value::Null
+    };
     let mut renew = Instant::now();
     let mut heartbeat = time::interval(SECOND * 4);
     let mut poll = time::interval(SECOND);
@@ -376,11 +406,12 @@ async fn call(
                 _=heartbeat.tick()=>m.heartbeat(&mut *w).await.map_err(|_|"Lost call membership.")?,
                 _=poll.tick()=>{
                     let state=w.state(false).await?;check_dm(&state,&s.user,w.peer)?;
-                    if let Some(e)=state.iter().find(|e|e["sender"]==w.peer && active_member(e)){
+                    if let Some(e)=state.iter().find(|e|e["sender"]==w.peer && active_member(e) && incoming.is_none_or(|i|i.matches_member(e))){
                         let c=&e["content"];let device=c["device_id"].as_str().unwrap();
                         let id=format!("{}:{device}",w.peer);
                         return Ok((device.to_owned(),c["membershipID"].as_str().unwrap_or(&id).to_owned(),id));
                     }
+                    if incoming.is_some(){return Err("The caller has left.")}
                 }
             }
             if w.decline_for.as_deref().is_some_and(|id|notification["event_id"]==id){return Err("Call declined.")}
@@ -467,7 +498,11 @@ async fn call(
                 let state=w.state(false).await?;check_dm(&state,&s.user,w.peer)?;
                 if !state.iter().any(|e|e["sender"]==w.peer && e["content"]["device_id"]==peer_device && active_member(e)){return Ok(ENDED)}
             }
-            job=audio.join_next()=>return Err(job.and_then(|j|j.ok()).and_then(|v|v.err()).unwrap_or("Audio device stopped.")),
+            job=audio.join_next()=>return match job {
+                Some(Ok(Ok(())))=>Ok(ENDED), // remote audio stream ended
+                Some(Ok(Err(why)))=>Err(why),
+                _=>Err("Audio device stopped.")
+            },
             event=rtc.recv()=>match event {
                 Some(RoomEvent::TrackSubscribed{track:RemoteTrack::Audio(track),participant,publication,..}) if participant.identity().0==peer_id && !playing=>{
                     if publication.encryption_type()!=EncryptionType::Gcm{return Err("Peer did not encrypt audio.")}

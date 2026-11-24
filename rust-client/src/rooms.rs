@@ -67,6 +67,13 @@ impl Room {
         let Some(row) = e["rowid"].as_i64().filter(|&r| r > 0) else {
             return;
         };
+        if matches!(
+            e["decrypted_type"].as_str(),
+            Some("org.matrix.msc4075.rtc.notification" | "org.matrix.msc4310.rtc.decline")
+        ) {
+            self.history.remove(&row);
+            return;
+        }
         let body = match e["type"].as_str() {
             Some("m.room.encrypted") => e["decrypted"]["body"]
                 .as_str()

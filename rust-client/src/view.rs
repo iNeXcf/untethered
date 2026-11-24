@@ -225,6 +225,32 @@ fn rail_button<'a>(glyph: String, hint: &'a str, active: bool, msg: Msg) -> El<'
 }
 
 impl App {
+    #[cfg(target_os = "linux")]
+    fn incoming_banner(&self) -> Option<El<'_>> {
+        let (i, _) = self.inbox.ringing.as_ref()?;
+        Some(
+            container(
+                row![
+                    text(format!("Incoming voice call · {}", i.peer))
+                        .width(Fill)
+                        .size(15),
+                    button(text("Decline").size(16).font(BOLD))
+                        .padding([5, 14])
+                        .style(nav(false))
+                        .on_press(Msg::DecideRing(i.event.clone(), false)),
+                    button(text("Accept").size(16).font(BOLD))
+                        .padding([5, 14])
+                        .style(button::success)
+                        .on_press(Msg::DecideRing(i.event.clone(), true))
+                ]
+                .align_y(Center)
+                .spacing(9),
+            )
+            .padding([7, 12])
+            .style(|_| surface(TRAY, 4.))
+            .into(),
+        )
+    }
     pub(super) fn view(&self) -> El<'_> {
         if self.account || self.logged_in && !self.verified {
             return self.account_view();
@@ -376,6 +402,7 @@ impl App {
                 .push(button("Hang up").on_press(Msg::EndCall))
         } else if self.verified
             && self.connected
+            && self.inbox.ringing.is_none()
             && room.is_some_and(|r| r.encrypted && r.dm_peer.is_some())
         {
             header.push(button("Voice call").on_press(Msg::VoiceCall))
@@ -408,6 +435,10 @@ impl App {
         ];
         if let Some(banner) = banner {
             chat = chat.push(banner)
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(b) = self.incoming_banner() {
+            chat = chat.push(b);
         }
         if !self.status.is_empty() && !self.status.starts_with("Starting") {
             chat = chat.push(
@@ -725,6 +756,10 @@ impl App {
         let mut form = column![label("UNTETHERED  /  ACCOUNT")]
             .spacing(14)
             .width(362);
+        #[cfg(target_os = "linux")]
+        if let Some(b) = self.incoming_banner() {
+            form = form.push(b);
+        }
         #[cfg(target_os = "linux")]
         if let Some((_, state, _)) = &self.call {
             form = form.push(

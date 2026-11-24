@@ -16,6 +16,7 @@ pub enum Command {
         room: String,
         peer: String,
         cancel: Receiver<()>,
+        incoming: Option<crate::incoming::Offer>,
     },
     Rpc(Value),
     Inline {

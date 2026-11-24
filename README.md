@@ -85,10 +85,14 @@ needs a verified Matrix device and a homeserver advertising a LiveKit
 the LiveKit SDK. **Account → Check call server support** queries the gomuks
 transport-discovery RPC; legacy deployments can also advertise in `.well-known`.
 
-The [desktop call test](experiments/rtc-audio/README.md) drives both clients'
-actual call controls and measures audio through isolated Linux devices.
-Starting calls from Element into Untethered, device selection, and relay-only
-connections are separate milestones.
+With Untethered open, an incoming Element DM voice call plays a ringtone and
+shows the caller, **Accept**, and **Decline**. Declining notifies Element
+without opening your microphone. Accepting joins the existing encrypted call.
+Either participant can hang up.
+
+The [desktop call tests](experiments/rtc-audio/README.md) drive both clients'
+actual call controls and measure audio through isolated Linux devices.
+Device selection and relay-only connections are separate milestones.
 
 ![Untethered room preview in the Rust frontend](rust-client/docs/preview.png)
 

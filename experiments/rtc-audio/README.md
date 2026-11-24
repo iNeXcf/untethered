@@ -22,6 +22,15 @@ clicks the desktop **Hang up**.
 It requires an empty remote call roster and no remaining desktop audio
 streams. Neither test client needs physical audio hardware.
 
+For the reverse direction, use `sh experiments/rtc-audio/run_element.sh
+--incoming-dm` with the same setup. Element originates two distinct calls.
+On the first, the desktop speaker monitor must detect the 440/620 Hz ringtone;
+**Decline** must reach Element as an encrypted event referencing that exact
+invite. A PulseAudio event subscription checks that no microphone stream
+was created, even transiently. On the second, Iced **Accept** must open one
+microphone; both distinct tones and both GCM publications are checked again.
+Hanging up from Element must empty its roster and release both desktop streams.
+
 ## Replay the Element ↔ Rust encrypted audio test
 
 From the checkout, with Chromium, OpenSSL, iproute2, the pinned gomuks backend,
@@ -118,6 +127,6 @@ sentinel, so a roster entry does not demonstrate a media connection.
 
 ## What comes next
 
-The desktop can initiate calls to Element. Next implement the reverse incoming
-call flow in Iced, mute/deafen and device selection. Verify reconnect and
+Element and Untethered can each initiate DM calls while both apps are open.
+Next implement mute/deafen and device selection. Verify reconnect and
 relay-required audio separately. Windows runtime testing is deferred.
