@@ -9,7 +9,7 @@
 #include <functional>
 #include <algorithm>
 
-class AvatarNetworkFactory : public QQmlNetworkAccessManagerFactory {
+class MediaNetworkFactory : public QQmlNetworkAccessManagerFactory {
 public:
     QNetworkAccessManager *create(QObject *parent) override {
         auto *manager = new QNetworkAccessManager(parent);
@@ -229,6 +229,12 @@ public:
                 static const QRegularExpression fallback(R"(\A> (?:\* )?<@[^>\r\n]+>[^\r\n]*\r?\n(?:>[^\r\n]*\r?\n)*\r?\n)");
                 text.remove(fallback);
             }
+            const bool hasImage = !redacted && body["msgtype"].toString() == "m.image";
+            QUrl image, thumbnail;
+            if (hasImage) {
+                image = messageMediaUrl(body, "url", "file");
+                thumbnail = messageMediaUrl(body["info"].toObject(), "thumbnail_url", "thumbnail_file");
+            }
             if (redacted) text = "Message removed";
             else if (!event["send_error"].toString().isEmpty()) text += "  ·  Failed to send";
             const auto sender = event["sender"].toString();
@@ -247,6 +253,7 @@ public:
             const auto encryptedAvatar = member["avatar_file"].toObject()["url"].toString();
             result.append(QVariantMap{{"id", QString::number(event["rowid"].toInteger())},
                                       {"eventId", eventId}, {"replyTo", replyTo},
+                                      {"hasImage", hasImage}, {"image", image}, {"thumbnail", thumbnail},
                                       {"canReply", !redacted && eventId.startsWith('$')},
                                       {"sender", sender}, {"name", name},
                                       {"avatar", encryptedAvatar.isEmpty() ? avatarUrl(avatar) : avatarUrl(encryptedAvatar, true)},
@@ -267,6 +274,17 @@ signals:
 
 private:
     QUrl avatarUrl(const QString &mxc, bool encrypted = false) const {
+        return mediaUrl(mxc, encrypted, true);
+    }
+
+    QUrl messageMediaUrl(const QJsonObject &content, const QString &plainKey, const QString &encryptedKey) const {
+        const auto encrypted = content[encryptedKey].toObject();
+        if (!encrypted.isEmpty())
+            return mediaUrl(encrypted["url"].toString(), true);
+        return mediaUrl(content[plainKey].toString(), false);
+    }
+
+    QUrl mediaUrl(const QString &mxc, bool encrypted, bool avatar = false) const {
         if (base.isEmpty() || imageToken.isEmpty()) return {};
         static const QRegularExpression pattern(
             R"(^mxc://([A-Za-z0-9.\-:\[\]]+)/([A-Za-z0-9_\-]+)\z)");
@@ -276,7 +294,7 @@ private:
         QUrl url = base;
         url.setPath("/_gomuks/media/" + match.captured(1) + "/" + match.captured(2));
         QUrlQuery query;
-        query.addQueryItem("thumbnail", "avatar");
+        if (avatar) query.addQueryItem("thumbnail", "avatar");
         query.addQueryItem("encrypted", encrypted ? "true" : "false");
         query.addQueryItem("image_auth", imageToken);
         url.setQuery(query);
@@ -545,9 +563,9 @@ int main(int argc, char **argv) {
     if (backend.isEmpty()) backend = QCoreApplication::applicationDirPath() + "/../lib/untethered/gomuks";
     if (!QFileInfo(backend).isExecutable()) backend.clear();
     Chat chat(backend, root);
-    AvatarNetworkFactory avatarNetwork;
+    MediaNetworkFactory mediaNetwork;
     QQmlApplicationEngine engine;
-    engine.setNetworkAccessManagerFactory(&avatarNetwork);
+    engine.setNetworkAccessManagerFactory(&mediaNetwork);
     engine.rootContext()->setContextProperty("chat", &chat);
     if (parser.isSet("smoke-test")) {
         QObject::connect(&chat, &Chat::changed, &app, [&] {

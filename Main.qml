@@ -84,6 +84,7 @@ ApplicationWindow {
                 if (!window.hadSession)
                     return
                 window.hadSession = false
+                imageViewer.close()
                 logoutConfirmation.close()
                 settings.close()
                 switcher.close()
@@ -100,6 +101,7 @@ ApplicationWindow {
             }
             window.hadSession = true
             if (window.draftRoom !== chat.selected) {
+                imageViewer.close()
                 if (window.draftRoom !== "") {
                     window.drafts[window.draftRoom] = composer.text
                     window.replyDrafts[window.draftRoom] = window.replyTarget
@@ -191,13 +193,13 @@ ApplicationWindow {
 
     Shortcut {
         sequence: "Ctrl+K"
-        enabled: chat.loggedIn && !settings.opened
+        enabled: chat.loggedIn && !settings.opened && !imageViewer.opened
         onActivated: switcher.open()
     }
 
     Shortcut {
         sequence: "Ctrl+,"
-        enabled: chat.loggedIn && !switcher.opened && !settings.opened
+        enabled: chat.loggedIn && !switcher.opened && !settings.opened && !imageViewer.opened
         onActivated: settings.open()
     }
 
@@ -306,6 +308,37 @@ ApplicationWindow {
                 wrapMode: Text.WordWrap
                 color: window.muted
                 Layout.fillWidth: true
+            }
+        }
+    }
+
+    Dialog {
+        id: imageViewer
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        title: "Image"
+        width: Math.min(window.width - 48, 1050)
+        height: Math.min(window.height - 48, 850)
+        modal: true
+        standardButtons: Dialog.Close
+        property url imageSource
+        onClosed: imageSource = ""
+
+        contentItem: Item {
+            Image {
+                id: enlargedImage
+                anchors.fill: parent
+                source: imageViewer.imageSource
+                asynchronous: true
+                fillMode: Image.PreserveAspectFit
+                sourceSize.width: 1920
+                sourceSize.height: 1920
+            }
+            Label {
+                anchors.centerIn: parent
+                visible: enlargedImage.status !== Image.Ready
+                color: window.muted
+                text: enlargedImage.status === Image.Loading ? "Loading image…" : "Image unavailable"
             }
         }
     }
@@ -763,6 +796,55 @@ ApplicationWindow {
                                     Accessible.name: "In reply to " + text
                                     onClicked: timeline.jumpToEvent(modelData.replyTo)
                                 }
+                                Loader {
+                                    active: !!modelData.hasImage
+                                    visible: active
+                                    Layout.fillWidth: true
+                                    Layout.maximumWidth: 360
+                                    Layout.preferredHeight: 230
+                                    Layout.alignment: Qt.AlignLeft
+
+                                    sourceComponent: Button {
+                                        id: imagePreview
+                                        readonly property url fullSource: modelData.image ?? ""
+                                        readonly property url thumbnailSource: modelData.thumbnail ?? ""
+                                        property bool thumbnailFailed: false
+                                        onThumbnailSourceChanged: thumbnailFailed = false
+                                        enabled: fullSource.toString() !== ""
+                                        Accessible.name: "Open image"
+                                        onClicked: {
+                                            imageViewer.imageSource = fullSource
+                                            imageViewer.open()
+                                        }
+                                        background: Rectangle {
+                                            radius: 8
+                                            color: window.fieldSurface
+                                            border.color: imagePreview.visualFocus ? window.accent : window.divider
+                                        }
+                                        contentItem: Item {
+                                            Image {
+                                                id: thumbnailImage
+                                                anchors.fill: parent
+                                                source: !imagePreview.thumbnailFailed && imagePreview.thumbnailSource.toString() !== ""
+                                                    ? imagePreview.thumbnailSource : imagePreview.fullSource
+                                                asynchronous: true
+                                                fillMode: Image.PreserveAspectFit
+                                                sourceSize.width: 720
+                                                sourceSize.height: 460
+                                                onStatusChanged: {
+                                                    if (status === Image.Error && source.toString() === imagePreview.thumbnailSource.toString())
+                                                        imagePreview.thumbnailFailed = true
+                                                }
+                                            }
+                                            Label {
+                                                anchors.centerIn: parent
+                                                visible: thumbnailImage.status !== Image.Ready
+                                                color: window.muted
+                                                text: thumbnailImage.status === Image.Loading ? "Loading image…" : "Image unavailable"
+                                            }
+                                        }
+                                    }
+                                }
                                 RowLayout {
                                     Layout.fillWidth: true
                                     Label {
@@ -841,7 +923,7 @@ ApplicationWindow {
             }
             Shortcut {
                 sequence: "Escape"
-                enabled: window.replyTarget !== null && !settings.opened && !switcher.opened
+                enabled: window.replyTarget !== null && !settings.opened && !switcher.opened && !imageViewer.opened
                 onActivated: window.replyTarget = null
             }
             RowLayout {
