@@ -18,6 +18,7 @@ mod media;
 #[cfg(not(target_arch = "wasm32"))]
 mod paste;
 mod preview;
+mod replies;
 mod rooms;
 mod transfers;
 mod view;
@@ -113,6 +114,11 @@ enum Msg {
     Open(String),
     Draft(text_editor::Action),
     Send,
+    Reply(String),
+    CancelReply,
+    Jump(String),
+    Latest,
+    Preceding,
     More,
     Copy,
     TogglePeople,
@@ -158,7 +164,8 @@ enum Request {
     VerifyState,
     Page(String),
     Members(String),
-    Send(String, String),
+    Send(String, String, Option<rooms::Quote>),
+    Context(String, String),
 }
 struct App {
     #[cfg(target_os = "linux")]
@@ -187,6 +194,8 @@ struct App {
     section: Section,
     selected: String,
     drafts: BTreeMap<String, String>,
+    reply_drafts: BTreeMap<String, rooms::Quote>,
+    original: Option<replies::Original>,
     editor: text_editor::Content,
     loaded: BTreeSet<String>,
     connected: bool,
@@ -250,6 +259,8 @@ impl App {
             section: Section::Space("!workshop".into()),
             selected: "!general".into(),
             drafts: Default::default(),
+            reply_drafts: Default::default(),
+            original: None,
             editor: text_editor::Content::new(),
             loaded: Default::default(),
             connected: false,
@@ -336,6 +347,7 @@ impl App {
         if self.selected == id {
             return;
         }
+        self.close_original();
         self.drafts
             .insert(self.selected.clone(), self.editor.text());
         self.editor =
@@ -508,6 +520,8 @@ impl App {
                     }
                     self.pending.retain(|_, p| matches!(p, Request::Login));
                     self.drafts.clear();
+                    self.reply_drafts.clear();
+                    self.close_original();
                     self.editor = text_editor::Content::new();
                     self.loaded.clear();
                     self.selected.clear();
@@ -530,6 +544,7 @@ impl App {
             }
             "sync_complete" => {
                 if data["clear_state"] == true {
+                    self.close_original();
                     #[cfg(target_os = "linux")]
                     self.clear_ring();
                     self.loaded.clear();
@@ -563,6 +578,7 @@ impl App {
                         self.clear_ring()
                     }
                     self.outbox.rooms.remove(left);
+                    self.reply_drafts.remove(left);
                     self.pending.retain(|_,p|!matches!(p,Request::Upload(room,_)|Request::MediaSend(room,_) if room==left));
                     if self.batch.as_ref().is_some_and(|b| b.room == left) {
                         self.batch = None;
@@ -631,7 +647,8 @@ impl App {
                             "Could not load history. Use Earlier messages to retry."
                         }
                         Request::Members(_) => "Could not load room members.",
-                        Request::Send(_, _) => "Could not send. Your draft has been kept.",
+                        Request::Send(..) => "Could not send. Your draft has been kept.",
+                        Request::Context(..)=>"Could not load the original message. Try again from the reply.",
                     }
                     .into();
                     return;
@@ -666,21 +683,33 @@ impl App {
                             "No supported LiveKit transport advertised by this endpoint.".into()
                         };
                     }
-                    Request::Send(id, sent) => {
+                    Request::Context(room, id) => self.show_context(room, id, data),
+                    Request::Send(id, sent, reply) => {
                         if let Some(r) = self.live.list.get_mut(&id) {
                             r.insert(data);
                         }
-                        if self.selected == id && self.editor.text() == sent {
+                        let same = self.reply_drafts.get(&id) == reply.as_ref();
+                        if same && self.selected == id && self.editor.text() == sent {
                             self.editor = text_editor::Content::new();
                         }
-                        if self.drafts.get(&id) == Some(&sent) {
+                        if same && self.drafts.get(&id) == Some(&sent) {
                             self.drafts.remove(&id);
+                        }
+                        if same {
+                            self.reply_drafts.remove(&id);
                         }
                         self.status.clear();
                     }
                     Request::Page(id) => {
                         if let Some(r) = self.live.list.get_mut(&id) {
                             r.page(data);
+                            let mut related = rooms::Room::default();
+                            for e in items(&data["related_events"]).filter(|e| e["room_id"] == id) {
+                                related.insert(e);
+                            }
+                            for q in related.history.values().filter_map(rooms::Post::quote) {
+                                r.related.insert(q.id.clone(), q);
+                            }
                         }
                     }
                     Request::Members(id) => {
@@ -767,7 +796,16 @@ impl App {
             }
             Msg::InlineReady(epoch, key, img) => self.inline.complete(epoch, key, img),
             Msg::ShowInline(key) => self.inline.request(key),
-            Msg::Frame(f) => self.frame(f),
+            Msg::Frame(f) => {
+                let jumped = f["command"] == "response"
+                    && f["request_id"].as_i64().is_some_and(|id| {
+                        matches!(self.pending.get(&id), Some(Request::Context(..)))
+                    });
+                self.frame(f);
+                if jumped && self.original.is_some() {
+                    return self.anchor_history();
+                }
+            }
             Msg::Stopped(s) => {
                 #[cfg(target_os = "linux")]
                 {
@@ -1210,6 +1248,38 @@ impl App {
                 }
             }
             Msg::Draft(a) => self.editor.perform(a),
+            Msg::Latest => {
+                self.close_original();
+                return self.anchor_history();
+            }
+            Msg::Preceding => {
+                if let Some(c) = &mut self.original {
+                    c.preceding = !c.preceding;
+                    return self.anchor_history();
+                }
+            }
+            Msg::Jump(id) => {
+                self.jump(id);
+                if self.original.is_some() {
+                    return self.anchor_history();
+                }
+            }
+            Msg::CancelReply => {
+                self.reply_drafts.remove(&self.selected);
+            }
+            Msg::Reply(id) => {
+                if let Some(q) = self
+                    .live
+                    .list
+                    .get(&self.selected)
+                    .and_then(|r| r.quote(&id))
+                    .or_else(|| self.original.as_ref()?.slice.as_ref()?.quote(&id))
+                {
+                    self.reply_drafts.insert(self.selected.clone(), q);
+                    self.close_original();
+                    return operation::focus("composer");
+                }
+            }
             Msg::Send => {
                 // Do not send just the caption if Enter races PNG encoding.
                 #[cfg(not(target_arch = "wasm32"))]
@@ -1230,13 +1300,17 @@ impl App {
                         && !self
                             .pending
                             .values()
-                            .any(|p| matches!(p,Request::Send(r,_) if r==&id))
+                            .any(|p| matches!(p,Request::Send(r,..) if r==&id))
                     {
-                        self.rpc(
-                            "send_message",
-                            json!({"room_id":id,"text":body}),
-                            Request::Send(id, body),
-                        );
+                        let reply = self.reply_drafts.get(&id).cloned();
+                        let mut params = json!({"room_id":id,"text":body});
+                        if let Some(q) = &reply {
+                            // Treat a reply as literal message text. In particular a
+                            // slash-prefixed reply must never disable room encryption.
+                            params = json!({"room_id":id,"text":"","base_content":{"msgtype":"m.text","body":body}});
+                            q.relate(&mut params);
+                        }
+                        self.rpc("send_message", params, Request::Send(id, body, reply));
                     }
                 } else if let Some(r) = self.demo.list.get_mut(&id) {
                     r.insert(&json!({"rowid":r.history.keys().next_back().copied().unwrap_or(0)+1,"sender":"You","type":"m.room.message",

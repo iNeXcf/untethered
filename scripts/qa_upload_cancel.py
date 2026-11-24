@@ -38,13 +38,14 @@ def until(label, fn, seconds=35):
 
 
 @contextmanager
-def slow_gateway(upstream,port,hold_first=None):
+def slow_gateway(upstream,port,hold_first=None,observe_path=None):
     records = []
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
         def log_message(self, *args):
             pass
         def forward(self):
+            if observe_path:observe_path(self.command,urlsplit(self.path).path)
             self.close_connection = True
             n = int(self.headers.get("Content-Length", "0"))
             is_upload = self.command == "POST" and urlsplit(self.path).path=="/_matrix/media/v3/upload"

@@ -38,13 +38,46 @@ pub struct Room {
     pub cursor: Option<i64>,
     pub members: BTreeMap<String, String>,
     pub history: BTreeMap<i64, Post>,
+    pub(super) event_rows: BTreeMap<String, i64>,
+    pub(super) related: BTreeMap<String, Quote>,
+}
+#[derive(Clone, PartialEq, Eq)]
+pub struct Quote {
+    pub id: String,
+    pub sender: String,
+    pub excerpt: String,
+}
+impl Quote {
+    pub fn relate(&self, params: &mut Value) {
+        params["relates_to"] = json!({"m.in_reply_to":{"event_id":self.id}});
+        params["mentions"] = json!({"user_ids":[self.sender]});
+    }
 }
 pub struct Post {
-    confirmed: bool,
+    pub event_id: Option<String>,
+    pub reply: Option<String>,
     pub media: Option<crate::media::Media>,
     pub sender: String,
     pub body: String,
     pub time: i64,
+}
+impl Post {
+    pub fn quote(&self) -> Option<Quote> {
+        let mut chars = self.body.trim().chars();
+        let mut excerpt: String = chars
+            .by_ref()
+            .take(72)
+            .map(|c| if c.is_whitespace() { ' ' } else { c })
+            .collect();
+        if chars.next().is_some() {
+            excerpt.push('…');
+        }
+        Some(Quote {
+            id: self.event_id.clone()?,
+            sender: self.sender.clone(),
+            excerpt,
+        })
+    }
 }
 // gomuks assigns ~txn IDs to local echoes. A $ ID comes from the homeserver.
 // In v0.2611.1, actuallySend updates the ID but can leave the initial "not sent"
@@ -61,6 +94,14 @@ pub fn real_send_error(e: &Value) -> bool {
             .is_some_and(|s| !s.is_empty() && s != "not sent")
 }
 impl Room {
+    pub fn by_id(&self, id: &str) -> Option<&Post> {
+        self.event_rows.get(id).and_then(|r| self.history.get(r))
+    }
+    pub fn quote(&self, id: &str) -> Option<Quote> {
+        self.by_id(id)
+            .and_then(Post::quote)
+            .or_else(|| self.related.get(id).cloned())
+    }
     #[cfg(target_os = "linux")]
     pub fn voice_users(&self) -> BTreeSet<&str> {
         let now = crate::desktop_call::now();
@@ -95,17 +136,23 @@ impl Room {
         e["rowid"]
             .as_i64()
             .and_then(|id| self.history.get(&id))
-            .is_some_and(|p| p.confirmed)
+            .is_some_and(|p| p.event_id.is_some())
     }
     pub fn insert(&mut self, e: &Value) {
         let Some(row) = e["rowid"].as_i64().filter(|&r| r > 0) else {
             return;
         };
-        if matches!(
-            e["decrypted_type"].as_str(),
-            Some("org.matrix.msc4075.rtc.notification" | "org.matrix.msc4310.rtc.decline")
-        ) {
-            self.history.remove(&row);
+        // An opaque encrypted row can later decrypt to a reaction, call signal
+        // or edit. It must not remain an independent, replyable message.
+        if e["type"] == "m.room.encrypted"
+            && e["decrypted_type"]
+                .as_str()
+                .is_some_and(|ty| !matches!(ty, "m.room.message" | "m.sticker"))
+            || e["relation_type"] == "m.replace"
+        {
+            if let Some(old) = self.history.remove(&row).and_then(|p| p.event_id) {
+                self.event_rows.remove(&old);
+            }
             return;
         }
         let body = match e["type"].as_str() {
@@ -117,16 +164,36 @@ impl Room {
             }
             _ => return,
         };
-        if e["relation_type"] == "m.replace" {
-            return;
-        }
         let mut body = body.to_owned();
         let confirmed = server_confirmed(e);
         // A late local echo must not overwrite the synced event for this row.
         if !confirmed && self.already_confirmed(e) {
             return;
         }
-        if e["redacted_by"].as_str().is_some_and(|s| !s.is_empty()) {
+        let redacted = e["redacted_by"].as_str().is_some_and(|s| !s.is_empty());
+        let content = if e["type"] == "m.room.encrypted" {
+            &e["decrypted"]
+        } else {
+            &e["content"]
+        };
+        let relation = &content["m.relates_to"];
+        let reply = relation["m.in_reply_to"]["event_id"]
+            .as_str()
+            .filter(|id| {
+                !redacted
+                    && relation["is_falling_back"] != true
+                    && id.starts_with('$')
+                    && id.len() > 1
+            })
+            .map(str::to_owned);
+        if reply.is_some()
+            && body.starts_with("> <")
+            && let Some((fallback, message)) = body.split_once("\n\n")
+            && fallback.lines().all(|s| s.starts_with('>'))
+        {
+            body = message.to_owned();
+        }
+        if redacted {
             body = "Message removed".into();
         }
         if real_send_error(e) {
@@ -134,18 +201,19 @@ impl Room {
         } else if !confirmed && e["send_error"] == "not sent" {
             body.push_str("  ·  Sending…");
         }
+        let event_id = confirmed.then(|| string(&e["event_id"]));
+        if let Some(id) = &event_id {
+            self.event_rows.insert(id.clone(), row);
+        }
         self.history.insert(
             row,
             Post {
-                confirmed,
-                media: if e["redacted_by"].as_str().is_some_and(|s| !s.is_empty()) {
+                event_id,
+                reply,
+                media: if redacted {
                     None
                 } else {
-                    crate::media::Media::parse(if e["type"] == "m.room.encrypted" {
-                        &e["decrypted"]
-                    } else {
-                        &e["content"]
-                    })
+                    crate::media::Media::parse(content)
                 },
                 sender: string(&e["sender"]),
                 body,
@@ -216,6 +284,8 @@ impl Rooms {
             }
             if delta["reset"] == true {
                 room.history.clear();
+                room.event_rows.clear();
+                room.related.clear();
                 room.cursor = None;
                 room.end = false;
             }

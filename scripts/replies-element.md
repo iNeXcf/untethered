@@ -1,0 +1,28 @@
+# Verify encrypted replies with Element
+
+Build the native debug client. Use a local copy of Element Web (tested with
+1.12.35), Chromium, Xvfb, xdotool, ImageMagick, Tesseract and the Python QA
+environment from `test-media-interop.py` (including `cryptography`). Run from
+the checkout:
+
+```sh
+cargo build --locked --manifest-path rust-client/Cargo.toml
+ELEMENT_WEB_DIR=/path/to/element-v1.12.35 \
+  /path/to/qa/venv/bin/python scripts/test-media-interop.py --replies
+```
+
+The runner creates a loopback Synapse, two verified Matrix accounts, a fresh
+Chromium context and a private X display. Element sends two identical
+originals, each followed by a different marker. The test selects the first
+using Untethered’s **Reply** control and the second using Element’s. It inserts
+80 real encrypted filler messages before sending either reply, checks the
+decrypted `m.in_reply_to.event_id` values in Element, then checks the
+homeserver’s encrypted event types and distinct IDs.
+
+A native jump while the timeline is still loaded must use no `/context`
+request. After the native client and gomuks restart and Element reloads,
+neither original may be in Element’s live timeline. Clicking Element’s quote
+must highlight the exact original. Each native **View original** click must
+make a room-scoped GET for the corresponding event ID and show that original
+with the correct neighboring text. The fixture also drives **Preceding
+messages** and **Back to latest**.

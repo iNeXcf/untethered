@@ -8,6 +8,7 @@ pub struct Batch {
     pub room: String,
     ids: VecDeque<u64>,
     caption: String,
+    reply: Option<crate::rooms::Quote>,
     // send_complete can race the RPC reply containing the local transaction ID.
     early: std::collections::BTreeMap<String, bool>,
 }
@@ -65,6 +66,7 @@ impl App {
         }
         let ids = self.outbox.rooms[&room].iter().map(|a| a.id).collect();
         self.batch = Some(Batch {
+            reply: self.reply_drafts.get(&room).cloned(),
             room,
             ids,
             caption,
@@ -118,7 +120,7 @@ impl App {
             }
             // Put captions in base_content, not in the slash-command parser.
             let next = self.seq + 1;
-            let (command, data) = if let Some(txn) = &a.txn {
+            let (command, mut data) = if let Some(txn) = &a.txn {
                 ("resend_event", json!({"transaction_id":txn}))
             } else {
                 (
@@ -126,6 +128,11 @@ impl App {
                     json!({"room_id":room,"base_content":content,"text":""}),
                 )
             };
+            if command == "send_message"
+                && let Some(reply) = &b.reply
+            {
+                reply.relate(&mut data);
+            }
             self.rpc(command, data, Request::MediaSend(room.clone(), id));
             if !self.pending.contains_key(&next) {
                 self.fail_file(&room, id, "Could not queue the message.");
@@ -286,6 +293,11 @@ impl App {
         }
         let b = self.batch.as_mut().unwrap();
         b.early.clear();
+        if let Some(reply) = b.reply.take()
+            && self.reply_drafts.get(room) == Some(&reply)
+        {
+            self.reply_drafts.remove(room);
+        }
         if !b.caption.is_empty() {
             if room == self.selected && self.editor.text() == b.caption {
                 self.editor = text_editor::Content::new();

@@ -136,6 +136,15 @@
   focused, her capture was released; Alice returned to the grid and saw
   Bruno's next pattern on his original track.
 
+- **Encrypted replies and jump-to-original:** [Linux Iced ↔ Element Web acceptance](scripts/replies-element.md)
+  sent replies to two messages with identical text and sender. With 80
+  intervening events, all 86 messages on Synapse were distinct Megolm events.
+  After reload, Element highlighted the correct original outside its restored
+  live timeline. After restarting the native client, both reply links fetched
+  their distinct original event IDs through `/context` and rendered the
+  matching neighboring messages. Edits, reactions and the remaining daily-chat
+  workflows still need their own acceptance evidence.
+
 ## What parity means
 
 A small community should be able to move its everyday conversations here: find a server and its channels, talk in DMs, drop a screenshot, join friends in voice, share a screen, catch up on mentions, and moderate its space. Test those workflows side by side with Discord. A button that looks right but doesn't work with another Matrix client isn't parity.

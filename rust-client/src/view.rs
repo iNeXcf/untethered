@@ -739,14 +739,16 @@ impl App {
     }
     fn conversation<'a>(&'a self, r: &'a Room) -> El<'a> {
         let mut feed = Column::new().padding([16, 18]).spacing(2);
-        if self.logged_in && !r.end {
+        let original = self.original.as_ref().filter(|c| c.room == self.selected);
+        let history = original.and_then(|c| c.slice.as_ref()).unwrap_or(r);
+        if original.is_none() && self.logged_in && !r.end {
             feed = feed.push(
                 button(text("Earlier messages").size(12))
                     .on_press_maybe(self.connected.then_some(Msg::More))
                     .style(nav(false)),
             );
         }
-        if r.end || !self.logged_in {
+        if original.is_none() && (r.end || !self.logged_in) {
             feed = feed
                 .push(
                     container(text(if r.dm { "@" } else { "#" }).font(BOLD).size(30))
@@ -774,7 +776,28 @@ impl App {
                 );
         }
         let mut prev: Option<(&str, i64, String)> = None;
-        for p in r.posts() {
+        let sorted = history.posts();
+        let anchor = original.and_then(|c| {
+            sorted
+                .iter()
+                .position(|p| p.event_id.as_ref() == Some(&c.event))
+        });
+        let posts = if let Some(c) = original {
+            let i = anchor.unwrap_or(sorted.len());
+            &sorted[if c.preceding { i.saturating_sub(6) } else { i }..sorted.len().min(i + 13)]
+        } else {
+            &sorted[..]
+        };
+        for &cached in posts {
+            let p = if original.is_some() {
+                cached
+                    .event_id
+                    .as_deref()
+                    .and_then(|id| r.by_id(id))
+                    .unwrap_or(cached)
+            } else {
+                cached
+            };
             let stamp = DateTime::from_timestamp_millis(p.time)
                 .unwrap_or_default()
                 .with_timezone(&Local);
@@ -799,6 +822,41 @@ impl App {
                 );
             }
             let name = r.display(&p.sender);
+            let mut message = Column::new().spacing(2);
+            if let Some(target) = &p.reply {
+                let q = r.quote(target).or_else(|| history.quote(target));
+                let preview = q
+                    .map(|q| format!("{}: {}", r.display(&q.sender), q.excerpt))
+                    .unwrap_or_else(|| "Earlier message".into());
+                message = message.push(
+                    button(text(format!("View original · {preview}")).size(13))
+                        .padding([2, 5])
+                        .style(nav(false))
+                        .on_press(Msg::Jump(target.clone())),
+                );
+            }
+            let mut line = row![text(&p.body).size(16).width(Fill)]
+                .align_y(Center)
+                .spacing(6);
+            if self.logged_in
+                && let Some(id) = &p.event_id
+            {
+                line = line.push(
+                    button(text("Reply").size(12))
+                        .padding([1, 6])
+                        .style(nav(false))
+                        .on_press(Msg::Reply(id.clone())),
+                );
+            }
+            message = message.push(line);
+            if original.is_some_and(|c| Some(&c.event) == p.event_id.as_ref()) {
+                feed = feed.push(
+                    text("Original message")
+                        .size(13)
+                        .color(color!(0xa8b1ff))
+                        .font(BOLD),
+                );
+            }
             if group {
                 let info = row![
                     text(name).size(16).font(BOLD).color(TEXT),
@@ -812,16 +870,14 @@ impl App {
                     container(
                         row![
                             avatar(name, 36.),
-                            column![info, text(&p.body).size(16)].spacing(2).width(Fill)
+                            column![info, message].spacing(2).width(Fill)
                         ]
                         .spacing(13),
                     )
                     .padding([5, 0]),
                 );
             } else {
-                feed = feed.push(
-                    row![Space::new().width(36), text(&p.body).size(16).width(Fill)].spacing(13),
-                );
+                feed = feed.push(row![Space::new().width(36), message.width(Fill)].spacing(13));
             }
             prev = Some((&p.sender, p.time, day));
             if let Some(file) = &p.media {
@@ -868,15 +924,41 @@ impl App {
                 );
             }
         }
-        let feed = scrollable(feed)
-            .id(iced::widget::Id::from(format!(
-                "timeline-{}",
-                self.selected
-            )))
-            .anchor_bottom()
-            .height(Fill);
+        let feed = scrollable(feed).height(Fill).id(self.timeline_id());
+        let feed = if original.is_some() {
+            feed
+        } else {
+            feed.anchor_bottom()
+        };
+        let mut viewport = Column::new();
+        if let Some(c) = original {
+            let mut header = row![text("Message history").width(Fill).font(BOLD)];
+            if anchor.is_some_and(|i| i > 0) {
+                header = header.push(
+                    button(if c.preceding {
+                        "Back to original"
+                    } else {
+                        "Preceding messages"
+                    })
+                    .on_press(Msg::Preceding),
+                );
+            }
+            let header = header
+                .push(button("Back to latest").on_press(Msg::Latest))
+                .spacing(5)
+                .align_y(Center);
+            viewport = viewport.push(container(header).padding([4, 16]));
+        }
+        if self
+            .pending
+            .values()
+            .any(|p| matches!(p,Request::Context(room,_) if room==&self.selected))
+        {
+            viewport = viewport.push(text("Loading original message…").size(13));
+        }
         let hint = format!("Message {}{}", if r.dm { "@" } else { "#" }, r.name);
         let editor = text_editor(&self.editor)
+            .id("composer")
             .placeholder(hint)
             .on_action(Msg::Draft)
             .key_binding(|press| {
@@ -910,11 +992,28 @@ impl App {
         let sending = self
             .pending
             .values()
-            .any(|p| matches!(p,Request::Send(id,_) if id==&self.selected));
+            .any(|p| matches!(p,Request::Send(id,..) if id==&self.selected));
         let files = self.outbox.rooms.get(&self.selected);
         let has_files = files.is_some_and(|q| !q.is_empty());
         let uploading = self.batch.as_ref().is_some_and(|b| b.room == self.selected);
         let mut tray = Column::new().spacing(4);
+        if let Some(q) = self.reply_drafts.get(&self.selected) {
+            tray = tray.push(
+                row![
+                    text(format!(
+                        "Replying to {} · {}",
+                        r.display(&q.sender),
+                        q.excerpt
+                    ))
+                    .size(14)
+                    .width(Fill),
+                    button("Cancel reply")
+                        .padding([2, 6])
+                        .on_press(Msg::CancelReply)
+                ]
+                .align_y(Center),
+            );
+        }
         if self.hover_files {
             tray = tray.push(
                 text(format!("Drop files to attach to {}", r.name))
@@ -968,7 +1067,7 @@ impl App {
             "Matrix room"
         };
         column![
-            feed,
+            viewport.push(feed).height(Fill),
             container(
                 column![
                     tray,

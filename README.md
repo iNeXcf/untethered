@@ -40,6 +40,13 @@ needs support from the client engine; the pinned gomuks release does not expose
 that flow through its frontend API. Room sync, encryption, history, and sends use the upstream
 gomuks engine. The UI currently renders plain text and initial-based avatars.
 
+**Replies:** Click **Reply** beside a message, type your response, and send.
+The composer shows who you’re replying to; **Cancel reply** keeps your text.
+Click **View original** on a reply to jump to the exact Matrix event. If it
+is outside the loaded timeline, Untethered loads that part of the room’s
+history through gomuks. **Preceding messages** shows what led up to it, and
+**Back to latest** returns to the conversation.
+
 **Files:** Drop files onto a room or click **+** to stage them, optionally type
 a caption for the first attachment, then press **Send**. A local preview strip
 shows image thumbnails or file-type cards; use **×** to remove a file. PNG,
