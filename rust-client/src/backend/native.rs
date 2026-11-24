@@ -158,10 +158,10 @@ pub async fn run(commands: Commands, events: Events) -> Result<(), String> {
             cmd = commands.recv() => match cmd {
                 Ok(Operation::Rpc(v))=>v,
                 #[cfg(target_os = "linux")]
-                Ok(Operation::Voice{room,peer,controls,incoming})=>{
+                Ok(Operation::Voice{room,target,controls})=>{
                     let cookie=cookie.clone(); let events=events.clone();
                     transfers.spawn(async move {
-                        let result=crate::desktop_call::run(addr,&cookie,&room,&peer,controls,&events,incoming).await;
+                        let result=crate::desktop_call::run(addr,&cookie,&room,target,controls,&events).await;
                         let _=events.send(json!({"command":"desktop_call","data":{"room":room,"ended":true,"label":result.unwrap_or_else(|e| e)}})).await;
                     });continue
                 }

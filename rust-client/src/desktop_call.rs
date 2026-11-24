@@ -1,4 +1,4 @@
-//! Linux one-to-one voice. Matrix state/Olm stay in the existing gomuks device;
+//! Linux MatrixRTC voice. Matrix state/Olm stay in the existing gomuks device;
 //! only the media and audio streams live here, for the lifetime of a call.
 use crate::call_devices::{Catalog, Port, Route};
 use async_channel::{Receiver, Sender};
@@ -33,6 +33,15 @@ use tokio_tungstenite::{
 use untethered_iced::rtc_keys::{self, EVENT as KEY, SenderKey};
 use untethered_iced::rtc_membership::{EVENT_TYPE, Membership};
 use url::Url;
+mod channel;
+
+pub enum Target {
+    Dm {
+        peer: String,
+        incoming: Option<crate::incoming::Offer>,
+    },
+    Channel,
+}
 
 type Result<T> = std::result::Result<T, &'static str>;
 const SLOT: &str = "org.matrix.msc4143.rtc.slot";
@@ -59,6 +68,7 @@ impl AudioMode {
 pub struct ActiveCall {
     pub room: String,
     pub label: String,
+    pub group: bool,
     pub cancel: Sender<()>,
     pub audio: watch::Sender<AudioMode>,
     pub id: uuid::Uuid,
@@ -74,16 +84,14 @@ pub struct Controls {
     audio: watch::Receiver<AudioMode>,
 }
 impl crate::App {
-    pub(super) fn start_voice(
-        &mut self,
-        room: String,
-        peer: String,
-        incoming: Option<crate::incoming::Offer>,
-    ) {
-        let label = if incoming.is_some() {
-            "Answering…"
-        } else {
-            "Starting call…"
+    pub(super) fn start_voice(&mut self, room: String, target: Target) {
+        let group = matches!(target, Target::Channel);
+        let label = match &target {
+            Target::Channel => "Joining voice…",
+            Target::Dm {
+                incoming: Some(_), ..
+            } => "Answering…",
+            Target::Dm { .. } => "Starting call…",
         };
         let (cancel, rx) = async_channel::bounded(1);
         let (audio, mode) = watch::channel(AudioMode::default());
@@ -95,9 +103,8 @@ impl crate::App {
             .commands
             .try_send(crate::backend::Command::Voice {
                 room: room.clone(),
-                peer,
+                target,
                 controls,
-                incoming,
             })
             .is_ok()
         {
@@ -105,6 +112,7 @@ impl crate::App {
             self.call = Some(ActiveCall {
                 room,
                 label: label.into(),
+                group,
                 cancel,
                 audio,
                 id: uuid::Uuid::new_v4(),
@@ -130,9 +138,10 @@ pub(super) fn now() -> u64 {
 struct Wire<'a> {
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
     room: &'a str,
-    peer: &'a str,
+    dm_peer: Option<&'a str>,
     seq: u64,
-    keys: Vec<Value>,
+    keys: Vec<(Instant, Value)>,
+    roster_dirty: bool,
     decline_for: Option<String>,
 }
 impl Wire<'_> {
@@ -146,20 +155,27 @@ impl Wire<'_> {
                         return Err("The verified call session ended.");
                     }
                     if f["command"] == "sync_complete" {
+                        let state = &f["data"]["rooms"][self.room]["state"];
+                        self.roster_dirty |= state.get(EVENT_TYPE).is_some()
+                            || state.get("m.room.member").is_some()
+                            || crate::rooms::items(&f["data"]["left_rooms"])
+                                .any(|r| r == self.room);
                         for e in crate::rooms::items(&f["data"]["to_device"]) {
                             if e["type"] == KEY
                                 && e["encrypted"] == true
-                                && e["sender"] == self.peer
+                                && self.dm_peer.is_none_or(|peer| e["sender"] == peer)
                                 && e["content"]["room_id"] == self.room
                             {
                                 if self.keys.len() >= 64 {
-                                    return Err("Too many pending call keys.");
+                                    // Keep the queue bounded even if a room member
+                                    // sends keys without joining the voice slot.
+                                    self.keys.remove(0);
                                 }
-                                self.keys.push(e["content"].clone());
+                                self.keys.push((Instant::now(), e.clone()));
                             }
                         }
                         for e in crate::rooms::items(&f["data"]["rooms"][self.room]["events"]) {
-                            if e["sender"] == self.peer
+                            if self.dm_peer.is_some_and(|peer| e["sender"] == peer)
                                 && (e["type"] == "org.matrix.msc4310.rtc.decline"
                                     || e["decrypted_type"] == "org.matrix.msc4310.rtc.decline")
                             {
@@ -262,7 +278,10 @@ pub(super) fn check_dm(state: &[Value], user: &str, peer: &str) -> Result<()> {
         .filter(|e| e["type"] == "m.room.member" && e["content"]["membership"] == "join")
         .filter_map(|e| e["state_key"].as_str())
         .collect();
-    if user == peer
+    if state
+        .iter()
+        .any(|e| e["type"] == "m.room.create" && e["content"]["type"] == crate::rooms::VOICE_ROOM)
+        || user == peer
         || joined.len() != 2
         || !joined.contains(&user)
         || !joined.contains(&peer)
@@ -280,7 +299,9 @@ pub(super) fn active_member(e: &Value) -> bool {
         && c["application"] == "m.call"
         && c["scope"] == "m.room"
         && c["call_id"] == ""
-        && c["device_id"].is_string()
+        && c["device_id"]
+            .as_str()
+            .is_some_and(|d| !d.is_empty() && d != "*")
         && c["created_ts"]
             .as_u64()
             .or(e["timestamp"].as_u64())
@@ -303,13 +324,17 @@ async fn prepare(w: &mut Wire<'_>, incoming: Option<&crate::incoming::Offer>) ->
     let user = identity["user_id"].as_str().ok_or("No Matrix user.")?;
     let device = identity["device_id"].as_str().ok_or("No Matrix device.")?;
     let state = w.state(true).await?;
-    check_dm(&state, user, w.peer)?;
-    if let Some(i) = incoming {
-        if !i.valid_state(&state, user) {
-            return Err("The caller is no longer ringing.");
+    if let Some(peer) = w.dm_peer {
+        check_dm(&state, user, peer)?;
+        if let Some(i) = incoming {
+            if !i.valid_state(&state, user) {
+                return Err("The caller is no longer ringing.");
+            }
+        } else if state.iter().any(active_member) {
+            return Err("A call is already active in this DM.");
         }
-    } else if state.iter().any(active_member) {
-        return Err("A call is already active in this DM.");
+    } else {
+        channel::check_room(&state, user)?;
     }
     let hs = Url::parse(identity["homeserver_url"].as_str().unwrap_or(""))
         .map_err(|_| "Unknown homeserver.")?;
@@ -407,12 +432,15 @@ pub async fn run(
     addr: SocketAddr,
     cookie: &str,
     room: &str,
-    peer: &str,
+    target: Target,
     controls: Controls,
     events: &Sender<Value>,
-    incoming: Option<crate::incoming::Offer>,
 ) -> Result<&'static str> {
     let Controls { cancel, audio } = controls;
+    let (dm_peer, incoming) = match &target {
+        Target::Channel => (None, None),
+        Target::Dm { peer, incoming } => (Some(peer.as_str()), incoming.as_ref()),
+    };
     let mut req = format!("ws://{addr}/_gomuks/websocket")
         .into_client_request()
         .map_err(|_| "Cannot open call signaling.")?;
@@ -427,12 +455,14 @@ pub async fn run(
     let mut w = Wire {
         ws,
         room,
-        peer,
+        dm_peer,
         seq: 0,
         keys: vec![],
+        roster_dirty: true,
         decline_for: None,
     };
-    let s = tokio::select! {biased; _=cancel.recv()=>return Ok(ENDED),s=prepare(&mut w,incoming.as_ref())=>s?};
+    let s =
+        tokio::select! {biased; _=cancel.recv()=>return Ok(ENDED),s=prepare(&mut w,incoming)=>s?};
     if cancel.is_closed() {
         return Ok(ENDED);
     }
@@ -455,7 +485,13 @@ pub async fn run(
         }
     };
     let mut media = None;
-    let result = tokio::select! {biased;_=cancel.recv()=>Ok(ENDED),r=call(&mut w,&s,&mut member,events,&mut media,incoming.as_ref(),audio)=>r};
+    let session = async {
+        match dm_peer {
+            Some(_) => call(&mut w, &s, &mut member, events, &mut media, incoming, audio).await,
+            None => channel::joined(&mut w, &s, &mut member, events, &mut media, audio).await,
+        }
+    };
+    let result = tokio::select! {biased;_=cancel.recv()=>Ok(ENDED),r=session=>r};
     if let Some(lk) = media {
         let _ = time::timeout(SECOND * 4, lk.close()).await;
     }
@@ -474,12 +510,13 @@ async fn call(
     incoming: Option<&crate::incoming::Offer>,
     mode: watch::Receiver<AudioMode>,
 ) -> Result<&'static str> {
+    let dm_peer = w.dm_peer.ok_or("Missing DM recipient.")?;
     let notification = if incoming.is_none() {
         let n = w
             .rpc(
                 "send_event",
                 json!({"room_id":w.room,"type":RING,"synchronous":true,"content":{
-        "slot_id":SLOT_ID,"notification_type":"ring","m.mentions":{"user_ids":[w.peer]},
+        "slot_id":SLOT_ID,"notification_type":"ring","m.mentions":{"user_ids":[dm_peer]},
         "m.relates_to":{"rel_type":"m.reference","event_id":m.event_id},
         "m.call.intent":"audio","sender_ts":now(),"lifetime":45_000,"msc4354_sticky_key":SLOT_ID}}),
             )
@@ -497,10 +534,10 @@ async fn call(
             tokio::select!{
                 _=heartbeat.tick()=>m.heartbeat(&mut *w).await.map_err(|_|"Lost call membership.")?,
                 _=poll.tick()=>{
-                    let state=w.state(false).await?;check_dm(&state,&s.user,w.peer)?;
-                    if let Some(e)=state.iter().find(|e|e["sender"]==w.peer && active_member(e) && incoming.is_none_or(|i|i.matches_member(e))){
+                    let state=w.state(false).await?;check_dm(&state,&s.user,dm_peer)?;
+                    if let Some(e)=state.iter().find(|e|e["sender"]==dm_peer && active_member(e) && incoming.is_none_or(|i|i.matches_member(e))){
                         let c=&e["content"];let device=c["device_id"].as_str().unwrap();
-                        let id=format!("{}:{device}",w.peer);
+                        let id=format!("{dm_peer}:{device}");
                         return Ok(PeerSession{device:device.to_owned(),member:c["membershipID"].as_str().unwrap_or(&id).to_owned(),
                             identity:id,created:created(e).ok_or("Unknown peer session.")?});
                     }
@@ -519,7 +556,7 @@ async fn call(
     let key = SenderKey::fresh(0)?;
     w.rpc(
         "send_to_device",
-        key.to_device(w.room, &my_id, &s.device, w.peer, peer_device),
+        key.to_device(w.room, &my_id, &s.device, dm_peer, peer_device),
     )
     .await?;
     fn install(
@@ -530,8 +567,8 @@ async fn call(
         id: &str,
     ) -> Result<bool> {
         let mut installed = false;
-        for c in w.keys.drain(..) {
-            let Some((idx, bytes)) = rtc_keys::receive(&c, device, member)? else {
+        for (_, e) in w.keys.drain(..) {
+            let Some((idx, bytes)) = rtc_keys::receive(&e["content"], device, member)? else {
                 continue;
             };
             if !p.set_key(&id.to_owned().into(), idx, bytes) {
@@ -550,36 +587,7 @@ async fn call(
     if !provider.set_key(&my_id.clone().into(), 0, key.bytes.to_vec()) {
         return Err("Failed to install local key.");
     }
-    let mut options = RoomOptions::default();
-    options.encryption = Some(E2eeOptions {
-        encryption_type: EncryptionType::Gcm,
-        key_provider: provider.clone(),
-    });
-    let (lk, mut rtc) = time::timeout(SECOND * 12, Room::connect(&s.sfu, &s.token, options))
-        .await
-        .map_err(|_| "SFU connection timed out.")?
-        .map_err(|_| "Could not connect to SFU.")?;
-    let lk = media.insert(lk);
-    if lk.local_participant().identity().0 != my_id {
-        return Err("SFU assigned an unexpected identity.");
-    }
-    let src = NativeAudioSource::new(AudioSourceOptions::default(), 48000, 1, 50);
-    let mic =
-        LocalAudioTrack::create_audio_track("Microphone", RtcAudioSource::Native(src.clone()));
-    let publication = lk
-        .local_participant()
-        .publish_track(
-            LocalTrack::Audio(mic),
-            TrackPublishOptions {
-                source: TrackSource::Microphone,
-                ..Default::default()
-            },
-        )
-        .await
-        .map_err(|_| "Could not publish microphone.")?;
-    if publication.encryption_type() != EncryptionType::Gcm {
-        return Err("Microphone encryption unavailable.");
-    }
+    let (lk, mut rtc, src, publication) = publish_mic(s, &provider, media, true).await?;
     let notices = DeviceNotices {
         events: events.clone(),
         room: w.room.to_owned(),
@@ -717,6 +725,51 @@ struct PeerSession {
     identity: String,
     created: u64,
 }
+
+async fn publish_mic<'a>(
+    s: &Session,
+    provider: &KeyProvider,
+    media: &'a mut Option<Room>,
+    auto_subscribe: bool,
+) -> Result<(
+    &'a Room,
+    tokio::sync::mpsc::UnboundedReceiver<RoomEvent>,
+    NativeAudioSource,
+    LocalTrackPublication,
+)> {
+    let mut options = RoomOptions::default();
+    options.auto_subscribe = auto_subscribe;
+    options.encryption = Some(E2eeOptions {
+        encryption_type: EncryptionType::Gcm,
+        key_provider: provider.clone(),
+    });
+    let (lk, rtc) = time::timeout(SECOND * 12, Room::connect(&s.sfu, &s.token, options))
+        .await
+        .map_err(|_| "SFU connection timed out.")?
+        .map_err(|_| "Could not connect to SFU.")?;
+    let lk = media.insert(lk);
+    if lk.local_participant().identity().0 != format!("{}:{}", s.user, s.device) {
+        return Err("SFU assigned an unexpected identity.");
+    }
+    let src = NativeAudioSource::new(AudioSourceOptions::default(), 48000, 1, 50);
+    let mic =
+        LocalAudioTrack::create_audio_track("Microphone", RtcAudioSource::Native(src.clone()));
+    let publication = lk
+        .local_participant()
+        .publish_track(
+            LocalTrack::Audio(mic),
+            TrackPublishOptions {
+                source: TrackSource::Microphone,
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|_| "Could not publish microphone.")?;
+    if publication.encryption_type() != EncryptionType::Gcm {
+        return Err("Microphone encryption unavailable.");
+    }
+    Ok((lk, rtc, src, publication))
+}
 fn created(event: &Value) -> Option<u64> {
     event["content"]["created_ts"]
         .as_u64()
@@ -768,8 +821,9 @@ impl LeaseWatch {
         let Ok(state) = w.state(restoring).await else {
             return Ok(LeaseState::Offline);
         };
-        check_dm(&state, user, w.peer)?;
-        if !state.iter().any(|e| peer.matches(w.peer, e)) {
+        let dm_peer = w.dm_peer.ok_or("Missing DM recipient.")?;
+        check_dm(&state, user, dm_peer)?;
+        if !state.iter().any(|e| peer.matches(dm_peer, e)) {
             return Ok(LeaseState::PeerLeft);
         }
         if restoring

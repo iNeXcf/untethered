@@ -76,6 +76,8 @@ enum Msg {
     #[cfg(target_os = "linux")]
     VoiceCall,
     #[cfg(target_os = "linux")]
+    JoinVoice,
+    #[cfg(target_os = "linux")]
     EndCall,
     #[cfg(target_os = "linux")]
     ToggleMic,
@@ -648,6 +650,12 @@ impl App {
                     }
                     Request::Members(id) => {
                         if let Some(r) = self.live.list.get_mut(&id) {
+                            #[cfg(target_os = "linux")]
+                            if r.voice {
+                                for e in items(data) {
+                                    r.voice_state(e);
+                                }
+                            }
                             for e in items(data).filter(|e| e["type"] == "m.room.member") {
                                 if let (Some(user), Some(name)) = (
                                     e["state_key"].as_str(),
@@ -784,11 +792,31 @@ impl App {
                     .live
                     .list
                     .get(&self.selected)
-                    .filter(|r| r.encrypted)
+                    .filter(|r| r.encrypted && !r.voice)
                     .and_then(|r| r.dm_peer.clone())
                 {
-                    self.start_voice(self.selected.clone(), peer, None);
+                    self.start_voice(
+                        self.selected.clone(),
+                        desktop_call::Target::Dm {
+                            peer,
+                            incoming: None,
+                        },
+                    );
                 }
+            }
+            #[cfg(target_os = "linux")]
+            Msg::JoinVoice
+                if self.call.is_none()
+                    && self.verified
+                    && self.connected
+                    && self.inbox.ringing.is_none()
+                    && self
+                        .live
+                        .list
+                        .get(&self.selected)
+                        .is_some_and(|r| r.voice && r.encrypted) =>
+            {
+                self.start_voice(self.selected.clone(), desktop_call::Target::Channel);
             }
             #[cfg(target_os = "linux")]
             Msg::EndCall => {

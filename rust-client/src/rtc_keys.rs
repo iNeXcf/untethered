@@ -33,9 +33,26 @@ impl SenderKey {
         peer: &str,
         peer_device: &str,
     ) -> Value {
+        self.to_devices(room, member, device, [(peer, peer_device)])
+    }
+    /// One Olm request, addressed to explicit user/device pairs, even when
+    /// multiple devices belonging to the same room member are in voice.
+    pub fn to_devices<'a>(
+        &self,
+        room: &str,
+        member: &str,
+        device: &str,
+        peers: impl IntoIterator<Item = (&'a str, &'a str)>,
+    ) -> Value {
         let key = json!({"index":self.index,"key":STANDARD.encode(self.bytes)});
         let content = json!({"room_id":room,"member_id":member,"member":{"id":member,"claimed_device_id":device},"media_key":key,"keys":key});
-        json!({"event_type":EVENT,"encrypted":true,"messages":{peer:{peer_device:content}}})
+        let mut messages = json!({});
+        for (user, target) in peers {
+            if !target.is_empty() && target != "*" {
+                messages[user][target] = content.clone();
+            }
+        }
+        json!({"event_type":EVENT,"encrypted":true,"messages":messages})
     }
 }
 /// Only call on Olm-decrypted envelopes with matching sender and room.

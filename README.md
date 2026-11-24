@@ -112,6 +112,15 @@ verified encrypted audio with either Untethered or Element initiating.
 The [desktop call tests](experiments/rtc-audio/README.md) drive both clients'
 actual call controls and measure audio through isolated Linux devices.
 
+**Linux voice rooms (experimental):** Open an existing encrypted Matrix call
+room (`org.matrix.msc3417.call`, marked **♪**) and click **Join voice**.
+People in voice appear under the room name. Joining never rings the other
+members. **Leave voice** disconnects only your device; the others can keep
+talking. The [three-person test](experiments/rtc-audio/README.md#verify-three-person-voice-rooms)
+uses three Linux clients on the same MatrixRTC LiveKit service.
+Room permissions must allow publishing call membership and, for the first
+participant, opening the voice slot if it is not already open.
+
 ![Untethered room preview in the Rust frontend](rust-client/docs/preview.png)
 
 ## Browser

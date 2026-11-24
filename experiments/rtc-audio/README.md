@@ -31,6 +31,27 @@ was created, even transiently. On the second, Iced **Accept** must open one
 microphone; both distinct tones and both GCM publications are checked again.
 Hanging up from Element must empty its roster and release both desktop streams.
 
+### Verify three-person voice rooms
+
+Build the Linux desktop and use the same desktop test requirements above:
+
+```sh
+LIVEKIT_SERVER=/path/to/livekit-server LK_JWT_SERVICE=/path/to/lk-jwt-service \
+  PYTHON=/path/to/qa/venv/bin/python sh experiments/rtc-audio/run_element.sh --voice-room
+```
+
+This test starts three Untethered processes with different verified accounts,
+separate displays and dedicated virtual microphones/speaker monitors. It
+clicks **Join voice** in the encrypted *Atrium* call room. The first two must
+exchange audio before the third joins. With all three present, every speaker
+must contain the other two frequencies and exclude its own for twelve
+consecutive 100 ms windows. The test checks two local playback streams per
+client, three GCM microphone publications, the names under the channel, and
+the room history (no non-state timeline messages, including encrypted rings).
+After one leaves, the remaining two must exchange newly injected tones on
+their original participant and track IDs. Final leave must clear call
+memberships and release all capture/playback streams.
+
 ### Verify mute and deafen
 
 Use `sh experiments/rtc-audio/run_element.sh --call-controls` with the same

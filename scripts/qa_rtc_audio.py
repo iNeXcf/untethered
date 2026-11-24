@@ -11,7 +11,7 @@ import shutil
 import subprocess as sp
 import threading
 import wave
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from urllib.parse import quote, urlsplit
 
 import requests
@@ -51,7 +51,42 @@ extra_well_known_client_content:
     return name,listen,settings,jwt
 
 
-def test(tmp, hs, name, jwt, root, backend, seed, http, service, *, desktop=False,incoming=False,controls=False,devices=False,reconnect=False,turn=False):
+@contextmanager
+def call_services(tmp,name,jwt,service,turn=False):
+    secret=secrets.token_hex(32)
+    (tmp/"lk.yaml").write_text(f"""port: 18820
+bind_addresses: ["127.0.0.1"]
+keys: {{testkey: "{secret}"}}
+rtc:
+  tcp_port: 18821
+  udp_port: 18822
+  node_ip: 192.0.2.2
+  enable_loopback_candidate: true
+  ips: {{includes: ["192.0.2.2/32"]}}
+""")
+    with ExitStack() as stack:
+        if turn:
+            from qa_rtc_turn import configure_turn
+            configure_turn(tmp,stack,service)
+        stack.enter_context(service([os.environ["LIVEKIT_SERVER"],"--config",str(tmp/"lk.yaml")],tmp))
+        auth=stack.enter_context(service([os.environ["LK_JWT_SERVICE"]],tmp,env={**os.environ,
+            "LIVEKIT_JWT_BIND":urlsplit(jwt).netloc,"LIVEKIT_URL":"ws://127.0.0.1:18820","LIVEKIT_KEY":"testkey",
+            "LIVEKIT_SECRET":secret,"LIVEKIT_FULL_ACCESS_HOMESERVERS":name,"SSL_CERT_FILE":str(tmp/"ca.crt"),
+            "LIVEKIT_LOG_LEVEL":"warn"}))
+        def ready():
+            assert auth.poll() is None, "lk-jwt-service exited"
+            try:return requests.get(jwt+"/healthz",timeout=2).ok
+            except requests.ConnectionError:return False
+        wait_for("authorization service",ready)
+        yield secret
+
+
+def test(tmp, hs, name, jwt, root, backend, seed, http, service, *, desktop=False,incoming=False,controls=False,devices=False,reconnect=False,turn=False,group=False):
+    if group:
+        from qa_voice_room import test_group
+        with call_services(tmp,name,jwt,service) as secret:
+            test_group(tmp,hs,name,root,backend,seed,http,secret)
+        return
     native,hdr=seed(tmp,hs)
     peer_dir=tmp/"peer";peer_dir.mkdir()
     peer,ph=seed(peer_dir,hs)
@@ -70,46 +105,21 @@ def test(tmp, hs, name, jwt, root, backend, seed, http, service, *, desktop=Fals
     power["events"]["org.matrix.msc4075.rtc.notification"]=0
     power["events"]["org.matrix.msc4143.rtc.slot"]=0
     if incoming:
-        # Element rings via a room mention. Permit that in this two-person
-        # disposable room without granting the peer admin/moderation powers.
         power.setdefault("notifications",{})["room"]=0
     http("PUT",api+"/state/m.room.power_levels",headers=hdr,json=power)
     if controls:
         http("POST",hs+"/_matrix/client/v3/createRoom",headers=hdr,json={"name":"Sidechat","preset":"private_chat"})
     assert http("GET",api+"/state/m.room.encryption",headers=ph).json()["algorithm"]=="m.megolm.v1.aes-sha2"
-    secret=secrets.token_hex(32)
-    (tmp/"lk.yaml").write_text(f"""port: 18820
-bind_addresses: ["127.0.0.1"]
-keys: {{testkey: "{secret}"}}
-rtc:
-  tcp_port: 18821
-  udp_port: 18822
-  node_ip: 192.0.2.2
-  enable_loopback_candidate: true
-  ips: {{includes: ["192.0.2.2/32"]}}
-""")
     wav=tmp/"element-mic.wav"
     with wave.open(str(wav),"wb") as w:
         w.setparams((1,2,48000,0,"NONE","not compressed"))
         w.writeframes(array.array("h",(round(8500*math.sin(i*math.tau*960/48000)) for i in range(48000))).tobytes())
-    with ExitStack() as stack:
-        if turn:
-            from qa_rtc_turn import configure_turn,relay_clients
-            configure_turn(tmp,stack,service)
-        stack.enter_context(service([os.environ["LIVEKIT_SERVER"],"--config",str(tmp/"lk.yaml")],tmp))
-        auth=stack.enter_context(service([os.environ["LK_JWT_SERVICE"]],tmp,env={**os.environ,
-            "LIVEKIT_JWT_BIND":urlsplit(jwt).netloc,"LIVEKIT_URL":"ws://127.0.0.1:18820","LIVEKIT_KEY":"testkey",
-            "LIVEKIT_SECRET":secret,"LIVEKIT_FULL_ACCESS_HOMESERVERS":name,"SSL_CERT_FILE":str(tmp/"ca.crt"),
-            "LIVEKIT_LOG_LEVEL":"warn"}))
-        def ready():
-            assert auth.poll() is None, "lk-jwt-service exited"
-            try:return requests.get(jwt+"/healthz",timeout=2).ok
-            except requests.ConnectionError:return False
-        wait_for("authorization service",ready)
+    with call_services(tmp,name,jwt,service,turn) as secret, ExitStack() as stack:
         web=stack.enter_context(element_server(hs,server_name=name,rtc_service=jwt))
         links=None
         chrome=shutil.which("chromium")
         if turn:
+            from qa_rtc_turn import relay_clients
             ports=[urlsplit(u).port for u in (hs,jwt,web,"https://"+name)]+[18820]
             links,chrome=relay_clients(stack,tmp,ports)
         pw=stack.enter_context(sync_playwright())

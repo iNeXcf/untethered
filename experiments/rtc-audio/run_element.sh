@@ -2,7 +2,7 @@
 # Invoke the shared disposable-home-server runner without a route to the LAN.
 set -eu
 cd "$(dirname "$0")/../.."
-: "${ELEMENT_WEB_DIR:?Set to an extracted Element Web release}"
+if [ "${1-}" != --voice-room ]; then : "${ELEMENT_WEB_DIR:?Set to an extracted Element Web release}"; fi
 : "${LIVEKIT_SERVER:?Set to the livekit-server executable}"
 : "${LK_JWT_SERVICE:?Set to the lk-jwt-service executable}"
 if [ "$#" -eq 0 ]; then set -- --rtc-audio; fi

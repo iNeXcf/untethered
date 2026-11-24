@@ -14,9 +14,8 @@ pub enum Command {
     #[cfg(target_os = "linux")]
     Voice {
         room: String,
-        peer: String,
+        target: crate::desktop_call::Target,
         controls: crate::desktop_call::Controls,
-        incoming: Option<crate::incoming::Offer>,
     },
     Rpc(Value),
     Inline {

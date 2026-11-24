@@ -258,8 +258,12 @@ impl App {
             button(text("Devices").size(15).font(BOLD))
                 .style(nav(call.picker))
                 .on_press_maybe(active.then_some(Msg::AudioDevices)),
-            button(text("Hang up").size(15).font(BOLD))
-                .on_press_maybe(active.then_some(Msg::EndCall))
+            button(
+                text(if call.group { "Leave voice" } else { "Hang up" })
+                    .size(15)
+                    .font(BOLD)
+            )
+            .on_press_maybe(active.then_some(Msg::EndCall))
         ]
         .spacing(8)
         .align_y(Center);
@@ -409,7 +413,13 @@ impl App {
             .width(Fill);
         let mut links = Column::new().spacing(2).padding([0, 8]);
         for (id, r) in self.visible() {
-            let prefix = if r.dm { "@" } else { "#" };
+            let prefix = if r.voice {
+                "♪"
+            } else if r.dm {
+                "@"
+            } else {
+                "#"
+            };
             let active = id == &self.selected;
             let entry = row![
                 text(prefix).size(22).color(DIM),
@@ -428,6 +438,20 @@ impl App {
                     .on_press(Msg::Open(id.clone()))
                     .style(nav(active)),
             );
+            #[cfg(target_os = "linux")]
+            if r.voice {
+                let participants: std::collections::BTreeSet<_> = r
+                    .voice_members
+                    .values()
+                    .filter(|(_, expires)| *expires > crate::desktop_call::now())
+                    .map(|(user, _)| user)
+                    .collect();
+                for user in participants {
+                    links = links.push(
+                        container(text(r.display(user)).size(13).color(MUTED)).padding([0, 28]),
+                    );
+                }
+            }
         }
         let name = if self.logged_in {
             self.profile.as_str()
@@ -461,7 +485,7 @@ impl App {
             container(label(if self.section == Section::Direct {
                 "DIRECT MESSAGES"
             } else {
-                "TEXT CHANNELS"
+                "CHANNELS"
             }))
             .padding([14, 16]),
             scrollable(links).height(Fill),
@@ -473,9 +497,15 @@ impl App {
         let room = store.list.get(&self.selected);
         let channel = room.map(|r| r.name.as_str()).unwrap_or("Rooms");
         let header = row![
-            text(if room.is_some_and(|r| r.dm) { "@" } else { "#" })
-                .size(25)
-                .color(DIM),
+            text(if room.is_some_and(|r| r.voice) {
+                "♪"
+            } else if room.is_some_and(|r| r.dm) {
+                "@"
+            } else {
+                "#"
+            })
+            .size(25)
+            .color(DIM),
             text(channel).font(BOLD).size(17),
             Space::new().width(Fill),
             button(text("People").size(13))
@@ -492,9 +522,18 @@ impl App {
             && self.verified
             && self.connected
             && self.inbox.ringing.is_none()
-            && room.is_some_and(|r| r.encrypted && r.dm_peer.is_some())
+            && room.is_some_and(|r| r.encrypted && (r.voice || r.dm_peer.is_some()))
         {
-            header.push(button("Voice call").on_press(Msg::VoiceCall))
+            if room.is_some_and(|r| r.voice) {
+                header.push(
+                    button(text("Join voice").size(16).font(BOLD))
+                        .padding([5, 12])
+                        .style(nav(false))
+                        .on_press(Msg::JoinVoice),
+                )
+            } else {
+                header.push(button("Voice call").on_press(Msg::VoiceCall))
+            }
         } else {
             header
         };

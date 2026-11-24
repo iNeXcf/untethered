@@ -1,0 +1,193 @@
+"""Three distinct native clients, each with its own Matrix device, mic and speaker."""
+import array
+import cmath
+import io
+import json
+import math
+import os
+import re
+import subprocess as sp
+import threading
+from collections import deque
+from contextlib import ExitStack
+from urllib.parse import quote
+
+from PIL import Image
+from qa_desktop_dm import sfu_participants
+from qa_native_paste import child, isolated_env, start_display, wait_for
+
+MEMBER = "org.matrix.msc3401.call.member"
+TONES = (410, 670, 1030, 530, 830)
+PCM = [array.array("h", (round(7000 * math.sin(n * math.tau * hz / 48000))
+                        for n in range(4800))).tobytes() for hz in TONES]
+# 100 ms, every fourth sample. Bin amplitudes distinguish both superimposed
+# tones from one stream, our own echo, comfort noise, and stale queued audio.
+BINS = [[cmath.exp(-1j * math.tau * hz * n / 12000) for n in range(1200)] for hz in TONES]
+
+
+class Desktop:
+    def __init__(self,stack,root,env,i):
+        self.env=env
+        self.i=i
+        self.tone=i
+        self.windows=deque(maxlen=12)
+        pcm=["--raw","--rate=48000","--channels=1","--format=s16le","--latency-msec=40"]
+        def process(args,**kw):
+            proc=sp.Popen(args,env=env,stderr=sp.DEVNULL,**kw)
+            def stop():
+                proc.terminate();proc.wait(timeout=5)
+            stack.callback(stop)
+            return proc
+        source=process(["pacat","--playback",f"--device=Mic{i}",*pcm],stdin=sp.PIPE,bufsize=0)
+        speaker=process(["pacat","--record",f"--device=Out{i}.monitor",*pcm],stdout=sp.PIPE)
+        def feed():
+            try:
+                while True:source.stdin.write(PCM[self.tone])
+            except (BrokenPipeError,ValueError):pass
+        def listen():
+            while data:=speaker.stdout.read(9600):
+                samples=array.array("h");samples.frombytes(data)
+                samples=samples[::4]
+                amps=[2*abs(sum(v*c for v,c in zip(samples,b)))/len(samples) for b in BINS]
+                self.windows.append(amps)
+        for fn in (feed,listen):threading.Thread(target=fn,daemon=True).start()
+        # Limit per-client rendering/codec parallelism in this three-GUI fixture.
+        cores=sorted(os.sched_getaffinity(0))[:4]
+        binary=root/"rust-client/target/debug/untethered-iced"
+        self.client=stack.enter_context(child(["taskset","-c",",".join(map(str,cores)),binary],env))
+        def ready():
+            assert self.client.poll() is None,f"client {i+1} exited"
+            return self.cmd("xdotool","search","--onlyvisible","--name","Untethered.*Atrium",check=False).strip()
+        self.win=wait_for(f"client {i+1} synced Atrium",ready,35).splitlines()[0]
+        self.cmd("xdotool","windowmove",self.win,"0","0")
+        self.cmd("xdotool","windowsize",self.win,"1180","760")
+
+    def cmd(self,*args,check=True):
+        return sp.run(args,env=self.env,text=True,capture_output=True,timeout=8,check=check).stdout
+
+    def words(self):
+        shot=sp.check_output(["import","-window",self.win,"png:-"],env=self.env,timeout=8)
+        im=Image.open(io.BytesIO(shot)).crop((0,0,1180,240)).resize((2360,480))
+        buf=io.BytesIO();im.save(buf,"PNG")
+        t=sp.run(["tesseract","stdin","stdout","--psm","11","tsv"],input=buf.getvalue(),capture_output=True,check=True)
+        return [(re.sub(r"^\W+|\W+$","",s[11]).lower(),(int(s[6])+int(s[8])//2)//2,(int(s[7])+int(s[9])//2)//2)
+                for line in t.stdout.decode().splitlines() if len(s:=line.split("\t"))==12 and s[0]=="5"]
+
+    def click(self,label):
+        def locate():return next(((x,y) for word,x,y in self.words() if word==label),None)
+        x,y=wait_for(label,locate,12)
+        self.cmd("xdotool","mousemove","--window",self.win,str(x),str(y),"click","1")
+
+    def hears(self,expected):
+        windows=list(self.windows)
+        return len(windows)==12 and all(all(a>500 if f in expected else a<200 for a,f in zip(amps,TONES))
+                                        for amps in windows)
+
+
+def test_group(tmp,hs,name,root,backend,seed,http,secret):
+    dirs=[tmp/f"p{i}" for i in range(3)]
+    for p in dirs:p.mkdir()
+    credentials=[seed(p,hs) for p in dirs]
+    users=["@"+f["username"]+":"+name for f,_ in credentials]
+    auth=credentials[0][1]
+    assert len(set(users))==3
+    names=("Alice","Bruno","Clara")
+    for user,(_,hdr),label in zip(users,credentials,names):
+        http("PUT",hs+"/_matrix/client/v3/profile/"+quote(user,safe="")+"/displayname",headers=hdr,json={"displayname":label})
+    room=http("POST",hs+"/_matrix/client/v3/createRoom",headers=auth,json={
+        "name":"Atrium","preset":"private_chat","invite":users[1:],
+        "creation_content":{"type":"org.matrix.msc3417.call"},
+        "power_level_content_override":{"events":{MEMBER:0,"org.matrix.msc4143.rtc.slot":0}},
+        "initial_state":[{"type":"m.room.encryption","state_key":"","content":{"algorithm":"m.megolm.v1.aes-sha2"}}]
+    }).json()["room_id"]
+    api=hs+"/_matrix/client/v3/rooms/"+quote(room,safe="")
+    for _,hdr in credentials[1:]:http("POST",api+"/join",headers=hdr,json={})
+
+    def members():
+        return sorted(e["sender"] for e in http("GET",api+"/state",headers=auth).json()
+                      if e["type"]==MEMBER and e["content"].get("application")=="m.call")
+    def no_ring():
+        # Prove no timeline event (including an encrypted wrapper hiding a ring)
+        # was sent in this fresh room. Examine all pages, not just the last sync.
+        args={"dir":"b","limit":100}
+        while True:
+            batch=http("GET",api+"/messages",headers=auth,params=args).json()
+            unexpected=[e["type"] for e in batch["chunk"] if "state_key" not in e or e["type"] in
+                        {"org.matrix.msc4075.rtc.notification","org.matrix.msc4075.call.notify","m.call.invite"}]
+            assert not unexpected,unexpected
+            if not batch.get("end") or not batch["chunk"]:break
+            args["from"]=batch["end"]
+    def publications(n):
+        peers=sfu_participants(secret)
+        if len(peers)!=n:return None
+        tracks={}
+        for p in peers:
+            a=[t for t in p.get("tracks",[]) if t.get("type","AUDIO")=="AUDIO"]
+            if len(a)!=1:return None
+            assert a[0]["encryption"]=="GCM" and a[0]["source"]=="MICROPHONE"
+            tracks[p["identity"].rsplit(":",1)[0]]=(p["sid"],a[0]["sid"])
+        return tracks if set(tracks)==set(users[:n]) else None
+    desks=[]
+    with ExitStack() as stack:
+        sock=tmp/"pulse"
+        for i,d in enumerate(dirs):
+            env=isolated_env(d,backend,"x11");env.update(TOKIO_WORKER_THREADS="2",RAYON_NUM_THREADS="2",GOMAXPROCS="2")
+            start_display(stack,d,env,"x11")
+            env.update(PULSE_SERVER="unix:"+str(sock),PULSE_SOURCE=f"Mic{i}.monitor",PULSE_SINK=f"Out{i}")
+            if i==0:
+                stack.enter_context(child(["pulseaudio","-n","--daemonize=no","--exit-idle-time=-1","--use-pid-file=no",
+                    f"--load=module-native-protocol-unix socket={sock} auth-anonymous=1",
+                    *(f"--load=module-null-sink sink_name={k}{j} channels=1 rate=48000" for j in range(3) for k in ("Mic","Out"))],env))
+                wait_for("private audio devices",lambda:sock.is_socket() and
+                         "Out2" in sp.run(["pactl","list","short","sinks"],env=env,capture_output=True,text=True).stdout)
+            desks.append(Desktop(stack,root,env,i))
+        try:
+            def audio_counts():
+                def devices(kind):
+                    return {v["name"]:int(v["index"]) for v in json.loads(desks[0].cmd("pactl","-f","json","list",kind))}
+                def streams(kind,port):
+                    return [int(v[port]) for v in json.loads(desks[0].cmd("pactl","-f","json","list",kind))
+                            if v["properties"].get("application.name")=="Untethered"]
+                sources,sinks=devices("sources"),devices("sinks")
+                inputs,outputs=streams("source-outputs","source"),streams("sink-inputs","sink")
+                return [(inputs.count(sources[f"Mic{i}.monitor"]),outputs.count(sinks[f"Out{i}"])) for i in range(3)]
+            def sidebar(peer,n):
+                words={w for w,x,_ in peer.words() if x<280}
+                return all((name.lower() in words)==(i<n) for i,name in enumerate(names))
+            original={}
+            for i,d in enumerate(desks):
+                d.click("join")
+                wait_for("silent join membership",lambda:members()==sorted(users[:i+1]))
+                if i==1:
+                    wait_for("two voices before third joins",lambda:desks[0].hears({670}) and desks[1].hears({410}),20)
+                    original=wait_for("original pair",lambda:publications(2))
+                    assert audio_counts()==[(1,1),(1,1),(0,0)]
+            tracks=wait_for("three encrypted microphone publications",lambda:publications(3))
+            expected=[set(TONES[:3])-{hz} for hz in TONES[:3]]
+            wait_for("all six decoded audio paths",lambda:all(d.hears(h) for d,h in zip(desks,expected)),25)
+            assert {u:tracks[u] for u in original}==original
+            assert audio_counts()==[(1,2)]*3
+            wait_for("participant names under the voice channel",lambda:all(sidebar(d,3) for d in desks),8)
+            no_ring()
+            for i,heard in enumerate(expected):
+                print(f"Client {i+1}: sent {TONES[i]} Hz; speaker received {sorted(heard)} Hz, no self tone (12 consecutive 100 ms windows).",flush=True)
+            print("Three joined devices, three GCM microphones, two playback streams per client; zero ring or other non-state events.",flush=True)
+            desks[2].click("leave")
+            wait_for("third device left MatrixRTC",lambda:members()==sorted(users[:2]))
+            remaining=wait_for("third device left SFU",lambda:publications(2))
+            assert remaining==original
+            desks[0].tone=3;desks[1].tone=4
+            wait_for("fresh two-party audio after leave",lambda:desks[0].hears({830}) and desks[1].hears({530}) and desks[2].hears(set()),20)
+            assert publications(2)==original
+            assert audio_counts()==[(1,1),(1,1),(0,0)]
+            wait_for("remaining pair in sidebar",lambda:all(sidebar(d,2) for d in desks),8)
+            print("Client 3 left. Clients 1 and 2 decoded fresh 830/530 Hz with unchanged participant and GCM microphone SIDs; client 3's speaker was silent.",flush=True)
+            for d in desks[:2]:d.click("leave")
+            wait_for("empty voice roster",lambda:not members())
+            wait_for("all desktop audio streams released",lambda:audio_counts()==[(0,0)]*3)
+            no_ring()
+            print("Final leave: 0 active memberships, 0 Untethered audio streams, 0 ring events.",flush=True)
+        except Exception:
+            for d in desks:print("Desktop",d.i+1,"labels:",[w for w,_,_ in d.words()],"PCM amplitudes:",[int(n) for n in d.windows[-1]] if d.windows else [])
+            print("Voice roster size:",len(members()),flush=True)
+            raise

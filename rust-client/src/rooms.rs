@@ -1,5 +1,6 @@
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
+pub const VOICE_ROOM: &str = "org.matrix.msc3417.call";
 
 pub fn items(v: &Value) -> impl Iterator<Item = &Value> {
     v.as_array().into_iter().flatten()
@@ -25,6 +26,9 @@ pub struct Room {
     pub topic: String,
     pub space: bool,
     pub dm: bool,
+    pub voice: bool,
+    #[cfg(target_os = "linux")]
+    pub voice_members: BTreeMap<String, (String, u64)>,
     #[cfg(target_os = "linux")]
     pub dm_peer: Option<String>,
     pub unread: bool,
@@ -57,6 +61,27 @@ pub fn real_send_error(e: &Value) -> bool {
             .is_some_and(|s| !s.is_empty() && s != "not sent")
 }
 impl Room {
+    #[cfg(target_os = "linux")]
+    pub fn voice_state(&mut self, e: &Value) {
+        if !self.voice || e["type"] != untethered_iced::rtc_membership::EVENT_TYPE {
+            return;
+        }
+        let Some(key) = e["state_key"].as_str() else {
+            return;
+        };
+        self.voice_members.remove(key);
+        if crate::desktop_call::active_member(e)
+            && let Some(user) = e["sender"].as_str()
+        {
+            let expires = e["content"]["created_ts"]
+                .as_u64()
+                .or(e["timestamp"].as_u64())
+                .unwrap_or(0)
+                .saturating_add(e["content"]["expires"].as_u64().unwrap_or(14_400_000));
+            self.voice_members
+                .insert(key.into(), (user.into(), expires));
+        }
+    }
     pub fn already_confirmed(&self, e: &Value) -> bool {
         e["rowid"]
             .as_i64()
@@ -168,6 +193,7 @@ impl Rooms {
                 room.space =
                     meta["creation_content"]["type"] == "m.space" || self.children.contains_key(id);
                 room.dm = meta["dm_user_id"].is_string();
+                room.voice = meta["creation_content"]["type"] == VOICE_ROOM;
                 #[cfg(target_os = "linux")]
                 {
                     room.dm_peer = meta["dm_user_id"]
@@ -188,6 +214,13 @@ impl Rooms {
                 .filter_map(|t| t["event_rowid"].as_i64())
                 .collect();
             for e in items(&delta["events"]) {
+                #[cfg(target_os = "linux")]
+                if let Some(key) = e["state_key"].as_str()
+                    && delta["state"][untethered_iced::rtc_membership::EVENT_TYPE][key]
+                        == e["rowid"]
+                {
+                    room.voice_state(e);
+                }
                 if e["type"] == "m.room.member"
                     && let Some(user) = e["state_key"].as_str()
                     && delta["state"]["m.room.member"][user] == e["rowid"]

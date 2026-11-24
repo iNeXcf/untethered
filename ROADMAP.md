@@ -96,6 +96,14 @@
   used GCM. Blocking just coturn silenced both ends; restoring it delivered
   a new 730 Hz desktop tone to Element and the 960 Hz return tone to Linux.
   TURN/TCP and TURN/TLS were not exercised.
+- **Three-person Linux voice rooms:** **Join voice** and **Leave voice** use
+  the encrypted room's MatrixRTC slot without DM notifications. In the
+  [three-account desktop test](experiments/rtc-audio/README.md#verify-three-person-voice-rooms)
+  all six sender→listener paths carried the correct tones (410, 670, 1030 Hz);
+  the SFU reported three GCM microphones, and room history had zero rings.
+  After the third participant left, the other two exchanged fresh tones on
+  their original tracks. Speaking indicators, per-user volume, push-to-talk,
+  camera and screen sharing remain open.
 
 ## What parity means
 

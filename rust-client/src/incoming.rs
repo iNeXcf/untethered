@@ -299,7 +299,13 @@ impl App {
             return;
         }
         if accept {
-            self.start_voice(i.room.clone(), i.peer.clone(), Some(i));
+            self.start_voice(
+                i.room.clone(),
+                crate::desktop_call::Target::Dm {
+                    peer: i.peer.clone(),
+                    incoming: Some(i),
+                },
+            );
         } else {
             self.rpc("send_event",json!({"room_id":i.room,"type":DECLINE,"synchronous":true,"content":{
                 "m.relates_to":{"rel_type":"m.reference","event_id":i.event},"msc4354_sticky_key":i.event}}),Request::DeclineSent);
