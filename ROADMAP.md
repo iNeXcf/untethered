@@ -34,9 +34,15 @@
   mid-upload produced two encrypted events in the original room, none in the
   other. Element saved both and sent those bytes back; the native KDE Save
   dialogs produced files identical to the originals.
-- **Files still to do:** unencrypted-room and limit/error-path platform checks.
-  Windows runtime QA is deferred at Chris's request; a cross-build is the only
-  Windows evidence so far.
+- **Unencrypted rooms and upload boundaries:** [Linux and Chromium ↔ Element](scripts/kwin-element.md#verify-plain-rooms-and-upload-limits)
+  each round-tripped a 437-byte PNG and a 65,536-byte PDF on a homeserver
+  advertising a 65,536-byte limit. Both named and skipped a 65,537-byte
+  file, leaving the valid pair ready. Each run produced exactly four uploads
+  and four ordinary `m.room.message` events across both directions; both
+  saved originals matched byte-for-byte. Chromium also kept a caption local
+  when the only attachment was rejected.
+- **Files still to do:** Windows Explorer runtime QA remains deferred. The
+  Linux/Chromium checks do not establish Windows file interoperability.
 - **Calls started:** a user-triggered MatrixRTC transport check in Account, and a
   [repeatable native audio probe](experiments/rtc-audio/README.md). Two Rust peers
   decoded each other's encrypted audio through a test SFU. Separately, Element

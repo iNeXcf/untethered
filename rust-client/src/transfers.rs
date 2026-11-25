@@ -19,14 +19,7 @@ impl App {
             self.status = "Select regular files to attach.".into();
             return iced::Task::none();
         }
-        let (all, jobs) = self.outbox.stage(&room, files, self.media_limit);
-        if !all {
-            self.status = format!(
-                "Up to {} files per room, {} each.",
-                media::MAX_FILES,
-                media::size(self.media_limit)
-            );
-        }
+        let jobs = self.outbox.stage(&room, files, self.media_limit);
         iced::Task::batch(jobs.into_iter().map(|(id, file)| {
             let room = room.clone();
             iced::Task::perform(crate::preview::load(file), move |thumb| {
@@ -41,9 +34,10 @@ impl App {
             && (!self.logged_in || self.verified)
     }
     pub fn send_files(&mut self, room: String, caption: String) {
-        if !self.can_stage() || self.batch.is_some() {
+        if !self.can_stage() || self.batch.is_some() || self.media_config_pending() {
             return;
         }
+        self.outbox.skipped.remove(&room);
         if !self.logged_in {
             if let Some(q) = self.outbox.rooms.remove(&room)
                 && let Some(r) = self.demo.list.get_mut(&room)
@@ -76,6 +70,11 @@ impl App {
             early: Default::default(),
         });
         self.advance_file();
+    }
+    pub fn media_config_pending(&self) -> bool {
+        self.pending
+            .values()
+            .any(|p| matches!(p, Request::MediaConfig))
     }
     fn advance_file(&mut self) {
         let Some(b) = &mut self.batch else { return };
@@ -330,6 +329,51 @@ impl App {
 mod tests {
     use super::*;
     use crate::rooms::Room;
+    #[test]
+    fn late_media_config_rechecks_each_room_without_publishing_an_orphaned_caption() {
+        let (tx, rx) = async_channel::bounded(8);
+        let mut app = App::new(tx);
+        app.connected = true;
+        app.verified = true;
+        app.logged_in = true;
+        app.selected = "!a".into();
+        let file = |n| media::LocalFile {
+            name: format!("{n}.bin"),
+            size: n,
+            origin: media::NativeSource::Path("unused".into()),
+        };
+        for room in ["!a", "!b"] {
+            app.live.list.insert(
+                room.into(),
+                Room {
+                    has_metadata: true,
+                    ..Default::default()
+                },
+            );
+        }
+        app.rpc("get_media_config", json!({}), Request::MediaConfig);
+        let cfg = rx.try_recv().unwrap().into_rpc()["request_id"].clone();
+        let _ = app.update(Msg::Files("!a".into(), vec![file(11)]));
+        let _ = app.update(Msg::Files("!b".into(), vec![file(10), file(11)]));
+        app.editor = text_editor::Content::with_text("Private draft");
+        let _ = app.update(Msg::Send);
+        assert!(rx.is_empty() && app.batch.is_none());
+        app.frame(json!({"command":"response","request_id":cfg,"data":{"m.upload.size":10}}));
+        assert_eq!(app.outbox.rooms["!b"].len(), 1);
+        assert_eq!(app.outbox.rooms["!b"][0].source.size, 10);
+        assert!(!app.outbox.rooms.contains_key("!a"));
+        let _ = app.update(Msg::DismissSkipped("!b".into())); // stale click for another room
+        let _ = app.update(Msg::Send);
+        assert!(rx.is_empty() && app.outbox.skipped.contains_key("!b"));
+        assert_eq!(app.editor.text(), "Private draft");
+        let _ = app.update(Msg::DismissSkipped("!a".into()));
+        let _ = app.update(Msg::Send);
+        let sent = rx.try_recv().unwrap().into_rpc();
+        assert_eq!(
+            (&sent["command"], &sent["data"]["text"]),
+            (&json!("send_message"), &json!("Private draft"))
+        );
+    }
     #[test]
     fn cancelled_attempt_can_never_send_or_cancel_its_retry() {
         let (tx, rx) = async_channel::bounded(8);

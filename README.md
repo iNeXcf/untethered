@@ -133,6 +133,11 @@ Uploads are sequential, with up to 10 staged files per room and a 64 MiB/file ca
 (lower if the homeserver advertises a smaller limit). Click **Save** on a received
 attachment. Preview mode simulates a send locally; it never uploads.
 
+If a file is too large, the composer shows its name, size, and the limit
+in bytes. Valid files from the same selection stay staged. If none fit,
+your caption stays in the composer; choose another file or dismiss the
+notice to send just the text. [Linux and Chromium limit tests](scripts/kwin-element.md#verify-plain-rooms-and-upload-limits).
+
 On native Wayland you can drop a URI list or a file-transfer portal offer
 from a sandboxed app. Portal files stay bound to the room that received the
 drop, even if you navigate away before the desktop portal responds. The app

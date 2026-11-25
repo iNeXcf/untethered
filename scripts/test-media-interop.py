@@ -65,7 +65,7 @@ def http(method, url, **kw):
     return r
 
 
-def seed(tmp, hs):
+def seed(tmp, hs, *, encrypted=True):
     user = "media" + secrets.token_hex(4)
     pwd = secrets.token_urlsafe(24)
     auth = http("POST", hs+"/_matrix/client/v3/register", json={
@@ -73,7 +73,7 @@ def seed(tmp, hs):
     hdr = {"Authorization": "Bearer "+auth["access_token"]}
     room = http("POST", hs+"/_matrix/client/v3/createRoom", headers=hdr, json={
         "name": "media-proof", "preset": "private_chat", "initial_state": [
-            {"type": "m.room.encryption", "state_key": "", "content": {"algorithm": "m.megolm.v1.aes-sha2"}}]}).json()["room_id"]
+            {"type": "m.room.encryption", "state_key": "", "content": {"algorithm": "m.megolm.v1.aes-sha2"}}] if encrypted else []}).json()["room_id"]
     key = secrets.token_hex(32)
     with service([BACKEND, "--desktop"], tmp, stdout=subprocess.PIPE, env={
         **os.environ, "GOMUKS_ROOT": str(tmp/"seed"), "GOMUKS_DESKTOP_KEY": key}) as p:
@@ -127,6 +127,7 @@ def main():
     args.add_argument("--native-paste",choices=("wayland","x11"))
     args.add_argument("--portal-drop",action="store_true",help="Native Wayland portal-only PNG/PDF drag with a real document portal")
     args.add_argument("--kwin-element",action="store_true",help="Drive a real Dolphin drag under KWin and round-trip both files through Element Web")
+    args.add_argument("--file-limits",choices=("native","web"),help="Round-trip plain PNG/PDF through Element; enforce an exact 64 KiB server boundary on actual clients")
     args.add_argument("--rtc-membership",action="store_true",help="Observe the Rust client's MatrixRTC join, heartbeat, hangup and abandoned membership in Element Web")
     args.add_argument("--replies",action="store_true",help="Send and edit encrypted replies in Iced and Element, reconnect both and jump to the originals beyond recent history")
     args.add_argument("--reactions",action="store_true",help="Toggle the same reaction from Iced and Element on an edited reply and verify ownership after reconnect")
@@ -184,7 +185,7 @@ def main():
     dist = ROOT/"rust-client/web/dist"
     chat_test=args.replies or args.reactions or args.room_search or args.room_alerts or args.room_permissions or args.room_ban or args.room_kick or args.message_report or args.mentions_inbox
     web_chat="web" in (args.message_report,args.mentions_inbox)
-    if web_chat or not any((args.native_paste,args.portal_drop,args.kwin_element,args.rtc_membership,args.rtc_audio,chat_test,args.linux_upgrade)):
+    if web_chat or args.file_limits=="web" or not any((args.file_limits,args.native_paste,args.portal_drop,args.kwin_element,args.rtc_membership,args.rtc_audio,chat_test,args.linux_upgrade)):
         assert (dist/"backend/gomuks-worker.js").is_file(), "Run scripts/rust-web.sh first"
     os.umask(0o077)
     with tempfile.TemporaryDirectory(prefix="untethered-media-",dir=os.environ.get("TMPDIR")) as d:
@@ -197,11 +198,12 @@ def main():
             if args.unsupported_dm:extra_settings=extra_settings.split("extra_well_known_client_content:")[0]
         if chat_test or args.browser_alerts:
             extra_settings="rc_message: {per_second: 1000, burst_count: 1000}\n"
+        if args.file_limits:extra_settings+="max_upload_size: 64K\n"
         subprocess.run([sys.executable, "-m", "synapse.app.homeserver", "-c", "hs.yaml", "--generate-config",
                         "-H", server_name, "--report-stats", "no"], cwd=tmp, stdout=subprocess.DEVNULL, check=True)
         port = free_port()
         hs = f"http://127.0.0.1:{port}"
-        gateway_port=free_port() if args.upload_cancel or args.portal_drop or args.kwin_element or chat_test or args.linux_upgrade else None
+        gateway_port=free_port() if args.upload_cancel or args.portal_drop or args.kwin_element or args.file_limits or chat_test or args.linux_upgrade else None
         public_url=f"http://127.0.0.1:{gateway_port}" if gateway_port else hs
         (tmp/"local.yaml").write_text(f"""listeners:
 {extra_listeners}  - port: {port}
@@ -253,9 +255,15 @@ federation_domain_whitelist: []
                 from qa_rtc_membership import test
                 test(tmp,hs,ROOT,BACKEND,seed,http)
                 return
-            if args.kwin_element:
+            if args.file_limits=="web":
                 from qa_kwin_element import test
-                test(tmp,hs,gateway_port,ROOT,BACKEND,seed)
+                wp=free_port()
+                with service([sys.executable,"-m","http.server",str(wp),"--bind","127.0.0.1","--directory",str(dist)],tmp):
+                    test(tmp,hs,gateway_port,ROOT,BACKEND,seed,plain=True,web_client=f"http://127.0.0.1:{wp}")
+                return
+            if args.kwin_element or args.file_limits=="native":
+                from qa_kwin_element import test
+                test(tmp,hs,gateway_port,ROOT,BACKEND,seed,plain=bool(args.file_limits))
                 return
             if args.portal_drop:
                 from qa_portal_drop import test

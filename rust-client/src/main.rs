@@ -93,6 +93,7 @@ enum Msg {
     Thumbnail(String, u64, Option<iced::widget::image::Handle>),
     PickFiles,
     RemoveFile(u64),
+    DismissSkipped(String),
     CancelUpload(String, u64, i64),
     SaveFile(media::Media),
     InlineReady(u64, media::PreviewRef, Option<iced::widget::image::Handle>),
@@ -660,6 +661,7 @@ impl App {
                     self.section = Section::All;
                     self.account = !self.logged_in;
                     self.outbox.rooms.clear();
+                    self.outbox.skipped.clear();
                     self.inline.reset();
                     self.batch = None;
                     self.rtc_status.clear();
@@ -738,6 +740,7 @@ impl App {
                         self.clear_ring()
                     }
                     self.outbox.rooms.remove(left);
+                    self.outbox.skipped.remove(left);
                     self.reply_drafts.remove(left);
                     self.pending.retain(|_,p|!matches!(p,Request::Upload(room,_)|Request::MediaSend(room,_) if room==left));
                     if self.batch.as_ref().is_some_and(|b| b.room == left) {
@@ -848,6 +851,7 @@ impl App {
                     Request::MediaConfig => {
                         if let Some(n) = data["m.upload.size"].as_u64().filter(|n| *n > 0) {
                             self.media_limit = media::MAX_BYTES.min(n);
+                            self.outbox.apply_limit(self.media_limit);
                         }
                     }
                     Request::Upload(room, id) => self.uploaded(&room, id, data),
@@ -1389,6 +1393,9 @@ impl App {
                 #[cfg(target_arch = "wasm32")]
                 web_files::pick(&room);
             }
+            Msg::DismissSkipped(room) if room == self.selected => {
+                self.outbox.skipped.remove(&room);
+            }
             Msg::RemoveFile(id) => {
                 if self
                     .outbox
@@ -1672,7 +1679,8 @@ impl App {
                     self.send_files(id, body);
                     return Task::none();
                 }
-                if id.is_empty() || body.trim().is_empty() {
+                if id.is_empty() || body.trim().is_empty() || self.outbox.skipped.contains_key(&id)
+                {
                     return Task::none();
                 }
                 if self.logged_in {

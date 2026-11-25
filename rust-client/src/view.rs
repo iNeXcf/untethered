@@ -1403,6 +1403,7 @@ impl App {
             .any(|p| matches!(p,Request::Send(id,..) if id==&self.selected));
         let files = self.outbox.rooms.get(&self.selected);
         let has_files = files.is_some_and(|q| !q.is_empty());
+        let skipped = self.outbox.skipped.get(&self.selected);
         let uploading = self.batch.as_ref().is_some_and(|b| b.room == self.selected);
         let mut tray = Column::new().spacing(4);
         if let Some(d) = &self.reporting {
@@ -1452,6 +1453,25 @@ impl App {
                 .align_y(Center),
             );
         }
+        if let Some(reason) = skipped {
+            tray = tray.push(
+                row![
+                    text(reason).size(13).color(color!(0xffc785)).width(Fill),
+                    button(text("Dismiss").size(13))
+                        .style(nav(false))
+                        .on_press(Msg::DismissSkipped(self.selected.clone()))
+                ]
+                .spacing(6)
+                .align_y(Center),
+            );
+            if !has_files && !self.editor.text().trim().is_empty() {
+                tray = tray.push(
+                    text("Choose another file or dismiss to send just the text.")
+                        .size(12)
+                        .color(MUTED),
+                );
+            }
+        }
         if self.hover_files {
             tray = tray.push(
                 text(format!("Drop files to attach to {}", r.name))
@@ -1491,8 +1511,10 @@ impl App {
                 (!sending
                     && !restricted
                     && (!self.logged_in || self.connected)
-                    && (has_files && self.batch.is_none()
-                        || !has_files && !self.editor.text().trim().is_empty()))
+                    && (has_files && self.batch.is_none() && !self.media_config_pending()
+                        || !has_files
+                            && skipped.is_none()
+                            && !self.editor.text().trim().is_empty()))
                 .then_some(Msg::Send)
             )
         ]

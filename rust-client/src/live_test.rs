@@ -111,7 +111,7 @@ async fn throttled_encrypted_upload_cancel_retry() {
     let room = f["room"].as_str().unwrap();
     let (mut app, rx, backend) = session();
     wait(&mut app, &rx, "synced seeded test device", |a| {
-        a.verified && a.live.list.contains_key(room)
+        a.verified && a.live.list.contains_key(room) && !a.media_config_pending()
     })
     .await;
     app.open(room.into());
@@ -227,6 +227,7 @@ async fn encrypted_round_trip_and_restart() {
     let (mut app, rx, engine) = session();
     wait(&mut app, &rx, "restore session and decrypt history", |a| {
         a.verified
+            && !a.media_config_pending()
             && a.live
                 .list
                 .get(id)

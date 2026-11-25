@@ -59,6 +59,7 @@ impl LocalFile {
 pub struct Outbox {
     next: u64,
     pub rooms: BTreeMap<String, Vec<Attachment>>,
+    pub skipped: BTreeMap<String, String>,
 }
 pub struct Attachment {
     pub id: u64,
@@ -100,18 +101,66 @@ impl Attachment {
     }
 }
 impl Outbox {
+    fn too_large(file: &LocalFile, limit: u64) -> String {
+        let name: String = file
+            .name
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(100)
+            .collect();
+        format!(
+            "{name} was not attached: {} bytes exceeds the {limit}-byte limit.",
+            file.size
+        )
+    }
+    fn note(&mut self, room: &str, oversize: Option<String>, full: bool) {
+        let mut note = oversize.unwrap_or_default();
+        if full {
+            if !note.is_empty() {
+                note.push(' ')
+            }
+            note.push_str(&format!(
+                "Extra files were skipped: up to {MAX_FILES} attachments per message batch."
+            ));
+        }
+        if note.is_empty() {
+            self.skipped.remove(room);
+        } else {
+            self.skipped.insert(room.into(), note);
+        }
+    }
+    pub fn apply_limit(&mut self, limit: u64) {
+        // A pick/drop can finish before get_media_config. Recheck staged
+        // sources without discarding other files or their caption.
+        self.rooms.retain(|room, q| {
+            if let Some(a) = q
+                .iter()
+                .find(|a| !a.busy && a.descriptor.is_none() && a.source.size > limit)
+            {
+                self.skipped
+                    .insert(room.clone(), Self::too_large(&a.source, limit));
+                q.retain(|a| a.busy || a.descriptor.is_some() || a.source.size <= limit);
+            }
+            !q.is_empty()
+        });
+    }
     pub fn stage(
         &mut self,
         room: &str,
         files: Vec<LocalFile>,
         limit: u64,
-    ) -> (bool, Vec<(u64, LocalFile)>) {
+    ) -> Vec<(u64, LocalFile)> {
         let queue = self.rooms.entry(room.to_owned()).or_default();
-        let mut all = true;
+        let mut oversized = None;
+        let mut full = false;
         let mut previews = vec![];
         for file in files {
-            if file.size > limit || queue.len() >= MAX_FILES {
-                all = false;
+            if file.size > limit {
+                oversized.get_or_insert_with(|| Self::too_large(&file, limit));
+                continue;
+            }
+            if queue.len() >= MAX_FILES {
+                full = true;
                 continue;
             }
             self.next += 1;
@@ -130,7 +179,11 @@ impl Outbox {
                 cancelled: false,
             });
         }
-        (all, previews)
+        if queue.is_empty() {
+            self.rooms.remove(room);
+        }
+        self.note(room, oversized, full);
+        previews
     }
     pub fn get_mut(&mut self, room: &str, id: u64) -> Option<&mut Attachment> {
         self.rooms.get_mut(room)?.iter_mut().find(|a| a.id == id)
@@ -288,15 +341,19 @@ mod tests {
                 origin: super::NativeSource::Path("unused".into()),
             })
             .collect();
-        let (all, _) = out.stage("original", files, 10);
-        assert!(!all);
+        out.stage("original", files, 10);
+        assert!(
+            out.skipped["original"].contains("file-1.txt")
+                && out.skipped["original"].contains("Extra files")
+        );
         let q = &out.rooms["original"];
         assert_eq!(q.len(), super::MAX_FILES);
         assert_eq!(q.first().unwrap().source.name, "file-0.txt");
         assert_eq!(q.last().unwrap().source.name, "file-10.txt");
         assert!(q.iter().all(|a| a.source.size <= 10));
         let extra = q[0].source.clone();
-        assert!(out.stage("other", vec![extra], 10).0);
+        out.stage("other", vec![extra], 10);
+        assert!(!out.skipped.contains_key("other"));
         assert_eq!(out.rooms["original"].len(), super::MAX_FILES);
     }
     #[test]
