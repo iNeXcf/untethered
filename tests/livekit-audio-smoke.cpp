@@ -119,7 +119,10 @@ void runSmokeTest() {
     auto secondTrack = secondReceiver.receive();
 
     livekit::RoomOptions options;
-    options.encryption.emplace();
+    auto &keys = options.encryption.emplace().key_provider_options;
+    keys.key_derivation_function = livekit::KeyDerivationFunction::HKDF;
+    keys.ratchet_window_size = 10;
+    keys.key_ring_size = 256;
     if (!first.connect(url, firstToken, options) || !second.connect(url, secondToken, options))
         throw std::runtime_error("Could not connect both test participants");
 

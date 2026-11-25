@@ -11,6 +11,30 @@ if [[ "$mode" != build && "$mode" != run ]]; then
 fi
 if (( $# )); then shift; fi
 
+# Use the pinned upstream artifacts from the package recipe.
+source "$root/PKGBUILD"
+if [[ -z "${LIVEKIT_SDK:-}" ]]; then
+    export LIVEKIT_SDK="$dev/backends/$_livekit_dir"
+    if [[ ! -f "$LIVEKIT_SDK/lib/liblivekit.so" || ! -f "$LIVEKIT_SDK/lib/liblivekit_ffi.so" ]]; then
+        mkdir -p "$dev/downloads" "$dev/backends"
+        (
+            set -e
+            scratch=$(mktemp -d "$dev/downloads/livekit.XXXXXX")
+            trap 'rm -rf -- "$scratch"' EXIT
+            archive="$dev/downloads/$_livekit_dir.tar.gz"
+            if [[ ! -f "$archive" ]]; then
+                curl --fail --location --silent --show-error "$_livekit_url" --output "$scratch/sdk.tar.gz"
+                printf '%s  %s\n' "$_livekit_sha256" "$scratch/sdk.tar.gz" | sha256sum -c -
+                mv -- "$scratch/sdk.tar.gz" "$archive"
+            else
+                printf '%s  %s\n' "$_livekit_sha256" "$archive" | sha256sum -c -
+            fi
+            tar -xzf "$archive" -C "$scratch"
+            mv -T -- "$scratch/$_livekit_dir" "$LIVEKIT_SDK"
+        )
+    fi
+fi
+
 mkdir -p "$dev/build"
 (
     cd "$dev/build"
@@ -19,8 +43,6 @@ mkdir -p "$dev/build"
 )
 if [[ "$mode" == build ]]; then exit 0; fi
 
-# Use the same pinned upstream version and checksum as the CachyOS package.
-source "$root/PKGBUILD"
 backend="$dev/backends/$_gomuks_release/gomuks"
 if [[ ! -x "$backend" ]]; then
     mkdir -p "$(dirname -- "$backend")" "$dev/downloads"

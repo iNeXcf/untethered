@@ -2,7 +2,6 @@
 
 #include <QtCore>
 #include <QGuiApplication>
-#include <QtWebEngineQuick/qtwebenginequickglobal.h>
 #include <QClipboard>
 #include <QImageReader>
 #include <QQmlApplicationEngine>
@@ -14,6 +13,16 @@
 #include <memory>
 #include <utility>
 #include <algorithm>
+#include <QtConcurrent>
+#include <QCamera>
+#include <QMediaCaptureSession>
+#include <QMediaDevices>
+#include <QScreenCapture>
+#include <QVideoSink>
+#include <QWindowCapture>
+#include <mutex>
+#include <thread>
+#include <livekit/livekit.h>
 
 class MediaNetworkFactory : public QQmlNetworkAccessManagerFactory {
 public:
@@ -31,7 +40,15 @@ class Chat : public QObject {
     Q_PROPERTY(bool ready MEMBER ready NOTIFY changed)
     Q_PROPERTY(bool loggedIn MEMBER loggedIn NOTIFY changed)
     Q_PROPERTY(bool loggingOut READ loggingOut NOTIFY changed)
-    Q_PROPERTY(QUrl callUrl MEMBER callUrl NOTIFY callControlsChanged)
+    Q_PROPERTY(bool nativeCall READ nativeCall NOTIFY callControlsChanged)
+    Q_PROPERTY(bool nativeConnected MEMBER nativeConnected NOTIFY callControlsChanged)
+    Q_PROPERTY(bool nativeCamera READ nativeCamera NOTIFY callControlsChanged)
+    Q_PROPERTY(bool nativeSharing READ nativeSharing NOTIFY callControlsChanged)
+    Q_PROPERTY(QVariantList nativeVideoTiles MEMBER nativeVideoTiles NOTIFY nativeVideoTilesChanged)
+    Q_PROPERTY(bool nativeMuted MEMBER nativeMuted NOTIFY callControlsChanged)
+    Q_PROPERTY(QVariantList nativeInputs READ nativeInputs NOTIFY callControlsChanged)
+    Q_PROPERTY(QVariantList nativeOutputs READ nativeOutputs NOTIFY callControlsChanged)
+    Q_PROPERTY(QString callRoomId READ activeCallRoomId NOTIFY callControlsChanged)
     Q_PROPERTY(QString callRoomName MEMBER callRoomName NOTIFY callControlsChanged)
     Q_PROPERTY(QString callTransportStatus MEMBER callTransportStatus NOTIFY callControlsChanged)
     Q_PROPERTY(QVariantList callParticipants MEMBER callParticipants NOTIFY callParticipantsChanged)
@@ -50,6 +67,11 @@ class Chat : public QObject {
 
 public:
     Chat(QString executable, QString root) {
+        livekit::initialize(livekit::LogLevel::Error);
+        nativeVideoTimer.setInterval(33);
+        connect(&nativeVideoTimer, &QTimer::timeout, this, &Chat::renderNativeVideo);
+        nativeMediaTimer.setInterval(500);
+        connect(&nativeMediaTimer, &QTimer::timeout, this, &Chat::refreshNativeMedia);
         for (int i = 0; i < 8; ++i)
             key += QByteArray::number(QRandomGenerator::system()->generate(), 16).rightJustified(8, '0');
         http.setProxy(QNetworkProxy::NoProxy);
@@ -74,6 +96,7 @@ public:
         connect(&socket, &QWebSocket::disconnected, this, [this] {
             ping.stop();
             ready = false;
+            if (nativeCall()) closeCall();
             pending.clear();
             callMemberRequest = 0;
             if (callTransportRequest != 0)
@@ -114,6 +137,11 @@ public:
     }
 
     ~Chat() override {
+        closeCall();
+        if (nativeJoin.isValid()) nativeJoin.waitForFinished();
+        delete nativeJoinWatcher.data();
+        nativeJoin = {};
+        livekit::shutdown();
         socket.blockSignals(true);
         process.blockSignals(true);
         socket.abort();
@@ -172,39 +200,155 @@ public:
             if (room == selected) emit timelineChanged();
         });
     }
-    Q_INVOKABLE bool isCallOrigin(const QUrl &url) const {
-        return !base.isEmpty() && url.scheme() == base.scheme() && url.host() == base.host()
-            && url.port() == base.port() && url.userInfo().isEmpty();
+    QString activeCallRoomId() const { return callRoomId; }
+
+    bool nativeCall() const { return !callRoomId.isEmpty(); }
+
+    QVariantList nativeInputs() const { return nativeDevices(true); }
+    QVariantList nativeOutputs() const { return nativeDevices(false); }
+
+    bool nativeCamera() const {
+        return localCamera != nullptr;
     }
 
-    Q_INVOKABLE QString callPassword(const QUrl &url) const {
-        if (callUrl.isEmpty() || !isCallOrigin(url) || url.path() != "/_gomuks/auth") return {};
-        return QString::fromLatin1(key);
+    bool nativeSharing() const {
+        return localShare != nullptr;
+    }
+
+    Q_INVOKABLE void setNativeVideoSink(const QString &id, QObject *sink) {
+        if (auto *video = qobject_cast<QVideoSink *>(sink)) nativeSinks[id] = video;
+    }
+
+    Q_INVOKABLE QVariantMap nativeShareSources() {
+        shareScreens.clear();
+        shareWindows.clear();
+        QVariantList screens, windows;
+        for (auto *screen : QGuiApplication::screens()) {
+            shareScreens.append(screen);
+            screens.append(screen->name().isEmpty() ? tr("Screen %1").arg(screens.size() + 1) : screen->name());
+        }
+        if (!QGuiApplication::platformName().startsWith("wayland")) {
+            shareWindows = QWindowCapture::capturableWindows();
+            for (const auto &window : std::as_const(shareWindows)) windows.append(window.description());
+        }
+        return {{"screens", screens}, {"windows", windows},
+                {"portal", QGuiApplication::platformName().startsWith("wayland")}};
+    }
+
+    Q_INVOKABLE void startNativeShare(int index, bool window) {
+        if (localShare) return;
+        if (window) {
+            const auto source = shareWindows.value(index);
+            if (!source.isValid()) return;
+            toggleNativeVideo(true, nullptr, source);
+        } else {
+            auto *screen = index < 0 ? QGuiApplication::primaryScreen() : shareScreens.value(index).data();
+            if (screen) toggleNativeVideo(true, screen);
+        }
+    }
+
+    Q_INVOKABLE void toggleNativeCamera() { toggleNativeVideo(false); }
+    Q_INVOKABLE void stopNativeShare() {
+        if (localShare) toggleNativeVideo(true);
+    }
+
+    void toggleNativeVideo(bool share, QScreen *screen = nullptr, const QCapturableWindow &window = {}) {
+        if (!nativeConnected || !nativeSession) return;
+        auto &capture = share ? localShare : localCamera;
+        if (capture) {
+            stopNativeCapture(capture);
+            emit callControlsChanged();
+            return;
+        }
+        capture = std::make_unique<NativeCapture>();
+        capture->session.setVideoSink(&capture->sink);
+        connect(&capture->sink, &QVideoSink::videoFrameChanged, this, [this, share](const QVideoFrame &frame) {
+            pushNativeVideo(share, frame);
+        });
+        if (share && window.isValid()) {
+            capture->window = std::make_unique<QWindowCapture>();
+            capture->window->setWindow(window);
+            capture->session.setWindowCapture(capture->window.get());
+            connect(capture->window.get(), &QWindowCapture::errorOccurred, this, [this, owner = &capture->session] {
+                deferNativeCaptureFailure(true, owner);
+            });
+            capture->window->start();
+        } else if (share) {
+            capture->screen = std::make_unique<QScreenCapture>();
+            capture->screen->setScreen(screen);
+            capture->session.setScreenCapture(capture->screen.get());
+            connect(capture->screen.get(), &QScreenCapture::errorOccurred, this, [this, owner = &capture->session] {
+                deferNativeCaptureFailure(true, owner);
+            });
+            capture->screen->start();
+        } else {
+            const auto device = QMediaDevices::defaultVideoInput();
+            if (device.isNull()) {
+                failNativeCapture(false);
+                return;
+            }
+            capture->camera = std::make_unique<QCamera>(device);
+            capture->session.setCamera(capture->camera.get());
+            connect(capture->camera.get(), &QCamera::errorOccurred, this, [this, owner = &capture->session] {
+                deferNativeCaptureFailure(false, owner);
+            });
+            capture->camera->start();
+        }
+        emit callControlsChanged();
+    }
+
+    Q_INVOKABLE void setNativeDevice(bool input, const QString &id) {
+        if (!nativeSession || id.isEmpty()) return;
+        try {
+            if (input) nativeSession->audio.setRecordingDevice(id.toStdString());
+            else nativeSession->audio.setPlayoutDevice(id.toStdString());
+        } catch (const std::exception &) {
+            finishCallTransportDiscovery(tr("Could not select the audio device."));
+        }
+    }
+
+    Q_INVOKABLE void setNativeOutputMuted(bool muted) {
+        nativeOutputMuted = muted;
+        syncNativeSubscriptions();
+    }
+
+    Q_INVOKABLE void toggleNativeMicrophone() {
+        if (!nativeSession || !nativeConnected) return;
+        try {
+            if (!nativeSession->microphone) {
+                const auto participant = nativeSession->room.localParticipant().lock();
+                if (!participant) return;
+                auto source = nativeSession->audio.createAudioSource();
+                auto track = livekit::LocalAudioTrack::createLocalAudioTrack("microphone", source);
+                livekit::TrackPublishOptions options;
+                options.source = livekit::TrackSource::SOURCE_MICROPHONE;
+                participant->publishTrack(track, options);
+                nativeSession->microphone = std::move(track);
+            } else if (nativeMuted) {
+                nativeSession->microphone->unmute();
+            } else {
+                nativeSession->microphone->mute();
+            }
+            nativeMuted = !nativeMuted;
+            emit callControlsChanged();
+        } catch (const std::exception &) {
+            finishCallTransportDiscovery(tr("Could not change the microphone state."));
+        }
     }
 
     Q_INVOKABLE void openCall() {
-        if (!ready || !loggedIn || loggingOut() || selected.isEmpty() || base.isEmpty() || !callUrl.isEmpty()) return;
-
-        // The web frontend hosts the widget and restores its room and panel from this startup state.
-        const QJsonObject panel{{"type", "element-call"}};
-        const QJsonObject state{{"room_id", selected}, {"right_panel", panel}};
-        const auto stateJson = QJsonDocument(state).toJson(QJsonDocument::Compact);
-        callUrl = base;
-        callUrl.setPath("/");
-        QByteArray query = "state=" + QUrl::toPercentEncoding(QString::fromUtf8(stateJson));
-        if (!frontendETag.isEmpty())
-            query += "&updateTo=" + QUrl::toPercentEncoding(frontendETag);
-        callUrl.setQuery(QString::fromLatin1(query));
+        if (!ready || !loggedIn || loggingOut() || selected.isEmpty() || base.isEmpty() || nativeCall()) return;
         callRoomName = roomName;
         callRoomId = selected;
+        nativeSelf = {profile, deviceId, QUuid::createUuid().toString(QUuid::WithoutBraces)};
         discoverCallTransports();
         refreshCallParticipants();
         callMembersTimer.start();
     }
 
     Q_INVOKABLE void closeCall() {
-        if (callUrl.isEmpty()) return;
-        callUrl.clear();
+        if (callRoomId.isEmpty()) return;
+        closeNativeCall();
         callRoomName.clear();
         callRoomId.clear();
         callMembersTimer.stop();
@@ -421,6 +565,7 @@ signals:
     void olderMessagesLoading();
     void imageSent(const QString &room);
     void callControlsChanged();
+    void nativeVideoTilesChanged();
     void callParticipantsChanged();
 
 private:
@@ -460,6 +605,8 @@ private:
         }
 
         QSet<QString> participants;
+        const auto previousNativePeers = nativePeers;
+        if (nativeCall()) nativePeers.clear();
         for (auto user = latest.cbegin(); user != latest.cend(); ++user) {
             for (const auto &event : user.value()) {
                 const auto member = event["content"].toObject()["member"].toObject();
@@ -468,7 +615,11 @@ private:
                 if (MatrixRtcWire::isJoinedMember(member) && duration > 0 && timestamp > 0
                     && duration > now - timestamp) {
                     participants.insert(user.key());
-                    break;
+                    const auto device = member["device_id"].toString();
+                    const auto matrixMembership = roomProfiles.value(callRoomId).value(user.key())["membership"].toString();
+                    if (nativeCall() && !device.isEmpty() && (matrixMembership.isEmpty() || matrixMembership == "join")
+                        && (user.key() != profile || device != deviceId))
+                        nativePeers.append({user.key(), device, member["id"].toString()});
                 }
             }
         }
@@ -485,9 +636,34 @@ private:
             if (!sender.isEmpty() && content["application"].toString() == "m.call"
                 && content["call_id"].toString().isEmpty() && !content["device_id"].toString().isEmpty()
                 && duration > 0 && created > 0 && duration > now - created)
+            {
                 participants.insert(sender);
+                const auto device = content["device_id"].toString();
+                const auto memberId = content["membershipID"].toString(sender + ':' + device);
+                const auto matrixMembership = roomProfiles.value(callRoomId).value(sender)["membership"].toString();
+                const bool hasStickyDevice = std::any_of(nativePeers.cbegin(), nativePeers.cend(),
+                    [&](const auto &peer) { return peer.userId == sender && peer.deviceId == device; });
+                if (!hasStickyDevice && (sender != profile || device != deviceId)
+                    && (matrixMembership.isEmpty() || matrixMembership == "join"))
+                    nativePeers.append({sender, device, memberId});
+            }
         }
 
+        if (nativeCall()) {
+            bool departed = false;
+            for (const auto &peer : previousNativePeers) {
+                const auto id = MatrixRtcWire::livekitIdentity(peer);
+                const bool stillPresent = std::any_of(nativePeers.cbegin(), nativePeers.cend(),
+                    [&id](const auto &entry) { return MatrixRtcWire::livekitIdentity(entry) == id; });
+                if (!stillPresent && (nativeKeyRecipients.contains(id) || nativeKeyRequests.contains(id))) departed = true;
+            }
+            if (departed && nativeConnected && !rotateNativeKey()) {
+                closeNativeCall();
+                finishCallTransportDiscovery(tr("Could not rotate the media key after a participant left."));
+            }
+            syncNativeKeys();
+        }
+        if (nativeConnected) participants.insert(profile);
         QVariantList tiles;
         const auto profiles = roomProfiles.value(callRoomId);
         for (const auto &user : participants) {
@@ -516,14 +692,626 @@ private:
         }
     }
 
+    struct RemoteVideo {
+        RemoteVideo(const std::shared_ptr<livekit::Track> &track, QByteArray participant, bool screen)
+            : identity(std::move(participant)), sharing(screen) {
+            livekit::VideoStream::Options options;
+            options.capacity = 2;
+            stream = livekit::VideoStream::fromTrack(track, options);
+            reader = std::thread([this] {
+                try {
+                    livekit::VideoFrameEvent event;
+                    while (stream->read(event)) {
+                        const auto &frame = event.frame;
+                        if (frame.type() != livekit::VideoBufferType::RGBA || frame.width() <= 0 || frame.height() <= 0) continue;
+                        QImage image(frame.data(), frame.width(), frame.height(), frame.width() * 4, QImage::Format_RGBA8888);
+                        auto copy = image.copy();
+                        std::lock_guard lock(mutex);
+                        latest = std::move(copy);
+                    }
+                } catch (const std::exception &) {}
+            });
+        }
+
+        ~RemoteVideo() {
+            stream->close();
+            reader.join();
+        }
+
+        QByteArray identity;
+        bool sharing;
+        std::shared_ptr<livekit::VideoStream> stream;
+        std::thread reader;
+        std::mutex mutex;
+        QImage latest;
+    };
+
+    struct NativeSession : livekit::RoomDelegate {
+        livekit::PlatformAudio audio;
+        livekit::Room room;
+        std::shared_ptr<livekit::LocalAudioTrack> microphone;
+        struct Publication {
+            QByteArray identity;
+            std::shared_ptr<livekit::RemoteTrackPublication> info;
+            std::shared_ptr<livekit::Track> video;
+        };
+        std::mutex publicationMutex;
+        QMap<QString, Publication> publications;
+
+        NativeSession() { room.setDelegate(this); }
+
+        void onTrackPublished(livekit::Room &, const livekit::TrackPublishedEvent &event) override {
+            if (!event.participant || !event.publication) return;
+            std::lock_guard lock(publicationMutex);
+            auto &entry = publications[QString::fromStdString(event.publication->sid())];
+            entry.identity = QByteArray::fromStdString(event.participant->identity());
+            entry.info = event.publication;
+        }
+
+        void onTrackUnpublished(livekit::Room &, const livekit::TrackUnpublishedEvent &event) override {
+            if (!event.publication) return;
+            std::lock_guard lock(publicationMutex);
+            publications.remove(QString::fromStdString(event.publication->sid()));
+        }
+
+        void onParticipantDisconnected(livekit::Room &, const livekit::ParticipantDisconnectedEvent &event) override {
+            if (!event.participant) return;
+            const auto identity = QByteArray::fromStdString(event.participant->identity());
+            std::lock_guard lock(publicationMutex);
+            for (auto it = publications.begin(); it != publications.end();) {
+                if (it->identity == identity) it = publications.erase(it);
+                else ++it;
+            }
+        }
+
+        void onTrackSubscribed(livekit::Room &, const livekit::TrackSubscribedEvent &event) override {
+            if (!event.track || !event.participant || !event.publication
+                || event.track->kind() != livekit::TrackKind::KIND_VIDEO
+                || event.publication->encryptionType() != livekit::EncryptionType::GCM) return;
+            std::lock_guard lock(publicationMutex);
+            publications.insert(QString::fromStdString(event.publication->sid()),
+                {QByteArray::fromStdString(event.participant->identity()), event.publication, event.track});
+        }
+
+        void onTrackUnsubscribed(livekit::Room &, const livekit::TrackUnsubscribedEvent &event) override {
+            if (!event.publication) return;
+            std::lock_guard lock(publicationMutex);
+            const auto it = publications.find(QString::fromStdString(event.publication->sid()));
+            if (it != publications.end()) it->video.reset();
+        }
+
+        void loadInitialPublications() {
+            for (const auto &weak : room.remoteParticipants()) {
+                const auto participant = weak.lock();
+                if (!participant) continue;
+                for (const auto &entry : participant->trackPublications()) {
+                    onTrackPublished(room, {entry.second, participant.get()});
+                }
+            }
+        }
+
+        QMap<QString, Publication> remotePublications() {
+            std::lock_guard lock(publicationMutex);
+            return publications;
+        }
+
+        ~NativeSession() {
+            try {
+                if (room.connectionState() != livekit::ConnectionState::Disconnected)
+                    room.disconnect();
+            } catch (const std::exception &) {}
+            room.setDelegate(nullptr);
+        }
+
+        void setKey(const QByteArray &identity, const MatrixRtcWire::MediaKey &key) {
+            const auto encryption = room.e2eeManager().lock();
+            const auto provider = encryption ? encryption->keyProvider().lock() : nullptr;
+            if (!provider) throw std::runtime_error("LiveKit key provider unavailable");
+            provider->setKey(identity.toStdString(), {key.bytes.cbegin(), key.bytes.cend()}, key.index);
+            encryption->setEnabled(true);
+        }
+    };
+
+    struct NativeCapture {
+        QVideoSink sink;
+        QMediaCaptureSession session;
+        std::unique_ptr<QCamera> camera;
+        std::unique_ptr<QScreenCapture> screen;
+        std::unique_ptr<QWindowCapture> window;
+        std::shared_ptr<livekit::VideoSource> source;
+        std::shared_ptr<livekit::LocalVideoTrack> track;
+        QSize frameSize;
+        QImage latest;
+        QElapsedTimer frameClock;
+    };
+
+    void stopNativeCapture(std::unique_ptr<NativeCapture> &capture) {
+        if (!capture) return;
+        if (capture->camera) capture->camera->stop();
+        if (capture->screen) capture->screen->stop();
+        if (capture->window) capture->window->stop();
+        if (capture->track && nativeSession) {
+            try {
+                if (auto participant = nativeSession->room.localParticipant().lock())
+                    participant->unpublishTrack(capture->track->sid());
+            } catch (const std::exception &) {
+                // Disconnect if the server might still be publishing our capture.
+                QTimer::singleShot(0, this, [this, member = nativeSelf.memberId] {
+                    if (nativeSelf.memberId == member) closeCall();
+                });
+            }
+        }
+        capture.reset();
+    }
+
+    void deferNativeCaptureFailure(bool share, QMediaCaptureSession *owner) {
+        QTimer::singleShot(0, this, [this, share, capture = QPointer<QMediaCaptureSession>(owner)] {
+            if (capture) failNativeCapture(share);
+        });
+    }
+
+    void failNativeCapture(bool share) {
+        auto &capture = share ? localShare : localCamera;
+        if (!capture) return;
+        stopNativeCapture(capture);
+        finishCallTransportDiscovery(share ? tr("Could not share the screen.") : tr("Could not open the camera."));
+    }
+
+    void pushNativeVideo(bool share, const QVideoFrame &frame) {
+        auto &capture = share ? localShare : localCamera;
+        if (!capture || !nativeConnected || !frame.isValid()) return;
+        if (capture->frameClock.isValid() && capture->frameClock.elapsed() < 32) return;
+        capture->frameClock.start();
+        auto image = frame.toImage();
+        if (image.isNull()) return;
+        try {
+            if (!capture->source) {
+                const auto participant = nativeSession->room.localParticipant().lock();
+                if (!participant) return;
+                capture->frameSize = image.size();
+                if (image.width() > 1920 || image.height() > 1080)
+                    capture->frameSize = image.size().scaled(1920, 1080, Qt::KeepAspectRatio);
+                capture->source = std::make_shared<livekit::VideoSource>(capture->frameSize.width(), capture->frameSize.height());
+                capture->track = participant->publishVideoTrack(share ? "screen" : "camera", capture->source,
+                    share ? livekit::TrackSource::SOURCE_SCREENSHARE : livekit::TrackSource::SOURCE_CAMERA);
+            }
+            if (image.size() != capture->frameSize) image = image.scaled(capture->frameSize);
+            image = image.convertToFormat(QImage::Format_RGBA8888);
+            const auto *data = image.constBits();
+            const livekit::VideoFrame outgoing(image.width(), image.height(), livekit::VideoBufferType::RGBA,
+                                                {data, data + image.sizeInBytes()});
+            capture->source->captureFrame(outgoing);
+            capture->latest = std::move(image);
+        } catch (const std::exception &) {
+            deferNativeCaptureFailure(share, &capture->session);
+        }
+    }
+
+    void renderNativeVideo() {
+        if (!nativeSession) return;
+        QVariantList tiles;
+        const auto write = [this, &tiles](const QString &id, const QString &name, const QImage &image, bool sharing) {
+            tiles.append(QVariantMap{{"id", id}, {"name", name}, {"sharing", sharing}});
+            if (!image.isNull() && nativeSinks.value(id)) nativeSinks.value(id)->setVideoFrame(QVideoFrame(image));
+        };
+        if (localCamera && localCamera->track) write("local-camera", profileName(), localCamera->latest, false);
+        if (localShare && localShare->track) write("local-screen", profileName(), localShare->latest, true);
+
+        for (auto it = nativeRemoteVideos.cbegin(); it != nativeRemoteVideos.cend(); ++it) {
+            const auto &video = it.value();
+            for (const auto &peer : std::as_const(nativePeers)) {
+                if (video->identity != legacyIdentity(peer) && video->identity != MatrixRtcWire::livekitIdentity(peer)) continue;
+                QImage image;
+                {
+                    std::lock_guard lock(video->mutex);
+                    image = std::exchange(video->latest, {});
+                }
+                const auto name = roomProfiles.value(callRoomId).value(peer.userId)["displayname"].toString(peer.userId);
+                write(it.key(), name, image, video->sharing);
+                break;
+            }
+        }
+        if (nativeVideoTiles != tiles) {
+            nativeVideoTiles = tiles;
+            emit nativeVideoTilesChanged();
+        }
+    }
+
+    void refreshNativeMedia() {
+        if (!nativeConnected || !nativeSession) return;
+        if (nativeSession->room.connectionState() == livekit::ConnectionState::Disconnected) {
+            closeNativeCall();
+            finishCallTransportDiscovery(tr("The LiveKit connection ended."));
+            return;
+        }
+        syncNativeSubscriptions();
+    }
+
+    static QByteArray legacyIdentity(const MatrixRtcWire::Peer &peer) {
+        return (peer.userId + ':' + peer.deviceId).toUtf8();
+    }
+
+    QJsonObject nativeMembership(const QString &room, const MatrixRtcWire::Peer &self, const QUrl &service = {}) const {
+        QJsonObject member{{"id", self.memberId}, {"membership", service.isEmpty() ? "leave" : "join"}};
+        QJsonObject content{{"slot_id", "m.call#ROOM"}, {"msc4354_sticky_key", self.memberId}};
+        if (!service.isEmpty()) {
+            member.insert("device_id", self.deviceId);
+            member.insert("user_id", self.userId);
+            const auto field = service.scheme() == "wss" ? "url" : "livekit_service_url";
+            const QJsonObject transport{{"type", "livekit"}, {field, service.toString()}};
+            content.insert("application", QJsonObject{{"type", "m.call"}});
+            content.insert("transports", QJsonObject{{"published", QJsonArray{transport}}, {"can_subscribe", QJsonArray{"livekit"}}});
+        }
+        content.insert("member", member);
+        return {{"room_id", room}, {"type", "org.matrix.msc4143.rtc.member"},
+                {"sticky_duration_ms", 120000}, {"content", content}};
+    }
+
+    void nativeRequest(const QString &command, const QJsonObject &payload, std::function<void(QJsonValue)> handler) {
+        const int request = transmit(command, payload);
+        nativePending.insert(request, std::move(handler));
+        QTimer::singleShot(15000, this, [this, request] {
+            if (auto callback = nativePending.take(request)) callback(QJsonValue(QJsonValue::Undefined));
+        });
+    }
+
+    void tryNextNativeTransport(const QUrl &service, const QString &error) {
+        callTransports.removeAll(service);
+        if (callTransports.isEmpty()) finishCallTransportDiscovery(error);
+        else authenticateNativeCall();
+    }
+
+    void authenticateNativeCall() {
+        if (callTransports.isEmpty()) return;
+        if (nativeJoinWatcher) {
+            finishCallTransportDiscovery(tr("The previous call is still closing. Close this panel and try again."));
+            return;
+        }
+        const auto member = nativeSelf.memberId;
+        const auto service = callTransports.first();
+        finishCallTransportDiscovery(tr("Requesting MatrixRTC credentials…"));
+        if (service.scheme() == "wss") {
+            const auto payload = MatrixRtcWire::tokenRequest(service, callRoomId, "m.call#ROOM", nativeSelf);
+            if (!payload) return;
+            nativeRequest("rtc_livekit_get_token", *payload, [this, member, service](const QJsonValue &result) {
+                if (nativeSelf.memberId != member) return;
+                const auto jwt = result.toObject()["jwt"].toString();
+                if (jwt.isEmpty()) {
+                    tryNextNativeTransport(service, tr("Could not obtain a LiveKit token from the homeserver."));
+                    return;
+                }
+                connectNativeCall(service, jwt, service);
+            });
+            return;
+        }
+        nativeRequest("request_openid_token", {}, [this, member, service](const QJsonValue &result) {
+            if (nativeSelf.memberId != member) return;
+            if (result.toObject()["access_token"].toString().isEmpty()) {
+                tryNextNativeTransport(service, tr("Could not obtain Matrix OpenID credentials."));
+                return;
+            }
+
+            auto endpoint = service;
+            auto path = endpoint.path();
+            if (path.endsWith('/')) path.chop(1);
+            endpoint.setPath(path + "/sfu/get");
+            QNetworkRequest request(endpoint);
+            request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
+            request.setAttribute(QNetworkRequest::CookieLoadControlAttribute, QNetworkRequest::Manual);
+            request.setAttribute(QNetworkRequest::CookieSaveControlAttribute, QNetworkRequest::Manual);
+            request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+            request.setTransferTimeout(15000);
+            const QJsonObject payload{{"room", callRoomId}, {"openid_token", result}, {"device_id", nativeSelf.deviceId}};
+            auto *reply = http.post(request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+            connect(reply, &QNetworkReply::finished, this, [this, reply, member, service] {
+                reply->deleteLater();
+                if (nativeSelf.memberId != member) return;
+                const auto status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+                const auto result = QJsonDocument::fromJson(reply->readAll()).object();
+                const QUrl url(result["url"].toString(), QUrl::StrictMode);
+                const auto jwt = result["jwt"].toString();
+                if (reply->error() != QNetworkReply::NoError || status < 200 || status >= 300
+                    || jwt.isEmpty() || !url.isValid() || url.scheme() != "wss" || url.host().isEmpty()
+                    || !url.userInfo().isEmpty() || url.hasFragment()) {
+                    tryNextNativeTransport(service, tr("The MatrixRTC service did not return valid LiveKit credentials."));
+                    return;
+                }
+                connectNativeCall(url, jwt, service);
+            });
+        });
+    }
+
+    static MatrixRtcWire::MediaKey randomNativeKey() {
+        QByteArray bytes;
+        for (int i = 0; i < 8; ++i) {
+            const auto random = QRandomGenerator::system()->generate();
+            bytes.append(reinterpret_cast<const char *>(&random), sizeof(random));
+        }
+        return {bytes, 0};
+    }
+
+    bool rotateNativeKey() {
+        if (!nativeSession) return false;
+        try {
+            nativeKey = randomNativeKey();
+            const auto identity = nativeService.scheme() == "wss" ? MatrixRtcWire::livekitIdentity(nativeSelf) : legacyIdentity(nativeSelf);
+            nativeSession->setKey(identity, nativeKey);
+            ++nativeKeyGeneration;
+            nativeKeyRecipients.clear();
+            nativeKeyRequests.clear();
+            return true;
+        } catch (const std::exception &) {
+            return false;
+        }
+    }
+
+    void connectNativeCall(const QUrl &url, const QString &jwt, const QUrl &service) {
+        nativeKey = randomNativeKey();
+        using Result = std::shared_ptr<NativeSession>;
+        auto *watcher = new QFutureWatcher<Result>(this);
+        nativeJoinWatcher = watcher;
+        const auto self = nativeSelf;
+        finishCallTransportDiscovery(tr("Connecting to LiveKit…"));
+        connect(watcher, &QFutureWatcher<Result>::finished, this, [this, watcher, self, service] {
+            const auto session = watcher->result();
+            watcher->deleteLater();
+            nativeJoin = {};
+            if (nativeSelf.memberId != self.memberId) return;
+            nativeSession = session;
+            if (!nativeSession) {
+                finishCallTransportDiscovery(tr("Could not connect to the encrypted LiveKit room."));
+                return;
+            }
+            nativeService = service;
+            publishNativeMembership();
+        });
+        const auto identity = service.scheme() == "wss" ? MatrixRtcWire::livekitIdentity(self) : legacyIdentity(self);
+        nativeJoin = QtConcurrent::run([url, jwt, identity, key = nativeKey]() -> Result {
+            try {
+                auto session = std::make_shared<NativeSession>();
+                livekit::RoomOptions options;
+                options.connect_timeout = std::chrono::seconds(10);
+                options.join_retries = 0;
+                options.auto_subscribe = false;
+                auto &keys = options.encryption.emplace().key_provider_options;
+                keys.key_derivation_function = livekit::KeyDerivationFunction::HKDF;
+                keys.ratchet_window_size = 10;
+                keys.key_ring_size = 256;
+                if (!session->room.connect(url.toEncoded().toStdString(), jwt.toStdString(), options)) return {};
+                const auto participant = session->room.localParticipant().lock();
+                if (!participant || participant->identity() != identity.toStdString()) return {};
+                session->setKey(identity, key);
+                session->loadInitialPublications();
+                return session;
+            } catch (const std::exception &) {
+                return {};
+            }
+        });
+        watcher->setFuture(nativeJoin);
+    }
+
+    QJsonObject nativeStateMembership(const QString &room, const MatrixRtcWire::Peer &self,
+                                        const QUrl &service = {}) const {
+        auto key = self.userId + '_' + self.deviceId + "_m.call";
+        const auto version = rooms.value(room)["creation_content"].toObject()["room_version"].toString();
+        if (!QRegularExpression(R"(^org\.matrix\.msc(3757|3779)\b)").match(version).hasMatch()) key.prepend('_');
+        QJsonObject content;
+        if (!service.isEmpty()) {
+            const auto field = service.scheme() == "wss" ? "url" : "livekit_service_url";
+            const QJsonObject transport{{"type", "livekit"}, {field, service.toString()}};
+            content = {{"application", "m.call"}, {"call_id", ""}, {"scope", "m.room"},
+                       {"device_id", self.deviceId}, {"membershipID", self.memberId},
+                       {"created_ts", nativeStateCreated},
+                       {"expires", 120000 + QDateTime::currentMSecsSinceEpoch() - nativeStateCreated},
+                       {"focus_active", QJsonObject{{"type", "livekit"}, {"focus_selection", "multi_sfu"}}},
+                       {"foci_preferred", QJsonArray{transport}}};
+        }
+        return {{"room_id", room}, {"type", "org.matrix.msc3401.call.member"}, {"state_key", key}, {"content", content}};
+    }
+
+    void leaveNativeMembership(const QString &room, const MatrixRtcWire::Peer &self, bool stateEvent) {
+        if (!ready) return;
+        if (stateEvent) {
+            // A newer call in the same room will replace the state event.
+            if (room == callRoomId && !nativeSelf.memberId.isEmpty() && nativeSelf.memberId != self.memberId) return;
+            transmit("set_state", nativeStateMembership(room, self));
+        } else {
+            transmit("send_sticky_event", nativeMembership(room, self));
+        }
+    }
+
+    void publishNativeMembership() {
+        const auto room = callRoomId;
+        const auto self = nativeSelf;
+        const bool stateEvent = nativeStateEvent;
+        const auto membership = stateEvent ? nativeStateMembership(room, self, nativeService)
+                                           : nativeMembership(room, self, nativeService);
+        nativeRequest(stateEvent ? "set_state" : "send_sticky_event", membership,
+                      [this, room, self, stateEvent](const QJsonValue &result) {
+            if (nativeSelf.memberId != self.memberId) {
+                if (!result.toString().isEmpty()) leaveNativeMembership(room, self, stateEvent);
+                return;
+            }
+            if (result.toString().isEmpty()) {
+                if (!nativeConnected && !stateEvent && result.isNull()) {
+                    nativeStateEvent = true;
+                    nativeStateCreated = QDateTime::currentMSecsSinceEpoch();
+                    publishNativeMembership();
+                    return;
+                }
+                leaveNativeMembership(room, self, stateEvent);
+                closeNativeCall();
+                finishCallTransportDiscovery(tr("The homeserver rejected the MatrixRTC membership."));
+                return;
+            }
+            nativeConnected = true;
+            nativeVideoTimer.start();
+            nativeMediaTimer.start();
+            syncNativeKeys();
+            refreshCallParticipants();
+            finishCallTransportDiscovery(tr("Connected to the encrypted call."));
+            QTimer::singleShot(45000, this, [this, self] {
+                if (nativeConnected && nativeSelf.memberId == self.memberId) publishNativeMembership();
+            });
+        });
+    }
+
+    void receiveNativeKeys(const QJsonArray &events) {
+        for (const auto &value : events) {
+            const auto event = value.toObject();
+            if (event["type"].toString() != MatrixRtcWire::KeyEventType || !event["encrypted"].toBool()
+                || event["content"].toObject()["room_id"].toString() != callRoomId) continue;
+            if (nativeKeyInbox.size() >= 128) nativeKeyInbox.removeFirst();
+            nativeKeyInbox.append({QDateTime::currentMSecsSinceEpoch(), event});
+        }
+        if (!events.isEmpty()) {
+            syncNativeKeys();
+            refreshCallParticipants();
+        }
+    }
+
+    void syncNativeSubscriptions() {
+        if (!nativeConnected || !nativeSession) return;
+        QSet<QByteArray> activeIdentities;
+        for (const auto &peer : std::as_const(nativePeers)) {
+            activeIdentities.insert(legacyIdentity(peer));
+            activeIdentities.insert(MatrixRtcWire::livekitIdentity(peer));
+        }
+        try {
+            const auto publications = nativeSession->remotePublications();
+            for (auto it = nativeRemoteVideos.begin(); it != nativeRemoteVideos.end();) {
+                const auto publication = publications.constFind(it.key());
+                if (publication == publications.cend() || !publication->video || !activeIdentities.contains(publication->identity))
+                    it = nativeRemoteVideos.erase(it);
+                else
+                    ++it;
+            }
+            for (auto it = publications.cbegin(); it != publications.cend(); ++it) {
+                const auto &track = it->info;
+                const bool desired = activeIdentities.contains(it->identity)
+                    && (track->kind() == livekit::TrackKind::KIND_VIDEO
+                        || (track->kind() == livekit::TrackKind::KIND_AUDIO && !nativeOutputMuted))
+                    && track->encryptionType() == livekit::EncryptionType::GCM;
+                if (track->subscribed() != desired) track->setSubscribed(desired);
+                if (desired && it->video && !nativeRemoteVideos.contains(it.key())) {
+                    const bool sharing = track->source() == livekit::TrackSource::SOURCE_SCREENSHARE;
+                    nativeRemoteVideos.insert(it.key(), std::make_shared<RemoteVideo>(it->video, it->identity, sharing));
+                }
+            }
+        } catch (const std::exception &) {
+            finishCallTransportDiscovery(tr("Could not update incoming call audio."));
+        }
+    }
+
+    void syncNativeKeys() {
+        if (!nativeConnected || !nativeSession) return;
+        const auto now = QDateTime::currentMSecsSinceEpoch();
+        for (auto it = nativeKeyInbox.begin(); it != nativeKeyInbox.end();) {
+            bool consumed = now - it->first > 20000;
+            for (const auto &peer : std::as_const(nativePeers)) {
+                if (consumed) break;
+                if (auto key = MatrixRtcWire::receivedKey(it->second, callRoomId, peer)) {
+                    try {
+                        nativeSession->setKey(legacyIdentity(peer), *key);
+                        nativeSession->setKey(MatrixRtcWire::livekitIdentity(peer), *key);
+                    } catch (const std::exception &) {
+                        finishCallTransportDiscovery(tr("Could not install a participant's media key."));
+                    }
+                    consumed = true;
+                }
+            }
+            if (consumed) it = nativeKeyInbox.erase(it);
+            else ++it;
+        }
+        for (const auto &peer : std::as_const(nativePeers)) {
+            const auto id = MatrixRtcWire::livekitIdentity(peer);
+            if (nativeKeyRecipients.contains(id) || nativeKeyRequests.contains(id)) continue;
+            const auto request = MatrixRtcWire::encryptedKeyRequest(callRoomId, nativeSelf, peer, nativeKey);
+            if (!request) continue;
+            const auto self = nativeSelf.memberId;
+            nativeKeyRequests.insert(id);
+            nativeRequest("send_to_device", *request, [this, self, id, generation = nativeKeyGeneration](const QJsonValue &result) {
+                if (nativeSelf.memberId != self || nativeKeyGeneration != generation) return;
+                nativeKeyRequests.remove(id);
+                if (result.isObject()) nativeKeyRecipients.insert(id);
+            });
+        }
+        syncNativeSubscriptions();
+    }
+
+    void closeNativeCall() {
+        if (nativeConnected) leaveNativeMembership(callRoomId, nativeSelf, nativeStateEvent);
+        nativeStateEvent = false;
+        nativeVideoTimer.stop();
+        nativeMediaTimer.stop();
+        stopNativeCapture(localCamera);
+        stopNativeCapture(localShare);
+        nativeRemoteVideos.clear();
+        nativeVideoTiles.clear();
+        nativeSinks.clear();
+        emit nativeVideoTilesChanged();
+        nativeConnected = false;
+        nativeMuted = true;
+        nativeOutputMuted = false;
+        nativeSelf = {};
+        nativeSession.reset();
+        nativeService.clear();
+        nativePeers.clear();
+        nativeKeyInbox.clear();
+        nativeKeyRecipients.clear();
+        nativeKeyRequests.clear();
+        nativeKey = {};
+    }
+
+    QHash<int, std::function<void(QJsonValue)>> nativePending;
+    QFuture<std::shared_ptr<NativeSession>> nativeJoin;
+    QPointer<QFutureWatcher<std::shared_ptr<NativeSession>>> nativeJoinWatcher;
+    bool nativeOutputMuted = false;
+    bool nativeStateEvent = false;
+    qint64 nativeStateCreated = 0;
+    std::shared_ptr<NativeSession> nativeSession;
+    MatrixRtcWire::Peer nativeSelf;
+    QList<MatrixRtcWire::Peer> nativePeers;
+    MatrixRtcWire::MediaKey nativeKey{};
+    QList<QPair<qint64, QJsonObject>> nativeKeyInbox;
+    QSet<QByteArray> nativeKeyRecipients, nativeKeyRequests;
+    quint64 nativeKeyGeneration = 0;
+    QUrl nativeService;
+    QTimer nativeVideoTimer, nativeMediaTimer;
+    std::unique_ptr<NativeCapture> localCamera, localShare;
+    QList<QPointer<QScreen>> shareScreens;
+    QList<QCapturableWindow> shareWindows;
+    QHash<QString, QPointer<QVideoSink>> nativeSinks;
+    QMap<QString, std::shared_ptr<RemoteVideo>> nativeRemoteVideos;
+
+    QVariantList nativeDevices(bool input) const {
+        QVariantList result;
+        if (nativeSession) {
+            try {
+                const auto devices = input ? nativeSession->audio.recordingDevices() : nativeSession->audio.playoutDevices();
+                for (const auto &device : devices) {
+                    result.append(QVariantMap{{"name", QString::fromStdString(device.name)},
+                                              {"id", QString::fromStdString(device.id)}});
+                }
+            } catch (const std::exception &) {}
+        }
+        return result;
+    }
+
+    QVariantList nativeVideoTiles;
+    bool nativeConnected = false;
+    bool nativeMuted = true;
+
     void discoverCallTransports() {
         callTransports.clear();
         const int request = callTransportRequest = transmit("get_rtc_transports", {});
         callTransportStatus = tr("Checking the homeserver’s MatrixRTC transport…");
         emit callControlsChanged();
         QTimer::singleShot(8000, this, [this, request] {
-            if (request == callTransportRequest)
-                finishCallTransportDiscovery(tr("MatrixRTC transport discovery timed out."));
+            if (request == callTransportRequest) {
+                callTransportRequest = 0;
+                resolveLegacyCallTransport();
+            }
         });
     }
 
@@ -533,18 +1321,54 @@ private:
         emit callControlsChanged();
     }
 
-    void readCallTransports(const QJsonObject &data) {
-        for (const auto &value : data["rtc_transports"].toArray()) {
+    void readCallTransports(const QJsonArray &transports) {
+        for (const auto &value : transports) {
             const auto transport = value.toObject();
             if (transport["type"].toString() != "livekit") continue;
+            const QUrl websocket(transport["url"].toString(), QUrl::StrictMode);
+            if (MatrixRtcWire::tokenRequest(websocket, callRoomId, "m.call#ROOM", nativeSelf)
+                && !callTransports.contains(websocket))
+                callTransports.append(websocket);
+
             const QUrl service(transport["livekit_service_url"].toString(), QUrl::StrictMode);
             if (service.isValid() && service.scheme() == "https" && !service.host().isEmpty()
-                && service.userInfo().isEmpty() && !service.hasFragment() && !callTransports.contains(service))
+                && service.userInfo().isEmpty() && !service.hasQuery() && !service.hasFragment()
+                && !callTransports.contains(service))
                 callTransports.append(service);
         }
-        finishCallTransportDiscovery(callTransports.isEmpty()
-            ? tr("The homeserver did not advertise a LiveKit service. The room may use a participant’s service.")
-            : tr("LiveKit service advertised by the homeserver."));
+    }
+
+    void resolveLegacyCallTransport() {
+        const auto colon = profile.indexOf(':');
+        if (colon < 0) {
+            finishCallTransportDiscovery(tr("The homeserver did not advertise a LiveKit service."));
+            return;
+        }
+        const auto authority = profile.mid(colon + 1);
+        const QUrl url("https://" + authority + "/.well-known/matrix/client", QUrl::StrictMode);
+        if (!url.isValid() || url.authority() != authority || url.host().isEmpty()
+            || !url.userInfo().isEmpty() || url.hasQuery() || url.hasFragment()) {
+            finishCallTransportDiscovery(tr("The homeserver did not advertise a LiveKit service."));
+            return;
+        }
+        const auto member = nativeSelf.memberId;
+        QNetworkRequest request(url);
+        request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+        request.setAttribute(QNetworkRequest::CookieLoadControlAttribute, QNetworkRequest::Manual);
+        request.setAttribute(QNetworkRequest::CookieSaveControlAttribute, QNetworkRequest::Manual);
+        request.setTransferTimeout(8000);
+        auto *reply = http.get(request);
+        connect(reply, &QNetworkReply::finished, this, [this, reply, member] {
+            reply->deleteLater();
+            if (nativeSelf.memberId != member) return;
+            if (reply->error() == QNetworkReply::NoError) {
+                const auto object = QJsonDocument::fromJson(reply->readAll()).object();
+                if (reply->url().scheme() == "https")
+                    readCallTransports(object["org.matrix.msc4143.rtc_foci"].toArray());
+            }
+            if (!callTransports.isEmpty()) authenticateNativeCall();
+            else finishCallTransportDiscovery(tr("The homeserver did not advertise a LiveKit service."));
+        });
     }
 
     static QJsonObject messageParams(const QString &room, const QString &text, const QString &replyTo) {
@@ -667,6 +1491,9 @@ private:
         });
     }
     int transmit(const QString &command, QJsonObject data) {
+        return transmitValue(command, data);
+    }
+    int transmitValue(const QString &command, QJsonValue data) {
         const int id = ++sequence;
         socket.sendTextMessage(QString::fromUtf8(QJsonDocument(QJsonObject{
             {"command", command}, {"request_id", id}, {"data", data}}).toJson(QJsonDocument::Compact)));
@@ -741,18 +1568,20 @@ private:
                 return;
             }
             if (callTransportRequest != 0 && id == callTransportRequest) {
-                if (name == "error" || !data["rtc_transports"].isArray())
-                    finishCallTransportDiscovery(tr("Could not check the homeserver’s MatrixRTC transport."));
-                else
-                    readCallTransports(data);
+                callTransportRequest = 0;
+                if (name == "response") readCallTransports(data["rtc_transports"].toArray());
+                if (!callTransports.isEmpty()) authenticateNativeCall();
+                else resolveLegacyCallTransport();
+                return;
+            }
+            if (auto callback = nativePending.take(int(id))) {
+                callback(name == "response" ? frame["data"] : QJsonValue{});
                 return;
             }
             if (!pending.contains(int(id))) return;
             auto callback = pending.take(int(id));
             if (name == "error") setStatus("Matrix request failed. Check your homeserver, credentials or room access.");
             else if (callback) callback(frame["data"]);
-        } else if (name == "run_id") {
-            frontendETag = data["etag"].toString();
         } else if (name == "image_auth_token") {
             imageToken = frame["data"].toString();
             emit changed();
@@ -783,8 +1612,10 @@ private:
             ready = true;
             setStatus(loggedIn ? "" : "Sign in to Matrix");
             loadRoomProfiles();
+            transmitValue("listen_to_device", true);
         } else if (name == "sync_complete") {
             if (!loggedIn) return;
+            if (nativeCall()) receiveNativeKeys(data["to_device"].toArray());
             if (data["clear_state"].toBool()) clearRoomData();
             const auto roomUpdates = data["rooms"].toObject();
             for (auto it = roomUpdates.begin(); it != roomUpdates.end(); ++it) {
@@ -835,8 +1666,6 @@ private:
     QString imageUploadRoom;
     int imageSendRequest = 0;
     QWebSocket socket;
-    QUrl callUrl;
-    QString frontendETag;
     QString callRoomName, callRoomId, callTransportStatus;
     QTimer callMembersTimer;
     int callMemberRequest = 0;
@@ -890,7 +1719,6 @@ static bool migrateLegacyProfile(const QString &root) {
 }
 
 int main(int argc, char **argv) {
-    QtWebEngineQuick::initialize();
     QGuiApplication app(argc, argv);
     app.setApplicationName("untethered");
     app.setApplicationDisplayName("untethered");

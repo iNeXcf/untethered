@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
 import QtQuick.Layouts
-import QtWebEngine
+import QtMultimedia
 
 ApplicationWindow {
     id: window
@@ -52,17 +52,12 @@ ApplicationWindow {
         && chat.selected !== "" && !sendingImage
 
     property bool showCall: false
-    readonly property bool callOpen: chat.callUrl.toString() !== ""
+    readonly property bool callOpen: chat.nativeCall
     property bool callOutputMuted: false
-    property bool audioSettingsPending: false
-
     function openCallAudioSettings() {
         openCallPane()
-        if (callOpen) {
-            if (callPane.item)
-                callPane.item.audioSettingsError = ""
-            audioSettingsPending = true
-        }
+        if (chat.nativeConnected)
+            nativeAudioSettings.open()
     }
 
     function openCallPane() {
@@ -75,7 +70,8 @@ ApplicationWindow {
         if (!callOpen) {
             showCall = false
             callOutputMuted = false
-            audioSettingsPending = false
+            nativeAudioSettings.close()
+            nativeSharePicker.close()
         }
     }
 
@@ -436,7 +432,7 @@ ApplicationWindow {
             Rectangle { Layout.fillWidth: true; height: 1; color: window.divider }
             Button {
                 text: "Call Audio Settings"
-                enabled: window.callOpen || (chat.ready && !chat.loggingOut && chat.selected !== "")
+                enabled: chat.nativeConnected
                 onClicked: {
                     settings.close()
                     window.openCallAudioSettings()
@@ -485,133 +481,6 @@ ApplicationWindow {
         modal: true
         standardButtons: Dialog.Ok
         contentItem: Label { text: "The selected file could not be opened as an image." }
-    }
-
-    Dialog {
-        id: callPermission
-        implicitWidth: Math.min(window.width - 48, 420)
-        parent: Overlay.overlay
-        anchors.centerIn: parent
-        modal: true
-        title: "Element Call"
-        standardButtons: Dialog.Yes | Dialog.No
-        property var requests: []
-        property var current: null
-
-        function enqueue(request, devices) {
-            requests.push({ permission: request, devices: devices })
-            if (!visible && !current)
-                showNext()
-        }
-
-        function showNext() {
-            if (!window.callOpen || visible || current || requests.length === 0)
-                return
-            current = requests.shift()
-            open()
-        }
-
-        function respond(granted) {
-            if (current?.permission.isValid) {
-                if (granted)
-                    current.permission.grant()
-                else
-                    current.permission.deny()
-            }
-            current = null
-        }
-
-        contentItem: Label {
-            text: "Allow Element Call to use " + (callPermission.current?.devices ?? "") + "?"
-            wrapMode: Text.WordWrap
-        }
-        onAccepted: respond(true)
-        onRejected: respond(false)
-        onClosed: Qt.callLater(showNext)
-        Connections {
-            target: window
-            function onCallOpenChanged() {
-                if (!window.callOpen) {
-                    callPermission.requests = []
-                    if (callPermission.visible)
-                        callPermission.reject()
-                }
-            }
-        }
-    }
-
-    Dialog {
-        id: screenShare
-        parent: Overlay.overlay
-        anchors.centerIn: parent
-        implicitWidth: Math.min(window.width - 48, 440)
-        title: "Share your screen"
-        modal: true
-        standardButtons: Dialog.Cancel
-        property var request: null
-
-        function choose(row) {
-            const pending = request
-            const sharingScreen = sourceType.currentIndex === 0
-            const model = sharingScreen ? pending?.screensModel : pending?.windowsModel
-            const source = model?.index(row, 0)
-            if (!source?.valid)
-                return
-            request = null
-            close()
-            if (sharingScreen)
-                pending.selectScreen(source)
-            else
-                pending.selectWindow(source)
-        }
-
-        onClosed: {
-            request?.cancel()
-            request = null
-        }
-
-        Connections {
-            target: window
-            function onCallOpenChanged() {
-                if (!window.callOpen && screenShare.request) {
-                    screenShare.request.cancel()
-                    screenShare.request = null
-                    screenShare.close()
-                }
-            }
-        }
-
-        contentItem: ColumnLayout {
-            spacing: 8
-            TabBar {
-                id: sourceType
-                Layout.fillWidth: true
-                TabButton { text: "Screens" }
-                TabButton { text: "Windows" }
-            }
-            ListView {
-                id: screenSources
-                Layout.fillWidth: true
-                Layout.preferredHeight: 200
-                clip: true
-                model: sourceType.currentIndex === 0 ? screenShare.request?.screensModel ?? null
-                    : screenShare.request?.windowsModel ?? null
-                delegate: NavigationButton {
-                    required property int index
-                    required property var model
-                    width: screenSources.width
-                    text: model.display || (sourceType.currentIndex === 0 ? "Screen " : "Window ") + (index + 1)
-                    onClicked: screenShare.choose(index)
-                }
-                ScrollBar.vertical: ScrollBar {}
-                Label {
-                    anchors.centerIn: parent
-                    visible: screenSources.count === 0
-                    color: window.muted
-                    text: sourceType.currentIndex === 0 ? "No screens available" : "No windows available"
-                }
-            }
-        }
     }
 
     Dialog {
@@ -873,18 +742,58 @@ ApplicationWindow {
                                 clip: true
                                 spacing: 2
                                 model: window.visibleRooms
-                                delegate: NavigationButton {
+                                delegate: Column {
                                     required property var modelData
+                                    id: roomRow
                                     width: rooms.width
-                                    height: modelData.dm ? 38 : 32
-                                    highlighted: chat.selected === modelData.id
-                                    avatarSource: modelData.avatar ?? ""
-                                    avatarName: modelData.name
-                                    showAvatar: modelData.dm || avatarSource.toString() !== ""
-                                    text: (modelData.unread ? "•  " : "") + (showAvatar ? "" : "#  ") + modelData.name
-                                    font.bold: modelData.unread
-                                    Accessible.name: modelData.name + (modelData.unread ? ", unread" : "")
-                                    onClicked: window.navigate(window.contextId, modelData.id)
+
+                                    NavigationButton {
+                                        width: parent.width
+                                        height: roomRow.modelData.dm ? 38 : 32
+                                        highlighted: chat.selected === roomRow.modelData.id
+                                        avatarSource: roomRow.modelData.avatar ?? ""
+                                        avatarName: roomRow.modelData.name
+                                        showAvatar: roomRow.modelData.dm || avatarSource.toString() !== ""
+                                        text: (roomRow.modelData.unread ? "•  " : "") + (showAvatar ? "" : "#  ") + roomRow.modelData.name
+                                        font.bold: roomRow.modelData.unread
+                                        Accessible.name: roomRow.modelData.name + (roomRow.modelData.unread ? ", unread" : "")
+                                        onClicked: window.navigate(window.contextId, roomRow.modelData.id)
+                                    }
+
+                                    Repeater {
+                                        model: roomRow.modelData.id === chat.callRoomId ? chat.callParticipants : []
+
+                                        delegate: Item {
+                                            required property var modelData
+                                            id: callParticipant
+                                            width: roomRow.width
+                                            height: 28
+                                            Accessible.role: Accessible.StaticText
+                                            Accessible.name: modelData.name + (modelData.local ? ", you" : "")
+
+                                            RowLayout {
+                                                anchors.fill: parent
+                                                anchors.leftMargin: 24
+                                                anchors.rightMargin: 8
+                                                spacing: 8
+
+                                                Avatar {
+                                                    Layout.preferredWidth: 20
+                                                    Layout.preferredHeight: 20
+                                                    name: callParticipant.modelData.name
+                                                    source: callParticipant.modelData.avatar
+                                                }
+                                                Label {
+                                                    Layout.fillWidth: true
+                                                    text: callParticipant.Accessible.name
+                                                    textFormat: Text.PlainText
+                                                    elide: Text.ElideRight
+                                                    color: window.muted
+                                                    font.pixelSize: 13
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                                 ScrollBar.vertical: ScrollBar {}
                                 Label {
@@ -955,12 +864,12 @@ ApplicationWindow {
 
                         ProfileButton {
                             symbol: "microphone"
-                            enabled: callPane.item?.microphoneAvailable ?? false
-                            checked: callPane.item?.microphoneMuted ?? false
+                            enabled: chat.nativeConnected
+                            checked: chat.nativeMuted
                             Accessible.name: checked ? "Unmute microphone" : "Mute microphone"
                             ToolTip.text: window.callOpen ? Accessible.name : "No active call"
                             ToolTip.visible: hovered
-                            onClicked: callPane.item?.updateControls("incall_mute")
+                            onClicked: chat.toggleNativeMicrophone()
                         }
                         ProfileButton {
                             symbol: "call"
@@ -978,7 +887,11 @@ ApplicationWindow {
                             Accessible.name: checked ? "Unmute call audio" : "Mute call audio"
                             ToolTip.text: Accessible.name
                             ToolTip.visible: hovered
-                            onClicked: window.callOutputMuted = !window.callOutputMuted
+                            onClicked: {
+                                window.callOutputMuted = !window.callOutputMuted
+                                if (chat.nativeCall)
+                                    chat.setNativeOutputMuted(window.callOutputMuted)
+                            }
                         }
                         ProfileButton {
                             symbol: "settings"
@@ -1016,21 +929,21 @@ ApplicationWindow {
                         anchors.leftMargin: 20
                         anchors.rightMargin: 18
                         Label {
-                            visible: !!window.selectedRoom && !window.selectedRoom.dm
+                            visible: !window.showCall && !!window.selectedRoom && !window.selectedRoom.dm
                             text: "#"
                             color: window.accent
                             font.pixelSize: 18
                             Accessible.ignored: true
                         }
                         Label {
-                            text: chat.roomName || "Choose a room"
+                            text: window.showCall ? chat.callRoomName : (chat.roomName || "Choose a room")
                             textFormat: Text.PlainText
                             elide: Text.ElideRight
                             Layout.fillWidth: true
                             font.pixelSize: 17
                             font.weight: Font.DemiBold
                         }
-                        Label { text: "Encrypted"; color: window.accent; visible: chat.encrypted && window.width > 1050 }
+                        Label { text: "Encrypted"; color: window.accent; visible: !window.showCall && chat.encrypted && window.width > 1050 }
                         NavigationButton {
                             text: "Find"
                             Accessible.name: "Find a conversation"
@@ -1040,8 +953,8 @@ ApplicationWindow {
                         }
                         NavigationButton {
                             text: window.showCall ? "Back to chat" : "Call"
-                            Accessible.name: window.showCall ? "Back to chat" : "Open Element Call in this room"
-                            visible: chat.selected !== ""
+                            Accessible.name: window.showCall ? "Back to chat" : "Open call in this room"
+                            visible: chat.selected !== "" || window.showCall
                             enabled: window.showCall || (chat.ready && !chat.loggingOut)
                             onClicked: {
                                 if (window.showCall)
@@ -1053,420 +966,169 @@ ApplicationWindow {
                         NavigationButton { text: "History"; Accessible.name: "Load older messages"; visible: chat.selected !== "" && !window.showCall; enabled: chat.ready; onClicked: chat.paginate(true) }
                     }
                 }
-                Loader {
-                    id: callPane
+                ColumnLayout {
+                    visible: window.showCall && chat.nativeCall
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    active: window.callOpen
-                    visible: window.showCall && active
+                    Layout.margins: 12
+                    spacing: 12
 
-                    sourceComponent: ColumnLayout {
-                        id: callContent
-                        spacing: 0
-                        property string audioSettingsError: ""
-                        property var controls: ({})
-                        readonly property bool microphoneAvailable: controls.microphone?.available ?? false
-                        readonly property bool microphoneMuted: controls.microphone?.active === false
-                        property bool controlsRequestPending: false
+                    Label {
+                        Layout.fillWidth: true
+                        text: chat.callTransportStatus
+                        color: window.muted
+                        wrapMode: Text.WordWrap
+                    }
+                    GridView {
+                        id: nativeVideoGrid
+                        visible: count > 0
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        cellWidth: width / (count > 1 && width > 640 ? 2 : 1)
+                        cellHeight: Math.min(height, cellWidth * 9 / 16)
+                        clip: true
+                        model: chat.nativeVideoTiles
 
-                        function updateControls(action = "") {
-                            if (controlsRequestPending || !callView.pageReady)
-                                return
-                            controlsRequestPending = true
-                            callView.runJavaScript(`
-                                (() => {
-                                    const frame = document.querySelector(".right-panel-content.element-call iframe");
-                                    const widget = frame?.contentDocument;
-                                    if (!widget) return {};
+                        delegate: Rectangle {
+                            required property var modelData
+                            width: nativeVideoGrid.cellWidth - 8
+                            height: nativeVideoGrid.cellHeight - 8
+                            radius: 10
+                            color: "#14171a"
 
-                                    // A spotlight and its inset can render the same camera track.
-                                    // Keep the larger tile and leave distinct tracks alone, even for the same account.
-                                    const primaryTile = new Map();
-                                    const duplicateTiles = new Set();
-                                    for (const video of widget.querySelectorAll('video[data-source="camera"]')) {
-                                        const track = video.srcObject?.getVideoTracks?.()[0];
-                                        const tile = video.closest('[data-testid="videoTile"]');
-                                        if (!track || !tile) continue;
-                                        if (!tile.getClientRects().length) continue;
-                                        const rect = tile.getBoundingClientRect();
-                                        const area = rect.width * rect.height;
-                                        if (!area) continue;
-                                        const primary = primaryTile.get(track.id);
-                                        if (!primary) primaryTile.set(track.id, {tile, area});
-                                        else if (primary.tile !== tile && area > primary.area) {
-                                            duplicateTiles.add(primary.tile);
-                                            primaryTile.set(track.id, {tile, area});
-                                        } else if (primary.tile !== tile) duplicateTiles.add(tile);
-                                    }
-                                    let style = widget.getElementById("untethered-duplicate-video-style");
-                                    if (!style) {
-                                        style = widget.createElement("style");
-                                        style.id = "untethered-duplicate-video-style";
-                                        style.textContent = "[data-untethered-duplicate-video] { visibility: hidden !important; }";
-                                        widget.head.append(style);
-                                    }
-                                    for (const tile of widget.querySelectorAll("[data-untethered-duplicate-video]")) {
-                                        if (!duplicateTiles.has(tile))
-                                            tile.removeAttribute("data-untethered-duplicate-video");
-                                    }
-                                    for (const tile of duplicateTiles)
-                                        tile.setAttribute("data-untethered-duplicate-video", "");
-
-                                    const ids = {
-                                        microphone: "incall_mute",
-                                        camera: "incall_videomute",
-                                        join: "lobby_joinCall",
-                                        leave: "incall_leave"
-                                    };
-                                    const buttonFor = id => widget?.querySelector('[data-testid="' + id + '"]');
-                                    const action = ${JSON.stringify(action)};
-                                    if (action) {
-                                        const button = buttonFor(action);
-                                        if (button && !button.disabled) button.click();
-                                    }
-                                    const controls = {};
-                                    for (const [name, id] of Object.entries(ids)) {
-                                        const button = buttonFor(id);
-                                        if (button) controls[name] = {
-                                            active: button.getAttribute("aria-checked") === "true",
-                                            available: !button.disabled
-                                        };
-                                    }
-                                    return controls;
-                                })()
-                            `, WebEngineScript.ApplicationWorld, state => {
-                                controls = state ?? ({})
-                                controlsRequestPending = false
-                            })
-                        }
-
-                        Timer {
-                            interval: 400
-                            repeat: true
-                            running: window.callOpen && callView.pageReady && callView.loadError === ""
-                            onTriggered: callContent.updateControls()
-                        }
-
-                        Timer {
-                            interval: 300
-                            triggeredOnStart: true
-                            repeat: true
-                            running: window.audioSettingsPending && window.showCall
-                            property int attempts: 0
-                            onRunningChanged: if (running) attempts = 0
-                            onTriggered: {
-                                if (++attempts > 40 || callView.loadError !== "") {
-                                    callContent.audioSettingsError = "Audio settings are unavailable. Try again once the call view has loaded."
-                                    window.audioSettingsPending = false
-                                    return
-                                }
-                                if (!callView.pageReady)
-                                    return
-                                callView.runJavaScript(`
-                                    (() => {
-                                        const frame = document.querySelector(".right-panel-content.element-call iframe");
-                                        const widget = frame && frame.contentDocument;
-                                        if (!widget) return false;
-                                        const audioTab = '[aria-controls$="[audio]"]';
-                                        const currentTab = widget.querySelector(audioTab);
-                                        if (currentTab) {
-                                            currentTab.click();
-                                            return true;
-                                        }
-                                        const settings = widget.querySelector(
-                                            '[data-testid="settings-bottom-left"], [data-testid="settings-bottom-center"], [data-testid="settings-app-bar"]'
-                                        );
-                                        if (!settings) return false;
-                                        settings.click();
-                                        let attempts = 0;
-                                        const focusAudio = () => {
-                                            const tab = widget.querySelector(audioTab);
-                                            if (tab) tab.click();
-                                            else if (++attempts < 10) setTimeout(focusAudio, 50);
-                                        };
-                                        setTimeout(focusAudio, 0);
-                                        return true;
-                                    })()
-                                `, WebEngineScript.ApplicationWorld, opened => {
-                                    if (opened)
-                                        window.audioSettingsPending = false
-                                })
-                            }
-                        }
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            Layout.margins: 10
-                            Label {
-                                text: "Call in " + chat.callRoomName
-                                textFormat: Text.PlainText
-                                Layout.fillWidth: true
-                                elide: Text.ElideRight
-                            }
-                            Button {
-                                text: "Audio Settings"
-                                enabled: !window.audioSettingsPending && callView.loadError === ""
-                                onClicked: window.openCallAudioSettings()
-                            }
-                        }
-
-                        Label {
-                            text: "Participants (" + callMembers.count + ")"
-                            Layout.leftMargin: 12
-                            Layout.bottomMargin: 4
-                            color: window.muted
-                            font.pixelSize: 12
-                        }
-
-                        ListView {
-                            id: callMembers
-                            visible: count > 0
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: 60
-                            Layout.leftMargin: 12
-                            Layout.rightMargin: 12
-                            Layout.bottomMargin: 6
-                            clip: true
-                            orientation: ListView.Horizontal
-                            spacing: 8
-                            model: chat.callParticipants
-                            Accessible.name: "Call participants"
-                            delegate: Rectangle {
-                                id: participant
-                                required property var modelData
-                                width: 164
-                                height: 49
-                                radius: 9
-                                color: window.fieldSurface
-                                border.color: modelData.local ? window.activeSurface : window.divider
-                                Accessible.role: Accessible.StaticText
-                                Accessible.name: modelData.name + (modelData.local ? ", you" : "")
-                                ToolTip.text: modelData.userId
-                                ToolTip.visible: participantHover.hovered
-                                HoverHandler { id: participantHover }
-
-                                RowLayout {
-                                    anchors.fill: parent
-                                    anchors.margins: 8
-                                    Avatar {
-                                        name: participant.modelData.name.replace(/^@/, "")
-                                        source: participant.modelData.avatar
-                                        Layout.preferredWidth: 32
-                                        Layout.preferredHeight: 32
-                                    }
-                                    ColumnLayout {
-                                        Layout.fillWidth: true
-                                        spacing: 0
-                                        Label {
-                                            Layout.fillWidth: true
-                                            text: participant.modelData.name
-                                            textFormat: Text.PlainText
-                                            elide: Text.ElideRight
-                                        }
-                                        Label {
-                                            visible: participant.modelData.local
-                                            text: "You"
-                                            color: window.muted
-                                            font.pixelSize: 11
-                                        }
-                                    }
-                                }
-                            }
-                            ScrollBar.horizontal: ScrollBar {}
-                        }
-
-                        Label {
-                            text: chat.callTransportStatus
-                            visible: text !== ""
-                            Layout.fillWidth: true
-                            Layout.leftMargin: 10
-                            Layout.rightMargin: 10
-                            Layout.bottomMargin: 6
-                            color: window.muted
-                            font.pixelSize: 12
-                            wrapMode: Text.WordWrap
-                        }
-
-                        Label {
-                            visible: callContent.audioSettingsError !== ""
-                            Layout.fillWidth: true
-                            Layout.leftMargin: 10
-                            Layout.rightMargin: 10
-                            text: callContent.audioSettingsError
-                            color: window.muted
-                            wrapMode: Text.WordWrap
-                        }
-
-                        Item {
-                            Layout.fillWidth: true
-                            Layout.fillHeight: true
-                            WebEngineView {
-                                id: callView
+                            VideoOutput {
+                                id: nativeTileVideo
                                 anchors.fill: parent
-                                profile: WebEngineProfile { offTheRecord: true }
-                                backgroundColor: window.color
-                                audioMuted: window.callOutputMuted
-                                settings.javascriptCanOpenWindows: false
-                                settings.screenCaptureEnabled: true
-                                url: chat.callUrl
-                                property string loadError: ""
-                                property bool pageReady: false
-                                property bool authAttempted: false
-                                visible: pageReady && loadError === ""
-
-                                userScripts.collection: [{
-                                    name: "element-call-default-audio-output",
-                                    injectionPoint: WebEngineScript.DocumentCreation,
-                                    worldId: WebEngineScript.MainWorld,
-                                    runsOnSubFrames: true,
-                                    // Element Call 0.28.2 can pass undefined before devices are enumerated.
-                                    sourceCode: `
-                                        (() => {
-                                            if (window === window.top || !location.pathname.startsWith("/element-call-embedded/"))
-                                                return;
-                                            try {
-                                                if (location.origin !== window.top.location.origin) return;
-                                            } catch { return; }
-
-                                            const audio = window.AudioContext && window.AudioContext.prototype;
-                                            if (typeof audio?.setSinkId !== "function") return;
-                                            const setSinkId = audio.setSinkId;
-                                            audio.setSinkId = function (sinkId) {
-                                                return setSinkId.call(this, sinkId === undefined ? "" : sinkId);
-                                            };
-                                        })();
-                                    `
-                                }, {
-                                    name: "untethered-call-layout",
-                                    injectionPoint: WebEngineScript.DocumentReady,
-                                    worldId: WebEngineScript.ApplicationWorld,
-                                    sourceCode: `
-                                        const layout = document.createElement("style");
-                                        layout.textContent = [
-                                            "html, body { background: #1d1c21 !important; }",
-                                            "body { visibility: hidden !important; overflow: hidden !important; }",
-                                            "main.matrix-main { translate: none !important; transition: none !important; }",
-                                            ".right-panel { position: fixed !important; inset: 0 !important; }",
-                                            ".right-panel-content.element-call { visibility: visible !important;",
-                                            "position: fixed !important; inset: 0 !important;",
-                                            "width: auto !important; height: auto !important; }"
-                                        ].join(" ");
-                                        document.head.append(layout);
-                                        let mounted = !!document.querySelector(".right-panel-content.element-call iframe");
-                                        new MutationObserver(() => {
-                                            if (document.querySelector(".right-panel-content.element-call iframe"))
-                                                mounted = true;
-                                            else if (mounted && !document.querySelector(".right-panel-content.element-call"))
-                                                document.title = "untethered-call-ended";
-                                        }).observe(document.body, {childList: true, subtree: true});
-                                    `
-                                }]
-
-                                onAuthenticationDialogRequested: request => {
-                                    const password = request.type === AuthenticationDialogRequest.AuthenticationTypeHTTP
-                                        && !authAttempted ? chat.callPassword(request.url) : ""
-                                    if (password) {
-                                        authAttempted = true
-                                        request.dialogAccept("desktop-key", password)
-                                    } else {
-                                        request.dialogReject()
-                                        if (chat.isCallOrigin(request.url))
-                                            loadError = "Could not open the Matrix session for Element Call."
-                                    }
-                                }
-                                onNavigationRequested: request => {
-                                    if (!chat.isCallOrigin(request.url)
-                                            && (request.isMainFrame || request.url.toString() !== "about:blank"))
-                                        request.reject()
-                                }
-                                onDesktopMediaRequested: request => {
-                                    if (!window.callOpen || !window.showCall || screenShare.request) {
-                                        request.cancel()
-                                        return
-                                    }
-                                    screenShare.request = request
-                                    sourceType.currentIndex = 0
-                                    screenShare.open()
-                                }
-                                onPermissionRequested: request => {
-                                    let devices = ""
-                                    if (chat.isCallOrigin(request.origin)) {
-                                        switch (request.permissionType) {
-                                        case WebEnginePermission.PermissionType.MediaAudioCapture: devices = "your microphone"; break
-                                        case WebEnginePermission.PermissionType.MediaVideoCapture: devices = "your camera"; break
-                                        case WebEnginePermission.PermissionType.MediaAudioVideoCapture: devices = "your microphone and camera"; break
-                                        }
-                                    }
-                                    if (!devices) {
-                                        request.deny()
-                                        return
-                                    }
-                                    callPermission.enqueue(request, devices)
-                                }
-                                onLoadingChanged: info => {
-                                    if (info.status === WebEngineView.LoadSucceededStatus)
-                                        pageReady = true
-                                    else if (info.status === WebEngineView.LoadFailedStatus)
-                                        loadError = "Could not load Element Call."
-                                }
-                                onRenderProcessTerminated: loadError = "The Element Call view stopped."
-                                onTitleChanged: {
-                                    if (title === "untethered-call-ended")
-                                        Qt.callLater(chat.closeCall)
-                                }
+                                fillMode: VideoOutput.PreserveAspectFit
+                                Component.onCompleted: chat.setNativeVideoSink(modelData.id, videoSink)
                             }
                             Label {
-                                visible: !callView.pageReady || callView.loadError !== ""
-                                anchors.centerIn: parent
-                                color: window.muted
-                                text: callView.loadError || "Opening Element Call…"
+                                anchors.left: parent.left
+                                anchors.bottom: parent.bottom
+                                anchors.margins: 10
+                                padding: 6
+                                text: modelData.name + (modelData.sharing ? " · Screen" : "")
+                                textFormat: Text.PlainText
+                                background: Rectangle { color: "#c0212428"; radius: 6 }
                             }
                         }
-                        Rectangle {
-                            Layout.fillWidth: true
-                            Layout.leftMargin: 12
-                            Layout.rightMargin: 12
-                            Layout.bottomMargin: 12
-                            implicitHeight: callToolbar.implicitHeight + 16
-                            radius: 12
-                            color: window.fieldSurface
-                            border.color: window.divider
-
-                            RowLayout {
-                                id: callToolbar
-                                anchors.centerIn: parent
-                                spacing: 8
-                                NavigationButton {
-                                    text: callContent.microphoneMuted ? "Unmute" : "Mute"
-                                    Accessible.name: callContent.microphoneMuted ? "Unmute microphone" : "Mute microphone"
-                                    highlighted: callContent.microphoneMuted
-                                    enabled: callContent.microphoneAvailable
-                                    onClicked: callContent.updateControls("incall_mute")
+                    }
+                    Item {
+                        visible: nativeVideoGrid.count === 0
+                        Layout.fillHeight: true
+                    }
+                    RowLayout {
+                        Layout.alignment: Qt.AlignHCenter
+                        NavigationButton {
+                            text: chat.nativeMuted ? "Unmute" : "Mute"
+                            enabled: chat.nativeConnected
+                            onClicked: chat.toggleNativeMicrophone()
+                        }
+                        NavigationButton {
+                            text: chat.nativeCamera ? "Camera off" : "Camera on"
+                            enabled: chat.nativeConnected
+                            onClicked: chat.toggleNativeCamera()
+                        }
+                        NavigationButton {
+                            text: chat.nativeSharing ? "Stop sharing" : "Share screen"
+                            enabled: chat.nativeConnected
+                            onClicked: {
+                                if (chat.nativeSharing) {
+                                    chat.stopNativeShare()
+                                    return
                                 }
-                                NavigationButton {
-                                    text: callContent.controls.camera?.active ? "Camera off" : "Camera on"
-                                    highlighted: callContent.controls.camera?.active ?? false
-                                    enabled: callContent.controls.camera?.available ?? false
-                                    onClicked: callContent.updateControls("incall_videomute")
-                                }
-                                NavigationButton {
-                                    visible: !!callContent.controls.join
-                                    text: "Join call"
-                                    highlighted: true
-                                    enabled: callContent.controls.join?.available ?? false
-                                    onClicked: callContent.updateControls("lobby_joinCall")
-                                }
-                                NavigationButton {
-                                    text: callContent.controls.leave ? "Leave call" : "Close"
-                                    enabled: callContent.controls.leave?.available ?? true
-                                    onClicked: {
-                                        if (callContent.controls.leave)
-                                            callContent.updateControls("incall_leave")
-                                        else
-                                            chat.closeCall()
-                                    }
+                                const sources = chat.nativeShareSources()
+                                if (sources.portal) {
+                                    chat.startNativeShare(-1, false)
+                                } else {
+                                    nativeSharePicker.sources = sources
+                                    nativeSharePicker.open()
                                 }
                             }
+                        }
+                        NavigationButton {
+                            text: "Audio settings"
+                            enabled: chat.nativeConnected
+                            onClicked: nativeAudioSettings.open()
+                        }
+                        NavigationButton {
+                            text: "Leave call"
+                            onClicked: chat.closeCall()
+                        }
+                    }
+                }
+
+                Dialog {
+                    id: nativeSharePicker
+                    parent: Overlay.overlay
+                    anchors.centerIn: parent
+                    width: Math.min(window.width - 32, 460)
+                    title: "Share a screen or window"
+                    modal: true
+                    standardButtons: Dialog.Cancel
+                    property var sources: ({ screens: [], windows: [] })
+
+                    ColumnLayout {
+                        TabBar {
+                            id: nativeShareTab
+                            Layout.fillWidth: true
+                            TabButton { text: "Screens" }
+                            TabButton { text: "Windows" }
+                        }
+                        ListView {
+                            id: nativeShareList
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 210
+                            clip: true
+                            model: nativeShareTab.currentIndex === 0 ? nativeSharePicker.sources.screens
+                                                                     : nativeSharePicker.sources.windows
+                            delegate: NavigationButton {
+                                required property int index
+                                required property string modelData
+                                width: nativeShareList.width
+                                text: modelData
+                                onClicked: {
+                                    chat.startNativeShare(index, nativeShareTab.currentIndex === 1)
+                                    nativeSharePicker.close()
+                                }
+                            }
+                            ScrollBar.vertical: ScrollBar {}
+                            Label {
+                                anchors.centerIn: parent
+                                visible: nativeShareList.count === 0
+                                text: "No sources available"
+                            }
+                        }
+                    }
+                }
+
+                Dialog {
+                    id: nativeAudioSettings
+                    parent: Overlay.overlay
+                    width: Math.min(window.width - 32, 380)
+                    title: "Call audio devices"
+                    modal: true
+                    anchors.centerIn: Overlay.overlay
+                    standardButtons: Dialog.Close
+
+                    ColumnLayout {
+                        Label { text: "Microphone" }
+                        ComboBox {
+                            Layout.fillWidth: true
+                            model: chat.nativeInputs
+                            textRole: "name"
+                            valueRole: "id"
+                            currentIndex: -1
+                            onActivated: chat.setNativeDevice(true, currentValue)
+                        }
+                        Label { text: "Speakers" }
+                        ComboBox {
+                            Layout.fillWidth: true
+                            model: chat.nativeOutputs
+                            textRole: "name"
+                            valueRole: "id"
+                            currentIndex: -1
+                            onActivated: chat.setNativeDevice(false, currentValue)
                         }
                     }
                 }
