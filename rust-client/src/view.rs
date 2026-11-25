@@ -291,16 +291,19 @@ impl App {
                     .style(nav(call.mixer))
                     .on_press_maybe(active.then_some(Msg::ToggleMixer)),
             );
-            for input in crate::desktop_call::VideoInput::ALL {
-                let slot = input as usize;
-                let requested = mode.video[slot].is_some();
-                let label = input.control(requested, call.video_status[slot].live);
-                controls = controls.push(
-                    button(text(label).size(15).font(BOLD))
-                        .style(nav(requested))
-                        .on_press_maybe(active.then_some(Msg::ToggleVideo(input))),
-                );
+        }
+        for input in crate::desktop_call::VideoInput::ALL {
+            if !call.group && input != crate::desktop_call::VideoInput::Camera {
+                continue;
             }
+            let slot = input as usize;
+            let requested = mode.video[slot].is_some();
+            let label = input.control(requested, call.video_status[slot].live);
+            controls = controls.push(
+                button(text(label).size(15).font(BOLD))
+                    .style(nav(requested))
+                    .on_press_maybe(active.then_some(Msg::ToggleVideo(input))),
+            );
         }
         let mut bar = column![
             text(format!("{} · {name}", call.label))
@@ -449,18 +452,28 @@ impl App {
         Some(
             container(
                 row![
-                    text(format!("Incoming voice call · {}", i.peer))
-                        .width(Fill)
-                        .size(15),
+                    text(format!(
+                        "Incoming {} call · {}",
+                        if i.video { "video" } else { "voice" },
+                        i.peer
+                    ))
+                    .width(Fill)
+                    .size(15),
                     button(text("Decline").size(16).font(BOLD))
                         .padding([5, 14])
                         .style(nav(false))
                         .on_press(Msg::DecideRing(i.event.clone(), false)),
+                ]
+                .extend(
+                    i.video
+                        .then(|| text("Your camera is off").size(13).color(MUTED).into()),
+                )
+                .push(
                     button(text("Accept").size(16).font(BOLD))
                         .padding([5, 14])
-                        .style(button::success)
-                        .on_press(Msg::DecideRing(i.event.clone(), true))
-                ]
+                        .style(nav(true))
+                        .on_press(Msg::DecideRing(i.event.clone(), true)),
+                )
                 .align_y(Center)
                 .spacing(9),
             )
@@ -839,7 +852,9 @@ impl App {
                         .on_press(Msg::JoinVoice),
                 )
             } else {
-                header.push(button("Voice call").on_press(Msg::VoiceCall))
+                header
+                    .push(button("Voice call").on_press(Msg::DialDm(false)))
+                    .push(button("Video call").on_press(Msg::DialDm(true)))
             }
         } else {
             header

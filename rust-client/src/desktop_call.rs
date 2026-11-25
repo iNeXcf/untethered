@@ -40,6 +40,7 @@ pub(super) use room_video::{Feed, Previews, VideoInput};
 
 pub enum Target {
     Dm {
+        video: bool,
         peer: String,
         incoming: Option<crate::incoming::Offer>,
     },
@@ -157,6 +158,18 @@ impl crate::App {
         };
         let (cancel, rx) = async_channel::bounded(1);
         let (audio, mode) = watch::channel(AudioMode {
+            video: [
+                None,
+                matches!(
+                    target,
+                    Target::Dm {
+                        video: true,
+                        incoming: None,
+                        ..
+                    }
+                )
+                .then(uuid::Uuid::new_v4),
+            ],
             talk: TalkGate::from_ptt(group && self.room_ptt),
             ..AudioMode::default()
         });
@@ -534,9 +547,13 @@ pub async fn run(
         audio,
         views,
     } = controls;
-    let (dm_peer, incoming) = match &target {
-        Target::Channel => (None, None),
-        Target::Dm { peer, incoming } => (Some(peer.as_str()), incoming.as_ref()),
+    let (dm_peer, incoming, video) = match &target {
+        Target::Channel => (None, None, false),
+        Target::Dm {
+            peer,
+            incoming,
+            video,
+        } => (Some(peer.as_str()), incoming.as_ref(), *video),
     };
     let mut req = format!("ws://{addr}/_gomuks/websocket")
         .into_client_request()
@@ -565,12 +582,13 @@ pub async fn run(
     }
     // Element may send its key as soon as it sees our membership.
     let prior = w.rpc("listen_to_device", json!(true)).await?;
-    let mut member = match Membership::join(
+    let mut member = match Membership::join_with_video(
         room,
         &s.user,
         &s.device,
         &s.focus,
         LEASE.as_millis() as u32,
+        video,
         &mut w,
     )
     .await
@@ -584,7 +602,22 @@ pub async fn run(
     let mut media = None;
     let session = async {
         match dm_peer {
-            Some(_) => call(&mut w, &s, &mut member, events, &mut media, incoming, audio).await,
+            Some(_) => {
+                call(
+                    &mut w,
+                    &s,
+                    &mut member,
+                    events,
+                    &mut media,
+                    DmMedia {
+                        incoming,
+                        mode: audio,
+                        video,
+                        previews: views.previews,
+                    },
+                )
+                .await
+            }
             None => {
                 channel::joined(&mut w, &s, &mut member, events, &mut media, audio, views).await
             }
@@ -600,15 +633,26 @@ pub async fn run(
     leave.map_err(|_| "Disconnected; homeserver will expire call membership.")?;
     result
 }
+struct DmMedia<'a> {
+    incoming: Option<&'a crate::incoming::Offer>,
+    mode: watch::Receiver<AudioMode>,
+    video: bool,
+    previews: Previews,
+}
 async fn call(
     w: &mut Wire<'_>,
     s: &Session,
     m: &mut Membership,
     events: &Sender<Value>,
     media: &mut Option<Room>,
-    incoming: Option<&crate::incoming::Offer>,
-    mode: watch::Receiver<AudioMode>,
+    dm: DmMedia<'_>,
 ) -> Result<&'static str> {
+    let DmMedia {
+        incoming,
+        mut mode,
+        video,
+        previews,
+    } = dm;
     let dm_peer = w.dm_peer.ok_or("Missing DM recipient.")?;
     // Encryption, sending the invite and waiting for its acknowledgement can
     // take seconds. They are part of the advertised ring lifetime.
@@ -623,7 +667,7 @@ async fn call(
                 json!({"room_id":w.room,"type":RING,"synchronous":true,"content":{
         "slot_id":SLOT_ID,"notification_type":"ring","m.mentions":{"user_ids":[dm_peer]},
         "m.relates_to":{"rel_type":"m.reference","event_id":m.event_id},
-        "m.call.intent":"audio","sender_ts":now(),"lifetime":RING_LIFETIME.as_millis() as u64,"msc4354_sticky_key":SLOT_ID}}),
+        "m.call.intent":if video{"video"}else{"audio"},"sender_ts":now(),"lifetime":RING_LIFETIME.as_millis() as u64,"msc4354_sticky_key":SLOT_ID}}),
             )
             .await?;
         status(events, w.room, "Ringing").await;
@@ -706,9 +750,15 @@ async fn call(
         room: w.room.to_owned(),
     };
     let mut audio = JoinSet::new();
-    let capture =
-        |publication| controlled_capture(src.clone(), publication, mode.clone(), notices.clone());
-    let playback = |track| play(track, None, mode.clone(), notices.clone());
+    let devices = mode.clone();
+    let capture = |publication| {
+        controlled_capture(src.clone(), publication, devices.clone(), notices.clone())
+    };
+    let playback = |track| play(track, None, devices.clone(), notices.clone());
+    let mut camera = room_video::Publisher::new(VideoInput::Camera);
+    camera.local_preview = Some(previews.clone());
+    let mut tiles = JoinSet::new();
+    let mut displays = std::collections::BTreeMap::<String, tokio::task::AbortHandle>::new();
     audio.spawn(capture(publication));
     let mut playing = false;
     let mut recovering: Option<Instant> = None;
@@ -722,7 +772,54 @@ async fn call(
     let trace_ice = std::env::var("UNTETHERED_QA_ICE_STATS").as_deref() == Ok("1");
     loop {
         install(w, &provider, peer_device, &peer.member, peer_id)?;
+        let requested = mode.borrow_and_update().video[VideoInput::Camera as usize];
+        camera
+            .select(
+                if recovering.is_none() {
+                    requested
+                } else {
+                    None
+                },
+                lk,
+            )
+            .await?;
+        let mut live = std::collections::BTreeSet::new();
+        if recovering.is_none()
+            && let Some(p) = lk.remote_participants().get(&peer_id.to_owned().into())
+        {
+            for pubn in p.track_publications().into_values() {
+                if pubn.source() != TrackSource::Camera
+                    || pubn.encryption_type() != EncryptionType::Gcm
+                {
+                    continue;
+                }
+                if let Some(RemoteTrack::Video(track)) = pubn.track() {
+                    let sid = pubn.sid().to_string();
+                    live.insert(sid.clone());
+                    displays.entry(sid).or_insert_with(|| {
+                        tiles.spawn(room_video::display(
+                            track,
+                            dm_peer.into(),
+                            VideoInput::Camera,
+                            previews.clone(),
+                            events.clone(),
+                        ))
+                    });
+                }
+            }
+        }
+        displays.retain(|sid, job| {
+            if live.contains(sid) {
+                true
+            } else {
+                job.abort();
+                false
+            }
+        });
         let interrupted = tokio::select! {
+            changed=mode.changed()=>{changed.map_err(|_|ENDED)?;false}
+            update=camera.next()=>{camera.update(update,lk,key.index,events,w.room,&mode).await?;false}
+            _=tiles.join_next(),if !tiles.is_empty()=>false,
             e=w.frame()=>{e?;false}
             _=heartbeat.tick()=>{
                 if recovering.is_some_and(|since| since.elapsed()>=RECOVERY_LIMIT) {

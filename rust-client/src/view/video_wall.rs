@@ -8,7 +8,11 @@ use iced::{
 };
 
 fn tile(feed: Feed, room: &Room, id: uuid::Uuid, height: f32, selectable: bool) -> El<'static> {
-    let caption = format!("{} · {}", room.display(&feed.user), feed.source.name());
+    let caption = if feed.user.is_empty() {
+        "You · Camera".into()
+    } else {
+        format!("{} · {}", room.display(&feed.user), feed.source.name())
+    };
     let content = column![
         text(caption).size(13).font(BOLD).color(TEXT),
         image(feed.frame)
@@ -44,6 +48,25 @@ pub(super) fn view(call: &ActiveCall, room: &Room) -> Option<El<'static>> {
             .then(a.sid.cmp(&b.sid))
     });
     let id = call.id;
+    if !call.group {
+        // The other person gets the stage; keep the local camera visible
+        // without allocating a second capture or a loopback subscription.
+        let selected = feeds
+            .iter()
+            .position(|f| focus.as_ref() == Some(&f.sid))
+            .or_else(|| feeds.iter().position(|f| !f.user.is_empty()))
+            .unwrap_or(0);
+        let mut stage = row![tile(feeds.remove(selected), room, id, 280., false)].spacing(6);
+        if !feeds.is_empty() {
+            stage = stage.push(
+                container(Column::with_children(
+                    feeds.into_iter().map(|f| tile(f, room, id, 86., true)),
+                ))
+                .width(166),
+            );
+        }
+        return Some(container(stage).width(Fill).padding([5, 12]).into());
+    }
     let wall = if let Some(i) = feeds.iter().position(|f| Some(&f.sid) == focus.as_ref()) {
         let mut stage = row![tile(feeds.remove(i), room, id, 280., false)].spacing(6);
         if !feeds.is_empty() {

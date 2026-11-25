@@ -39,11 +39,22 @@ impl Membership {
         delay_ms: u32,
         rpc: impl Signal,
     ) -> Result<Self, String> {
+        Self::join_with_video(room, user, device, livekit_service, delay_ms, false, rpc).await
+    }
+    pub async fn join_with_video(
+        room: &str,
+        user: &str,
+        device: &str,
+        livekit_service: &url::Url,
+        delay_ms: u32,
+        video: bool,
+        rpc: impl Signal,
+    ) -> Result<Self, String> {
         if device.is_empty() || !(1..60_000).contains(&delay_ms) {
             return Err("Invalid device or delayed-leave interval".into());
         }
         let join = json!({
-            "application":"m.call", "scope":"m.room", "call_id":"", "m.call.intent":"audio",
+            "application":"m.call", "scope":"m.room", "call_id":"", "m.call.intent":if video{"video"}else{"audio"},
             "device_id":device, "membershipID":format!("{user}:{device}"),
             "created_ts":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64,
             "focus_active":{"type":"livekit","focus_selection":"multi_sfu"},

@@ -58,6 +58,23 @@ the first answered the next. Silence, closed playback and the outcome on
 the non-answering device were verified 1.5 s after the click, with 87.3 s
 remaining on the invite. No second decline appeared when that call ended.
 
+### Verify DM video
+
+With the Linux portal camera test prerequisites below, run
+`sh experiments/rtc-audio/run_element.sh --dm-video`. Two independent KWin
+desktops, PipeWire camera portals, synthetic cameras and verified Matrix users
+exercise an encrypted DM. Neither desktop opens a camera before answer.
+The caller requests video, the callee accepts with their camera off, and
+then starts their own camera separately.
+
+The test checks four GCM tracks at LiveKit, observes changing and distinct
+camera pixels on both screens, and measures the decoded 410/670 Hz audio.
+It swaps the self-preview and remote tile and verifies unchanged publication
+IDs, then stops one camera while the other camera and both microphones stay
+live. Hanging up releases both capture processes and all tracks. This test
+covers native Linux peers with portal cameras, not a physical webcam or
+Element video interoperability.
+
 ### Verify three-person voice rooms
 
 Build the Linux desktop and use the same desktop test requirements above:

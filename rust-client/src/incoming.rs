@@ -15,6 +15,7 @@ const RING: &str = "org.matrix.msc4075.rtc.notification";
 const DECLINE: &str = "org.matrix.msc4310.rtc.decline";
 #[derive(Clone)]
 pub struct Offer {
+    pub video: bool,
     pub room: String,
     pub peer: String,
     pub event: String,
@@ -39,7 +40,7 @@ impl Offer {
             || e["sender"] != peer
             || e["redacted_by"].is_string()
             || c["notification_type"] != "ring"
-            || c["m.call.intent"] != "audio"
+            || !matches!(c["m.call.intent"].as_str(), Some("audio" | "video"))
             || c["slot_id"].as_str().is_some_and(|s| s != "m.call#ROOM")
             || c["m.relates_to"]["rel_type"] != "m.reference"
         {
@@ -66,6 +67,7 @@ impl Offer {
                 .map(str::to_owned)
         };
         Some(Self {
+            video: c["m.call.intent"] == "video",
             room: room.into(),
             peer: peer.into(),
             event: event_id(&e["event_id"])?,
@@ -367,6 +369,7 @@ impl App {
             self.start_voice(
                 i.room.clone(),
                 crate::desktop_call::Target::Dm {
+                    video: i.video,
                     peer: i.peer.clone(),
                     incoming: Some(i),
                 },

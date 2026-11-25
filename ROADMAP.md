@@ -117,6 +117,12 @@
   call, fresh audio returned on both speakers in 7.6 s without another ring.
   Hangup released all streams and memberships. On a homeserver without RTC
   discovery the caller saw an explicit error and sent no invite or membership.
+- **Two-way Linux DM video:** [The video-call test](experiments/rtc-audio/README.md#verify-dm-video)
+  rang a real encrypted DM with video intent. After acceptance and separate
+  camera grants, both desktops rendered the other camera's changing pattern
+  at 498×280, alongside the local preview. Swapping focus kept the GCM track
+  IDs unchanged. Stopping one camera preserved the other video and both
+  audio paths; hanging up released both readers and all publications.
 - **Three-person Linux voice rooms:** **Join voice** and **Leave voice** use
   the encrypted room's MatrixRTC slot without DM notifications. In the
   [three-account desktop test](experiments/rtc-audio/README.md#verify-three-person-voice-rooms)

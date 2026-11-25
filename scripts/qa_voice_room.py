@@ -59,7 +59,7 @@ class Desktop:
         for fn in (feed,listen):threading.Thread(target=fn,daemon=True).start()
         if kde:
             self.client=kde.native
-            self.win=wait_for("Wayland voice window",lambda:kde.window("Untethered.*Atrium"),35)
+            self.win=wait_for("Wayland call window",lambda:kde.window("Untethered.*"+re.escape(room)),35)
             kde.position(self.win,0,0,1180,850)
             return
         # Limit per-client rendering/codec parallelism in this three-GUI fixture.

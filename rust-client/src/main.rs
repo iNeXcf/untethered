@@ -109,7 +109,7 @@ enum Msg {
     SaveTo(media::Media, Option<std::path::PathBuf>),
     CheckCalls,
     #[cfg(target_os = "linux")]
-    VoiceCall,
+    DialDm(bool),
     #[cfg(target_os = "linux")]
     JoinVoice,
     #[cfg(target_os = "linux")]
@@ -1138,7 +1138,7 @@ impl App {
                 }
             }
             #[cfg(target_os = "linux")]
-            Msg::VoiceCall
+            Msg::DialDm(video)
                 if self.call.is_none()
                     && self.inbox.ringing.is_none()
                     && self.verified
@@ -1154,6 +1154,7 @@ impl App {
                     self.start_voice(
                         self.selected.clone(),
                         desktop_call::Target::Dm {
+                            video,
                             peer,
                             incoming: None,
                         },
@@ -1238,7 +1239,7 @@ impl App {
             #[cfg(target_os = "linux")]
             Msg::ToggleVideo(input) => {
                 if let Some(call) = &mut self.call
-                    && call.group
+                    && (call.group || input == desktop_call::VideoInput::Camera)
                     && !call.cancel.is_closed()
                 {
                     let slot = input as usize;

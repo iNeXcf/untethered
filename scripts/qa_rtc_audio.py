@@ -81,7 +81,7 @@ rtc:
         yield secret
 
 
-def test(tmp, hs, name, jwt, root, backend, seed, http, service, *, desktop=False,incoming=False,controls=False,devices=False,reconnect=False,turn=False,group=False,share=False,camera=False,ptt=False,layout=False,multi_ring=False,dnd_ring=False,native_dm=False,unsupported_dm=False):
+def test(tmp, hs, name, jwt, root, backend, seed, http, service, *, desktop=False,incoming=False,controls=False,devices=False,reconnect=False,turn=False,group=False,share=False,camera=False,ptt=False,layout=False,multi_ring=False,dnd_ring=False,native_dm=False,unsupported_dm=False,dm_video=False):
     if group:
         from qa_voice_room import test_group
         with call_services(tmp,name,jwt,service) as secret:
@@ -110,6 +110,12 @@ def test(tmp, hs, name, jwt, root, backend, seed, http, service, *, desktop=Fals
     if controls:
         http("POST",hs+"/_matrix/client/v3/createRoom",headers=hdr,json={"name":"Sidechat","preset":"private_chat"})
     assert http("GET",api+"/state/m.room.encryption",headers=ph).json()["algorithm"]=="m.megolm.v1.aes-sha2"
+    if dm_video:
+        from qa_dm_video import check_video
+        http("POST",hs+"/_matrix/client/v3/rooms/"+quote(peer["room"],safe="")+"/leave",headers=ph,json={})
+        with call_services(tmp,name,jwt,service) as secret, ExitStack() as stack:
+            check_video(stack,tmp,root,backend,room,(alice,bob),secret)
+        return
     if native_dm or unsupported_dm:
         from qa_native_dm import check_native_dm
         # The seed users each own a room. Leave the unused room so both GUIs

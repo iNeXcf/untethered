@@ -188,6 +188,15 @@ shows the caller, **Accept**, and **Decline**. Declining notifies Element
 without opening your microphone. Accepting joins the existing encrypted call.
 Either participant can hang up.
 
+**Linux DM video (experimental):** Choose **Video call** in an encrypted DM.
+The other person sees an incoming video invitation. Your camera is requested
+through the Camera portal after they accept; accepting leaves **their**
+camera off until they choose **Start camera**. The same camera control is
+available during a voice call. The call view shows the peer at large and
+your own live preview beside them. Click the small tile to swap views.
+**Stop camera** keeps the conversation going; **Hang up** releases capture.
+[Two-way Linux video test](experiments/rtc-audio/README.md#verify-dm-video).
+
 If two Linux devices are signed into the same account, both can ring.
 Answer or decline on either one: the other stops ringing and shows what
 happened in the DM. Only the device that answers opens its microphone.

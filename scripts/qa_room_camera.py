@@ -48,8 +48,11 @@ def dialog(kde):
 
 
 def start_camera(sender,published):
-    kde=sender.kde
     sender.click("start")
+    grant_camera(sender.kde,published)
+
+
+def grant_camera(kde,published):
     def publishing():
         if published():return True
         wid=dialog(kde)

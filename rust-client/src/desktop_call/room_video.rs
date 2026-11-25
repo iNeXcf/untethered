@@ -396,12 +396,13 @@ impl Capture {
         mut mode: watch::Receiver<AudioMode>,
         id: Uuid,
         input: VideoInput,
+        preview: Option<Tile>,
     ) -> Result<()> {
         // Stop capture independently of room-state and key-distribution RPCs.
         let result = tokio::select! {
             biased;
             _=mode.wait_for(|m|input.request(m)!=Some(id))=>Ok(()),
-            f=self.pump(src)=>f,
+            f=self.pump(src,preview)=>f,
         };
         let _ = self.child.kill().await;
         if let Some(lease) = &mut self.lease {
@@ -409,7 +410,7 @@ impl Capture {
         }
         result
     }
-    async fn pump(&mut self, src: NativeVideoSource) -> Result<()> {
+    async fn pump(&mut self, src: NativeVideoSource, preview: Option<Tile>) -> Result<()> {
         let lease = &self.lease;
         let closed = async {
             if let Some(lease) = lease
@@ -424,12 +425,32 @@ impl Capture {
             }
         };
         tokio::pin!(closed);
+        let mut last = None;
         loop {
             let mut buf = I420Buffer::new(W, H);
             let (y, u, v) = buf.data_mut();
             y.copy_from_slice(&self.pixels[..Y]);
             u.copy_from_slice(&self.pixels[Y..Y + Y / 4]);
             v.copy_from_slice(&self.pixels[Y + Y / 4..]);
+            if let Some(tile) = &preview
+                && last.is_none_or(|at: Instant| at.elapsed() >= Duration::from_millis(100))
+            {
+                use livekit::webrtc::video_frame::native::VideoFrameBufferExt;
+                let small = buf.scale(320, 180);
+                let mut rgba = vec![0; 320 * 180 * 4];
+                small.to_argb(VideoFormatType::ABGR, &mut rgba, 320 * 4, 320, 180);
+                tile.views.0.lock().unwrap().feeds.insert(
+                    tile.sid.clone(),
+                    Feed {
+                        sid: tile.sid.clone(),
+                        user: String::new(),
+                        source: VideoInput::Camera,
+                        frame: Handle::from_rgba(320, 180, rgba),
+                    },
+                );
+                let _ = tile.events.try_send(json!({"command":"video_redraw"}));
+                last = Some(Instant::now());
+            }
             src.capture_frame(&VideoFrame::new(VideoRotation::VideoRotation0, buf));
             tokio::select! {
                 _=&mut closed=>return Ok(()),
@@ -440,6 +461,7 @@ impl Capture {
 }
 
 pub(super) struct Publisher {
+    pub(super) local_preview: Option<Previews>,
     input: VideoInput,
     request: Option<Uuid>,
     picker: JoinSet<Result<Capture>>,
@@ -453,6 +475,7 @@ pub(super) enum Update {
 impl Publisher {
     pub(super) fn new(input: VideoInput) -> Self {
         Self {
+            local_preview: None,
             input,
             request: None,
             picker: JoinSet::new(),
@@ -549,8 +572,13 @@ impl Publisher {
                             if fc.key_index() != i32::from(index) {
                                 return Err("Could not encrypt video.");
                             }
+                            let preview = self.local_preview.clone().map(|views| Tile {
+                                sid: "local-camera".into(),
+                                views,
+                                events: events.clone(),
+                            });
                             self.frames
-                                .spawn(cap.feed(src, mode.clone(), id, self.input));
+                                .spawn(cap.feed(src, mode.clone(), id, self.input, preview));
                             Ok(match self.input {
                                 VideoInput::Window => "Sharing the selected window",
                                 VideoInput::Camera => "Camera is on",

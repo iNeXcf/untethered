@@ -149,6 +149,7 @@ def main():
     args.add_argument("--rtc-audio",action="store_true",help="Verify encrypted Rust ↔ Element Call tones using real LiveKit and Matrix OpenID authorization")
     args.add_argument("--desktop-dm",action="store_true",help="Drive the Iced DM call controls and Element's incoming call prompt with isolated audio")
     args.add_argument("--native-dm",action="store_true",help="Call in both directions between two Linux desktops behind separate TURN-only networks")
+    args.add_argument("--dm-video",action="store_true",help="Verify encrypted two-way DM video, camera consent and call controls on two isolated Linux desktops")
     args.add_argument("--unsupported-dm",action="store_true",help="Check the Linux call controls when Synapse advertises no MatrixRTC service")
     args.add_argument("--incoming-dm",action="store_true",help="Ring the Iced desktop twice from Element, decline then accept and hang up")
     args.add_argument("--multi-device-ring",action="store_true",help="Ring two independently verified Linux devices on one Matrix account; decline on one, answer on the other")
@@ -171,7 +172,7 @@ def main():
         raise SystemExit("--room-ptt uses private X displays; run the KWin video fixtures separately")
     if args.window_share or args.room_camera or args.room_ptt or args.room_layout: args.voice_room=True
     if args.call_controls or args.call_devices or args.call_reconnect or args.call_turn: args.desktop_dm=True
-    if args.native_dm or args.unsupported_dm:args.desktop_dm=True
+    if args.native_dm or args.unsupported_dm or args.dm_video:args.desktop_dm=True
     if args.native_dm and args.unsupported_dm:args.error("run --native-dm and --unsupported-dm separately")
     if args.multi_device_ring:args.incoming_dm=True
     if args.dnd_ring:args.incoming_dm=True
@@ -251,7 +252,7 @@ federation_domain_whitelist: []
                 test_replies(tmp,hs,ROOT,BACKEND,seed,http,gateway_port,reactions=args.reactions,room_search=args.room_search,alerts=args.room_alerts,permissions=args.room_permissions,ban=args.room_ban,kick=args.room_kick,report=args.message_report,mentions=args.mentions_inbox,spaces=args.space_alerts=="native",setup=args.community_setup)
                 return
             if args.rtc_audio:
-                audio_test(tmp,hs,server_name,rtc_service,ROOT,BACKEND,seed,http,service,desktop=args.desktop_dm or args.incoming_dm,incoming=args.incoming_dm,controls=args.call_controls,devices=args.call_devices,reconnect=args.call_reconnect,turn=args.call_turn,group=args.voice_room,share=args.window_share,camera=args.room_camera,ptt=args.room_ptt,layout=args.room_layout,multi_ring=args.multi_device_ring,dnd_ring=args.dnd_ring,native_dm=args.native_dm,unsupported_dm=args.unsupported_dm)
+                audio_test(tmp,hs,server_name,rtc_service,ROOT,BACKEND,seed,http,service,desktop=args.desktop_dm or args.incoming_dm,incoming=args.incoming_dm,controls=args.call_controls,devices=args.call_devices,reconnect=args.call_reconnect,turn=args.call_turn,group=args.voice_room,share=args.window_share,camera=args.room_camera,ptt=args.room_ptt,layout=args.room_layout,multi_ring=args.multi_device_ring,dnd_ring=args.dnd_ring,native_dm=args.native_dm,unsupported_dm=args.unsupported_dm,dm_video=args.dm_video)
                 return
             if args.rtc_membership:
                 from qa_rtc_membership import test
