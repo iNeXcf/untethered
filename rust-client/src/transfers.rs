@@ -29,6 +29,7 @@ impl App {
     }
     pub fn can_stage(&self) -> bool {
         !self.account
+            && self.setup.is_none()
             && self.mentions.is_none()
             && !self.selected.is_empty()
             && (!self.logged_in || self.verified)

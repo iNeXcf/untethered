@@ -1,4 +1,5 @@
 use super::{App, Msg, Request, Section, rooms::Room};
+mod community;
 mod mentions;
 mod reaction_bar;
 mod room_people;
@@ -710,30 +711,61 @@ impl App {
                     .on_press(Msg::OpenMentions),
             );
         }
-        let side = container(
-            sidebar
-                .push(
-                    container(label(if self.section == Section::Direct {
-                        "DIRECT MESSAGES"
-                    } else {
-                        "CHANNELS"
-                    }))
-                    .padding([14, 16]),
-                )
-                .push(scrollable(links).height(Fill))
-                .push(container(user).width(Fill).style(|_| surface(TRAY, 0.))),
-        )
-        .width(211)
-        .height(Fill)
-        .style(|_| surface(SIDE, 0.));
-        if let Some(i) = &self.mentions {
+        let mut sidebar = sidebar
+            .push(
+                container(label(if self.section == Section::Direct {
+                    "DIRECT MESSAGES"
+                } else {
+                    "CHANNELS"
+                }))
+                .padding([14, 16]),
+            )
+            .push(scrollable(links).height(Fill));
+        if self.logged_in && self.verified {
+            let (label, parent) = match &self.section {
+                Section::Space(id) => ("Add channel", Some(id.clone())),
+                _ => ("New space", None),
+            };
+            if let Some(space) = &parent {
+                sidebar = sidebar.push(
+                    button(text("Invite member").size(14))
+                        .padding([6, 16])
+                        .width(Fill)
+                        .style(nav(false))
+                        .on_press_maybe((self.connected && self.setup.is_none()).then(|| {
+                            Msg::Setup(crate::community::Input::InviteMember(space.clone()))
+                        })),
+                );
+            }
+            sidebar = sidebar.push(
+                button(text(label).size(14))
+                    .width(Fill)
+                    .padding([6, 16])
+                    .style(nav(false))
+                    .on_press_maybe(
+                        (self.connected && self.setup.is_none())
+                            .then_some(Msg::Setup(crate::community::Input::Start(parent))),
+                    ),
+            );
+        }
+        let side =
+            container(sidebar.push(container(user).width(Fill).style(|_| surface(TRAY, 0.))))
+                .width(211)
+                .height(Fill)
+                .style(|_| surface(SIDE, 0.));
+        if self.setup.is_some() || self.mentions.is_some() {
             let panel = Column::new();
             #[cfg(target_os = "linux")]
             let panel = panel.extend(self.incoming_banner()).extend(self.call_bar());
+            let content = if let Some(f) = &self.setup {
+                community::view(self, f)
+            } else {
+                mentions::view(self, self.mentions.as_ref().unwrap())
+            };
             return row![
                 rail,
                 side,
-                container(panel.push(mentions::view(self, i)))
+                container(panel.push(content))
                     .width(Fill)
                     .height(Fill)
                     .style(|_| surface(CHAT, 0.))

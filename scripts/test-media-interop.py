@@ -139,6 +139,7 @@ def main():
     args.add_argument("--read-state",action="store_true",help="Verify private read markers, manual reminders and unread badges between two actual Linux and web devices")
     args.add_argument("--dnd-ring",action="store_true",help="Verify active and new Linux incoming ringtone suppression while accepting a real encrypted DM under DND")
     args.add_argument("--room-permissions",action="store_true",help="Restrict and restore room posting from Iced; check the member's actual Synapse send response")
+    args.add_argument("--community-setup",choices=("native","web"),help="Create a private space and encrypted text/voice channels; verify restricted joins from Element")
     args.add_argument("--room-ban",action="store_true",help="Ban, unban and reinvite a member from Untethered; verify Synapse join enforcement and encrypted delivery")
     args.add_argument("--room-kick",action="store_true",help="Kick a member from a public room; verify denied posting, invitation-free rejoin and encrypted delivery")
     args.add_argument("--message-report",nargs="?",const="native",choices=("native","web"),help="Report a selected encrypted message as a regular member and inspect the Synapse admin queue")
@@ -184,8 +185,8 @@ def main():
             federated_ban(Path(d),ROOT,BACKEND,seed,http,free_port,service)
         return
     dist = ROOT/"rust-client/web/dist"
-    chat_test=args.replies or args.reactions or args.room_search or args.room_alerts or args.room_permissions or args.room_ban or args.room_kick or args.message_report or args.mentions_inbox or args.space_alerts=="native"
-    web_chat="web" in (args.message_report,args.mentions_inbox)
+    chat_test=args.replies or args.reactions or args.room_search or args.room_alerts or args.room_permissions or args.room_ban or args.room_kick or args.message_report or args.mentions_inbox or args.space_alerts=="native" or args.community_setup
+    web_chat="web" in (args.message_report,args.mentions_inbox,args.community_setup)
     if web_chat or args.file_limits=="web" or not any((args.file_limits,args.native_paste,args.portal_drop,args.kwin_element,args.rtc_membership,args.rtc_audio,chat_test,args.linux_upgrade)):
         assert (dist/"backend/gomuks-worker.js").is_file(), "Run scripts/rust-web.sh first"
     os.umask(0o077)
@@ -245,9 +246,9 @@ federation_domain_whitelist: []
                 if web_chat:
                     wp=free_port()
                     with service([sys.executable,"-m","http.server",str(wp),"--bind","127.0.0.1","--directory",str(dist)],tmp):
-                        test_replies(tmp,hs,ROOT,BACKEND,seed,http,gateway_port,report=args.message_report,mentions=args.mentions_inbox,client_web=f"http://127.0.0.1:{wp}")
+                        test_replies(tmp,hs,ROOT,BACKEND,seed,http,gateway_port,report=args.message_report,mentions=args.mentions_inbox,setup=args.community_setup,client_web=f"http://127.0.0.1:{wp}")
                     return
-                test_replies(tmp,hs,ROOT,BACKEND,seed,http,gateway_port,reactions=args.reactions,room_search=args.room_search,alerts=args.room_alerts,permissions=args.room_permissions,ban=args.room_ban,kick=args.room_kick,report=args.message_report,mentions=args.mentions_inbox,spaces=args.space_alerts=="native")
+                test_replies(tmp,hs,ROOT,BACKEND,seed,http,gateway_port,reactions=args.reactions,room_search=args.room_search,alerts=args.room_alerts,permissions=args.room_permissions,ban=args.room_ban,kick=args.room_kick,report=args.message_report,mentions=args.mentions_inbox,spaces=args.space_alerts=="native",setup=args.community_setup)
                 return
             if args.rtc_audio:
                 audio_test(tmp,hs,server_name,rtc_service,ROOT,BACKEND,seed,http,service,desktop=args.desktop_dm or args.incoming_dm,incoming=args.incoming_dm,controls=args.call_controls,devices=args.call_devices,reconnect=args.call_reconnect,turn=args.call_turn,group=args.voice_room,share=args.window_share,camera=args.room_camera,ptt=args.room_ptt,layout=args.room_layout,multi_ring=args.multi_device_ring,dnd_ring=args.dnd_ring,native_dm=args.native_dm,unsupported_dm=args.unsupported_dm)

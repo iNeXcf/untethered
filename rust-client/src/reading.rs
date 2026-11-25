@@ -192,6 +192,7 @@ impl App {
             || !self.connected
             || self.closing
             || self.account
+            || self.setup.is_some()
             || self.mentions.is_some()
             || self.search.is_some()
             || self.original.is_some()

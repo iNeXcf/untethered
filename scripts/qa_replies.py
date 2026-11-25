@@ -23,12 +23,17 @@ def screen_words(raw):
             for line in t.decode().splitlines() if len(s:=line.split("\t"))==12 and s[0]=="5"]
 
 
-def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False,room_search=False,alerts=False,permissions=False,ban=False,kick=False,report=False,client_web=None,mentions=False,peer_hs=None,spaces=False):
+def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False,room_search=False,alerts=False,permissions=False,ban=False,kick=False,report=False,client_web=None,mentions=False,peer_hs=None,spaces=False,setup=False):
     paths=[]
     def observe(method,path):
-        if room_search or method=="GET" and "/context/" in path:paths.append(unquote(path))
+        if room_search or method=="GET" and "/context/" in path or setup and method=="POST" and path.endswith("/createRoom"):paths.append(unquote(path))
+    refused=[]
+    def refuse_link(method,path):
+        if method=="PUT" and "/state/m.space.child/" in unquote(path) and not refused:
+            refused.append(path);return True
+        return False
     with ExitStack() as stack:
-        proxy,_=stack.enter_context(slow_gateway(hs,port,observe_path=observe))
+        proxy,_=stack.enter_context(slow_gateway(hs,port,observe_path=observe,reject_once=refuse_link if setup else None))
         native,hdr=seed(tmp,proxy)
         remote=tmp/"peer";remote.mkdir()
         bob,bh=seed(remote,peer_hs or hs)
@@ -77,6 +82,14 @@ def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False,room_searc
             client=reporter_ctx.new_page()
             login_client(client,client_web,native)
             def words():return screen_words(client.screenshot())
+            if setup:
+                from qa_community_setup import check_setup
+                def restart():
+                    client.reload()
+                    client.wait_for_function("document.title.includes('Untethered') && !document.title.includes('Preview') && !document.title.includes('Account')",timeout=45000)
+                check_setup(hs,http,hdr,bh,page,locate,lambda pos:client.mouse.click(*pos,delay=60),
+                            lambda s:client.keyboard.type(s,delay=5),restart,paths)
+                return
             if mentions:
                 from qa_mentions_inbox import check_inbox
                 def restart():
@@ -100,11 +113,11 @@ def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False,room_searc
             desktop=NotificationDesktop(stack,tmp,env)
         native_life=stack.enter_context(ExitStack())
         def x(*args):return sp.check_output(["xdotool",*args],env=env,text=True,timeout=6).strip()
-        def launch():
+        def launch(title="Untethered.*media-proof"):
             p=native_life.enter_context(child([root/"rust-client/target/debug/untethered-iced"],env))
             def visible():
                 assert p.poll() is None
-                r=sp.run(["xdotool","search","--onlyvisible","--name","Untethered.*media-proof"],
+                r=sp.run(["xdotool","search","--onlyvisible","--name",title],
                          env=env,text=True,capture_output=True)
                 return r.stdout.strip() if r.returncode==0 else None
             wid=wait_for("native synced window",visible,30)
@@ -115,6 +128,13 @@ def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False,room_searc
             return screen_words(sp.check_output(["import","-window",win,"png:-"],env=env,timeout=6))
         def click(pos):x("mousemove","--window",win,*map(str,pos),"click","1")
         def lines(words,label):return [(x,y) for v,x,y in words if v==label and x>280]
+        if setup:
+            from qa_community_setup import check_setup
+            def restart_setup():
+                nonlocal win
+                native_life.close();win=launch("Untethered.*(Lounge|Workshop|media-proof)")
+            check_setup(hs,http,hdr,bh,page,locate,click,lambda s:x("type","--clearmodifiers",s),restart_setup,paths)
+            return
         if spaces:
             from qa_space_alerts import check_spaces,native_sender
             def restart():

@@ -378,6 +378,7 @@ impl App {
                 || self.reading_focused()
                     && self.selected == id
                     && !self.account
+                    && self.setup.is_none()
                     && self.mentions.is_none()
                     && self.search.is_none()
                     && self.original.is_none();

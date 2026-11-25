@@ -5,6 +5,7 @@ mod backend;
 mod browser_verification;
 #[cfg(target_os = "linux")]
 mod call_devices;
+mod community;
 #[cfg(target_os = "linux")]
 mod desktop_call;
 mod edits;
@@ -147,6 +148,7 @@ enum Msg {
     Stopped(String),
     Section(Section),
     Open(String),
+    Setup(community::Input),
     CheckReading,
     ReadingScroll(String, bool),
     ShareReads(bool),
@@ -219,6 +221,7 @@ impl std::fmt::Debug for Msg {
     }
 }
 enum Request {
+    Setup(community::Step),
     #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
     NotifyRule(notifications::Change),
     #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
@@ -254,6 +257,7 @@ enum Request {
     ShareReads(bool, u64),
 }
 struct App {
+    setup: Option<community::Form>,
     read_sharing: reading::Sharing,
     scrolled_away: bool,
     #[cfg(not(target_arch = "wasm32"))]
@@ -337,6 +341,7 @@ impl App {
     }
     fn new(commands: Sender<backend::Command>) -> Self {
         Self {
+            setup: None,
             read_sharing: Default::default(),
             scrolled_away: false,
             #[cfg(not(target_arch = "wasm32"))]
@@ -640,6 +645,8 @@ impl App {
                     .into();
                 let user = rooms::string(&data["user_id"]);
                 if self.matrix_id != user || !self.verified || !self.logged_in {
+                    self.setup = None;
+                    self.pending.retain(|_, p| !matches!(p, Request::Setup(_)));
                     self.close_mentions();
                     self.read_sharing = Default::default();
                     self.pending.retain(|_, p| {
@@ -843,6 +850,7 @@ impl App {
                         Request::Posting(_)=> "Could not change posting permissions. Check your room role and connection.",
                         Request::Membership(f)=>{self.membership_error(f);return}
                         Request::Report=>{self.report_result(false);return}
+                        Request::Setup(step)=>{self.setup_error(step);return}
                         Request::Send(..) => "Could not send. Your draft has been kept.",
                         Request::Context(..)=>"Could not load the selected message. Try opening it again.",
                         Request::Edit(room,id)=>{self.finish_edit(f["request_id"].as_i64().unwrap(),&room,&id,&Value::Null);return}
@@ -898,6 +906,7 @@ impl App {
                     Request::Posting(f) => self.posting_result(f, data),
                     Request::Membership(f) => self.membership_result(f, data),
                     Request::Report => self.report_result(true),
+                    Request::Setup(step) => self.setup_result(step, data),
                     Request::Reaction(op) => self.finish_reaction(op, data),
                     Request::Search(room, kind) => self.search_response(room, kind, data),
                     Request::Mentions(kind) => self.mentions_page(kind, data),
@@ -967,6 +976,7 @@ impl App {
         }
         #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
         self.sync_space_rules();
+        self.open_created();
     }
     fn update(&mut self, msg: Msg) -> Task<Msg> {
         let refresh_inline = match &msg {
@@ -1482,16 +1492,22 @@ impl App {
                     self.pending.insert(self.seq, Request::Download);
                 }
             }
+            Msg::Setup(input) => return self.setup_input(input),
             Msg::Section(s) => {
+                self.cancel_setup_if_idle();
                 self.close_mentions();
                 self.section = s;
                 self.reconcile();
             }
             Msg::Open(id) => {
+                self.cancel_setup_if_idle();
                 self.close_mentions();
                 self.open(id);
             }
-            Msg::OpenMentions => self.open_mentions(),
+            Msg::OpenMentions => {
+                self.cancel_setup_if_idle();
+                self.open_mentions();
+            }
             Msg::CheckReading => return self.check_reading(),
             Msg::ReadingScroll(room, away) if room == self.selected && self.original.is_none() => {
                 self.scrolled_away = away

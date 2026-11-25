@@ -104,6 +104,24 @@ impl Posting {
         )?;
         Some(self.actor(me)? >= min)
     }
+    pub fn can_link_channel(&self, me: &str) -> bool {
+        self.content()
+            .and_then(|c| {
+                level(
+                    &c["events"],
+                    "m.space.child",
+                    level(c, "state_default", 50)?,
+                )
+            })
+            .zip(self.actor(me))
+            .is_some_and(|(needed, actor)| actor >= needed)
+    }
+    pub fn can_invite(&self, me: &str) -> bool {
+        self.content()
+            .and_then(|c| level(c, "invite", 0))
+            .zip(self.actor(me))
+            .is_some_and(|(needed, actor)| actor >= needed)
+    }
     pub fn can_moderate(&self, me: &str, user: &str, action: crate::moderation::Action) -> bool {
         use crate::moderation::Action;
         let (Some(c), Some(actor), Some(target)) =

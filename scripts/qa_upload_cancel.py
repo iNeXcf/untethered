@@ -38,7 +38,7 @@ def until(label, fn, seconds=35):
 
 
 @contextmanager
-def slow_gateway(upstream,port,hold_first=None,observe_path=None):
+def slow_gateway(upstream,port,hold_first=None,observe_path=None,reject_once=None):
     records = []
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -47,6 +47,12 @@ def slow_gateway(upstream,port,hold_first=None,observe_path=None):
         def forward(self):
             if observe_path:observe_path(self.command,urlsplit(self.path).path)
             self.close_connection = True
+            if reject_once and reject_once(self.command,urlsplit(self.path).path):
+                body=b'{"errcode":"M_FORBIDDEN","error":"Disposable gateway: link not forwarded"}'
+                self.send_response(403);self.send_header("Content-Type","application/json")
+                self.send_header("Content-Length",str(len(body)));self.send_header("Access-Control-Allow-Origin","*")
+                self.send_header("Connection","close");self.end_headers();self.wfile.write(body)
+                return
             n = int(self.headers.get("Content-Length", "0"))
             is_upload = self.command == "POST" and urlsplit(self.path).path=="/_matrix/media/v3/upload"
             if is_upload:
