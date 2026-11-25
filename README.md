@@ -256,3 +256,6 @@ The package installs `/usr/bin/untethered` and `/usr/lib/untethered/gomuks`.
 Launching `untethered` uses that bundled backend without a runtime download.
 The packaged app keeps its Matrix device in `$XDG_DATA_HOME/untethered-iced`
 (default `~/.local/share/untethered-iced`), separate from the development profile.
+An [in-place upgrade from `0.1.0-2` to `0.1.0-6`](scripts/linux-upgrade.md#recorded-run-2026-11-25)
+preserved the device ID and both public keys. The upgraded app decrypted
+old and new messages from Element without signing in again.

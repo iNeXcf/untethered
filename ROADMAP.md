@@ -216,6 +216,14 @@
   room/event and displayed its neighboring message. Leaving a room removed
   only its two entries from the open inbox.
 
+- **Linux upgrade and key continuity:** The [Arch package upgrade test](scripts/linux-upgrade.md#recorded-run-2026-11-25)
+  upgraded `0.1.0-2` to `0.1.0-6` in place. Device ID `VPKQEQZBTB` and
+  both public keys (Ed25519 and Curve25519) were identical before and after.
+  Element sent an encrypted message while the old client was stopped; it
+  was absent from the profile until the upgraded client decrypted it.
+  The upgraded client also decrypted a fresh message after Element rotated
+  its Megolm session. Neither sign-in nor recovery was repeated.
+
 ## What parity means
 
 A small community should be able to move its everyday conversations here: find a server and its channels, talk in DMs, drop a screenshot, join friends in voice, share a screen, catch up on mentions, and moderate its space. Test those workflows side by side with Discord. A button that looks right but doesn't work with another Matrix client isn't parity.

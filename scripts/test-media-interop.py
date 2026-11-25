@@ -138,6 +138,7 @@ def main():
     args.add_argument("--room-kick",action="store_true",help="Kick a member from a public room; verify denied posting, invitation-free rejoin and encrypted delivery")
     args.add_argument("--message-report",nargs="?",const="native",choices=("native","web"),help="Report a selected encrypted message as a regular member and inspect the Synapse admin queue")
     args.add_argument("--mentions-inbox",nargs="?",const="native",choices=("native","web"),help="Verify cross-room direct mentions after a device restart and open exact events beyond loaded history")
+    args.add_argument("--linux-upgrade",nargs=2,type=Path,metavar=("OLD_PKG","NEW_PKG"),help="Upgrade an installed Arch package in a disposable root and verify Matrix device and decryption continuity")
     args.add_argument("--federated-ban",action="store_true",help="Test the member ban flow through a second Synapse homeserver in a private loopback namespace")
     args.add_argument("--rtc-audio",action="store_true",help="Verify encrypted Rust ↔ Element Call tones using real LiveKit and Matrix OpenID authorization")
     args.add_argument("--desktop-dm",action="store_true",help="Drive the Iced DM call controls and Element's incoming call prompt with isolated audio")
@@ -172,7 +173,7 @@ def main():
     dist = ROOT/"rust-client/web/dist"
     chat_test=args.replies or args.reactions or args.room_search or args.room_alerts or args.room_permissions or args.room_ban or args.room_kick or args.message_report or args.mentions_inbox
     web_chat="web" in (args.message_report,args.mentions_inbox)
-    if web_chat or not any((args.native_paste,args.portal_drop,args.kwin_element,args.rtc_membership,args.rtc_audio,chat_test)):
+    if web_chat or not any((args.native_paste,args.portal_drop,args.kwin_element,args.rtc_membership,args.rtc_audio,chat_test,args.linux_upgrade)):
         assert (dist/"backend/gomuks-worker.js").is_file(), "Run scripts/rust-web.sh first"
     os.umask(0o077)
     with tempfile.TemporaryDirectory(prefix="untethered-media-",dir=os.environ.get("TMPDIR")) as d:
@@ -188,7 +189,7 @@ def main():
                         "-H", server_name, "--report-stats", "no"], cwd=tmp, stdout=subprocess.DEVNULL, check=True)
         port = free_port()
         hs = f"http://127.0.0.1:{port}"
-        gateway_port=free_port() if args.upload_cancel or args.portal_drop or args.kwin_element or chat_test else None
+        gateway_port=free_port() if args.upload_cancel or args.portal_drop or args.kwin_element or chat_test or args.linux_upgrade else None
         public_url=f"http://127.0.0.1:{gateway_port}" if gateway_port else hs
         (tmp/"local.yaml").write_text(f"""listeners:
 {extra_listeners}  - port: {port}
@@ -219,6 +220,10 @@ federation_domain_whitelist: []
                 wp=free_port()
                 with service([sys.executable,"-m","http.server",str(wp),"--bind","127.0.0.1","--directory",str(dist)],tmp):
                     check_browser_alerts(tmp,hs,f"http://127.0.0.1:{wp}",BACKEND,seed,http)
+                return
+            if args.linux_upgrade:
+                from qa_linux_upgrade import check_upgrade
+                check_upgrade(tmp,hs,gateway_port,BACKEND,seed,http,*[p.resolve(strict=True) for p in args.linux_upgrade])
                 return
             if chat_test:
                 from qa_replies import test_replies
