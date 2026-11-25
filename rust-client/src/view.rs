@@ -325,6 +325,16 @@ impl App {
             controls.wrap()
         ]
         .spacing(3);
+        if self.verified
+            && active
+            && (self.selected != call.room
+                || self.mentions.is_some()
+                || self.setup.is_some()
+                || self.account)
+            && let Some(room) = self.live.list.get(&call.room)
+        {
+            bar = bar.push(video_wall::compact(call, room, !self.setup_busy()));
+        }
         if mode.talk != crate::desktop_call::TalkGate::Open {
             let hint = if mode.deafened {
                 "Undeafen to use push-to-talk."

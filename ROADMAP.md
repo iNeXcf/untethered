@@ -121,7 +121,11 @@
   rang a real encrypted DM with video intent. After acceptance and separate
   camera grants, both desktops rendered the other camera's changing pattern
   at 498×280, alongside the local preview. Swapping focus kept the GCM track
-  IDs unchanged. Stopping one camera preserved the other video and both
+  IDs unchanged. A second encrypted room showed changing remote video at
+  160×90; hiding/restoring the preview and returning to the full stage
+  preserved both readers, all four publications and the other room’s draft.
+  The recipient decrypted the message only in that other room.
+  Stopping one camera preserved the other video and both
   audio paths; hanging up released both readers and all publications.
 - **Linux ↔ Element DM video:** [Both caller directions](experiments/rtc-audio/README.md#verify-video-with-element)
   exchanged two changing remote camera patterns (982 px wide in Element,

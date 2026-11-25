@@ -141,6 +141,7 @@ pub struct ActiveCall {
     pub speaker_error: bool,
     pub video_status: [room_video::Status; 2],
     pub previews: Previews,
+    pub preview_hidden: bool,
     pub speaking: watch::Receiver<std::collections::BTreeSet<String>>,
 }
 struct GroupViews {
@@ -226,6 +227,7 @@ impl crate::App {
                 speaker_error: false,
                 video_status: Default::default(),
                 previews,
+                preview_hidden: false,
                 speaking,
             });
         } else {

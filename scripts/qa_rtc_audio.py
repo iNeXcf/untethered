@@ -114,7 +114,13 @@ def test(tmp, hs, name, jwt, root, backend, seed, http, service, *, desktop=Fals
         from qa_dm_video import check_video
         http("POST",hs+"/_matrix/client/v3/rooms/"+quote(peer["room"],safe="")+"/leave",headers=ph,json={})
         with call_services(tmp,name,jwt,service) as secret, ExitStack() as stack:
-            check_video(stack,tmp,root,backend,room,(alice,bob),secret)
+            def sidechat():
+                other=http("POST",hs+"/_matrix/client/v3/createRoom",headers=hdr,json={"name":"Sidechat",
+                    "preset":"private_chat","invite":[bob],"initial_state":[{"type":"m.room.encryption",
+                    "state_key":"","content":{"algorithm":"m.megolm.v1.aes-sha2"}}]}).json()["room_id"]
+                http("POST",hs+"/_matrix/client/v3/rooms/"+quote(other,safe="")+"/join",headers=ph,json={})
+                return other
+            check_video(stack,tmp,root,backend,room,(alice,bob),secret,sidechat)
         return
     if native_dm or unsupported_dm:
         from qa_native_dm import check_native_dm

@@ -138,3 +138,61 @@ pub(super) fn view(call: &ActiveCall, room: &Room) -> Option<El<'static>> {
     };
     Some(wall.spacing(4).padding([5, 12]).into())
 }
+
+/// Reuse the received frames while browsing: this view never subscribes to or
+/// publishes media. A local preview is not a substitute for a missing peer.
+pub(super) fn compact(call: &ActiveCall, room: &Room, can_return: bool) -> El<'static> {
+    use crate::desktop_call::VideoInput;
+    let (focus, feeds) = call.previews.snapshot();
+    let feed = feeds
+        .into_iter()
+        .filter(|f| !f.user.is_empty())
+        .min_by_key(|f| {
+            (
+                Some(&f.sid) != focus.as_ref(),
+                f.source != VideoInput::Window,
+                f.user.clone(),
+                f.sid.clone(),
+            )
+        });
+    let mut actions = row![
+        button(text("Return to call").size(14).font(BOLD))
+            .style(nav(false))
+            .on_press_maybe(can_return.then_some(Msg::ReturnToCall(call.id)))
+    ]
+    .spacing(6);
+    if feed.is_some() {
+        actions = actions.push(
+            button(
+                text(if call.preview_hidden {
+                    "Show preview"
+                } else {
+                    "Hide preview"
+                })
+                .size(13),
+            )
+            .style(nav(false))
+            .on_press(Msg::HideCallPreview(call.id, !call.preview_hidden)),
+        );
+    }
+    let mut strip = row![].align_y(Center).spacing(10);
+    let mut info = Column::new().spacing(4);
+    if let Some(f) = feed {
+        if !call.preview_hidden {
+            strip = strip.push(
+                image(f.frame)
+                    .width(160)
+                    .height(90)
+                    .content_fit(iced::ContentFit::Contain),
+            );
+            info = info.push(
+                text(format!("{} · {}", room.display(&f.user), f.source.name()))
+                    .size(13)
+                    .color(MUTED),
+            );
+        }
+    } else if call.video_peer.is_some() && call.label == "Connected" {
+        info = info.push(text("No incoming video").size(13).color(MUTED));
+    }
+    strip.push(info.push(actions.wrap())).wrap().into()
+}

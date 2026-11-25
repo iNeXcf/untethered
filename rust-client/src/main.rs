@@ -127,6 +127,10 @@ enum Msg {
     #[cfg(target_os = "linux")]
     FocusVideo(uuid::Uuid, Option<String>),
     #[cfg(target_os = "linux")]
+    ReturnToCall(uuid::Uuid),
+    #[cfg(target_os = "linux")]
+    HideCallPreview(uuid::Uuid, bool),
+    #[cfg(target_os = "linux")]
     AudioDevices,
     #[cfg(target_os = "linux")]
     ListCameras,
@@ -999,6 +1003,8 @@ impl App {
                         | "send_complete"
                 )
             ),
+            #[cfg(target_os = "linux")]
+            Msg::ReturnToCall(_) => true,
             Msg::Open(_)
             | Msg::Section(_)
             | Msg::Back
@@ -1235,6 +1241,32 @@ impl App {
                     && !call.cancel.is_closed()
                 {
                     call.audio.send_if_modified(|s| s.hold(down));
+                }
+            }
+            #[cfg(target_os = "linux")]
+            Msg::ReturnToCall(id) => {
+                if let Some(c) = &self.call
+                    && c.id == id
+                    && self.verified
+                    && !self.setup_busy()
+                    && self.live.list.contains_key(&c.room)
+                {
+                    let room = c.room.clone();
+                    self.cancel_setup_if_idle();
+                    self.close_mentions();
+                    self.account = false;
+                    if !self.visible().iter().any(|(r, _)| r.as_str() == room) {
+                        self.section = Section::All;
+                    }
+                    self.open(room);
+                }
+            }
+            #[cfg(target_os = "linux")]
+            Msg::HideCallPreview(id, hidden) => {
+                if let Some(c) = &mut self.call
+                    && c.id == id
+                {
+                    c.preview_hidden = hidden;
                 }
             }
             #[cfg(target_os = "linux")]

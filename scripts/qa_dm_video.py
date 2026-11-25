@@ -12,7 +12,7 @@ from qa_room_layout import pattern_box
 from qa_voice_room import Desktop
 
 
-def check_video(stack,tmp,root,backend,room,users,secret):
+def check_video(stack,tmp,root,backend,room,users,secret,sidechat):
     sock=tmp/"pulse"
     desks=[];show=[]
     palettes=[[((31,215,123),(220,40,178)),((244,117,24),(40,83,242))],
@@ -73,10 +73,67 @@ def check_video(stack,tmp,root,backend,room,users,secret):
     wait_for("peer restored to stage",lambda:(r:=box(0,1)) and r[2]-r[0]>450)
     print("Live self-preview and remote tile swapped focus and back without replacing any publication.",flush=True)
     assert tracks()==before and audio()
+    other=sidechat()
+    jobs=[readers(d) for d in desks]
+    def compact(phase):
+        r=box(0,phase)
+        return r and 145<=r[2]-r[0]<=165 and 80<=r[3]-r[1]<=96
+    def fresh():
+        for d in desks:d.windows.clear()
+        wait_for("fresh 410/670 Hz audio after navigation",audio,12)
+        assert tracks()==before and [readers(d) for d in desks]==jobs
+    def title(name):
+        return name in a.kde.command("kdotool","getwindowname",a.win).stdout
+    def go_side():
+        if title("Sidechat"):return True
+        pos=next(((x,y) for w,x,y in a.kde.words((76,145,274,300)) if w.lower()=="sidechat"),None)
+        if pos:click_at(*pos)
+        return False
+    def click_at(x,y):
+        a.kde.command("kdotool","windowactivate",a.win)
+        a.kde.actions("pointer",[{"type":"pointerMove","x":x,"y":y},{"type":"pause","duration":220},
+                               {"type":"pointerDown","button":0},{"type":"pause","duration":120},{"type":"pointerUp","button":0}])
+    wait_for("open Sidechat from sidebar",go_side)
+    wait_for("Sidechat selected with live compact peer video",lambda:title("Sidechat") and compact(1))
+    show[1](0);wait_for("fresh peer pixels in compact view",lambda:compact(0))
+    a.click("hide")
+    wait_for("hidden local preview control",lambda:any(w=="show" for w,_,_ in a.words()) and not box(0,0))
+    show[1](1);show[0](0)
+    wait_for("peer receives new camera frames while preview hidden",lambda:box(1,0))
+    assert not box(0,1)
+    fresh()
+    a.click("show");wait_for("compact view resumed",lambda:compact(1))
+    def composer():
+        words=a.kde.words((285,680,1179,850))
+        return next(((x,y) for w,x,y in words if w.lower()=="message"),None)
+    marker="meeting notes from sidechat"
+    _,cy=wait_for("Sidechat composer",composer)
+    click_at(650,cy);a.kde.type(marker)
+    def draft():
+        return next(((x,y) for w,x,y in a.kde.words((330,720,1000,820)) if w.lower()=="meeting"),None)
+    wait_for("visible Sidechat draft before navigation",draft)
+    a.click("return")
+    wait_for("return to full DM stage",lambda:title("media-proof") and (r:=box(0,1)) and r[2]-r[0]>450)
+    fresh()
+    wait_for("open Sidechat again",go_side);wait_for("returned to Sidechat",lambda:title("Sidechat") and compact(1))
+    # Send the preserved draft without retyping it. Verify the other account
+    # decrypted the event in Sidechat, not in the active call's DM.
+    click_at(*wait_for("preserved Sidechat draft",draft))
+    a.kde.keys(("Down","\ue007"),("Up","\ue007"))
+    def delivered():
+        with closing(sqlite3.connect((tmp/"peer/seed/data/gomuks.db").as_uri()+"?mode=ro",uri=True)) as db:
+            return list(db.execute("SELECT room_id,type FROM event WHERE sender=? AND "
+                "decrypted_type='m.room.message' AND json_extract(decrypted,'$.body')=?",(users[0],marker)))
+    wait_for("peer decrypted Sidechat message",delivered,20)
+    assert delivered()==[(other,"m.room.encrypted")]
+    print("Sidechat: peer video changed at 160×90; hide/show preserved the call. Return restored the full stage, "
+          "Sidechat kept its draft, and the peer decrypted it only in Sidechat. Same four GCM SIDs and camera readers.",flush=True)
     b.click("stop")
     wait_for("only callee's camera stops",lambda:not readers(b) and (users[1],"CAMERA") not in tracks() and not box(0,1),15)
-    assert box(1,1) and audio()
+    assert box(1,0) and audio()
+    wait_for("no stale picture in compact view",lambda:{"no","incoming","video","return"}<={w for w,_,_ in a.words()})
     a.click("hang")
     wait_for("hangup releases both cameras and all SFU tracks",lambda:not tracks() and not readers(a) and not readers(b),20)
+    assert title("Sidechat") and not box(0,0) and not box(0,1)
     print(f"Encrypted video invite {ring}; no camera before acceptance; receiver opted in separately. "
           "Both camera and mic pairs GCM; camera-off retained two-way audio and the other feed; hangup released capture.",flush=True)

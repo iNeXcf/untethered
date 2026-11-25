@@ -207,7 +207,12 @@ Answer or decline on either one: the other stops ringing and shows what
 happened in the DM. Only the device that answers opens its microphone.
 [Two-device call test](experiments/rtc-audio/README.md#verify-answering-on-another-device).
 
-The call bar stays with the active DM while you browse other rooms. **Mute**
+When you open another room during a Linux video call, the call bar shows
+a small live view of the other person. **Hide preview** gives you more room
+to type without stopping your camera. **Return to call** opens the full
+view and keeps the draft in the room where you wrote it.
+
+**Mute**
 releases your microphone and leaves the other person audible. **Deafen**
 silences playback and also mutes your microphone. **Undeafen** restores
 playback and your previous mute setting.
