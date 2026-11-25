@@ -629,6 +629,78 @@ impl App {
         .on_press(Msg::Account)
         .style(nav(false));
         let mut sidebar = column![head, rule::horizontal(1)];
+        #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
+        if self.logged_in
+            && self.verified
+            && let Section::Space(id) = &self.section
+            && let Some(space) = store.list.get(id)
+        {
+            sidebar = sidebar.push(
+                button(text("Space alerts").size(15))
+                    .style(nav(self.alerts.spaces.panel))
+                    .width(Fill)
+                    .padding([7, 16])
+                    .on_press(Msg::SpaceAlerts),
+            );
+            if self.alerts.spaces.panel {
+                let busy = self
+                    .pending
+                    .values()
+                    .any(|p| matches!(p,Request::SpacePref(s) if s==id));
+                let state = if busy {
+                    "Saving…"
+                } else if space.space_alerts == crate::notifications::Mode::Default {
+                    "Inherit"
+                } else {
+                    space.space_alerts.label()
+                };
+                let mut panel =
+                    column![text(format!("Space default: {state}")).size(13).font(BOLD)].spacing(3);
+                for m in crate::notifications::Mode::CHOICES {
+                    panel = panel.push(
+                        button(
+                            text(if m == crate::notifications::Mode::Default {
+                                "Inherit"
+                            } else {
+                                m.label()
+                            })
+                            .size(13),
+                        )
+                        .style(nav(m == space.space_alerts))
+                        .width(Fill)
+                        .on_press_maybe(
+                            (self.connected
+                                && self.alerts.ready
+                                && self.alerts.spaces.initialized
+                                && !busy
+                                && m != space.space_alerts)
+                                .then(|| Msg::SpaceMode(id.clone(), m)),
+                        ),
+                    );
+                }
+                panel = panel.push(
+                    text("Includes nested channels. Room settings take priority.")
+                        .size(12)
+                        .color(MUTED),
+                );
+                if self
+                    .pending
+                    .values()
+                    .any(|p| matches!(p, Request::SpaceRule(_)))
+                {
+                    panel = panel.push(text("Updating channel rules…").size(12));
+                }
+                if self.alerts.spaces.failed() {
+                    panel =
+                        panel.push(button("Retry syncing rules").on_press(Msg::RetrySpaceRules));
+                }
+                if self.alerts.spaces.conflict() {
+                    panel =
+                        panel.push(text("A customized Matrix rule was left unchanged.").size(12));
+                }
+                sidebar = sidebar.push(container(panel).padding([4, 10]));
+            }
+        }
         if self.logged_in && self.verified {
             sidebar = sidebar.push(
                 button(text("Mentions").size(15))
@@ -828,22 +900,37 @@ impl App {
             && let Some(r) = room
         {
             let selected = self.alerts.mode(&self.selected);
+            let inherited = self.alerts.spaces.inherited(&self.selected);
             let pending = self.notifications_pending(&self.selected);
             let mut options = Row::new().spacing(5);
             for mode in crate::notifications::Mode::CHOICES {
                 options = options.push(
-                    button(text(mode.label()).size(14))
-                        .style(nav(mode == selected))
-                        .on_press_maybe(
-                            (self.alerts.ready && self.connected && !pending && selected != mode)
-                                .then(|| Msg::NotifyMode(self.selected.clone(), mode)),
-                        ),
+                    button(
+                        text(
+                            if mode == crate::notifications::Mode::Default && inherited != mode {
+                                "Use space default"
+                            } else {
+                                mode.label()
+                            },
+                        )
+                        .size(14),
+                    )
+                    .style(nav(mode == selected))
+                    .on_press_maybe(
+                        (self.alerts.ready && self.connected && !pending && selected != mode)
+                            .then(|| Msg::NotifyMode(self.selected.clone(), mode)),
+                    ),
                 );
             }
             let state = if pending {
                 "Saving…"
             } else if !self.alerts.ready {
                 "Loading push rules…"
+            } else if selected == crate::notifications::Mode::Default && inherited != selected {
+                match inherited {
+                    crate::notifications::Mode::Quiet => "Space default · Mute ordinary",
+                    _ => "Space default · All messages",
+                }
             } else {
                 selected.label()
             };

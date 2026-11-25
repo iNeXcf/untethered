@@ -55,6 +55,16 @@ Matrix account. While Untethered is running, alerts go to the desktop
 notification service; the room you’re currently viewing in a focused
 window doesn’t also show a popup.
 
+**Space alerts:** Select a space from the rail, open **Space alerts**, and
+choose **All messages** or **Mute ordinary**. The setting applies to joined
+channels, including channels in nested spaces. An explicit room setting
+takes priority. **Inherit** removes the space preference; the nearest
+configured parent applies, or your account defaults if there is none.
+For a shared room with equally close space settings, mute wins. Direct
+mentions still follow your Matrix mention rule, and Do Not Disturb still
+wins. Untethered updates the underlying Matrix push rules as it syncs
+changes to space membership. [Linux and browser tests](scripts/room-alerts.md#verify-space-alerts).
+
 **Do Not Disturb:** Click your account at the bottom of the sidebar and choose
 **Pause alerts**. It silences message notifications across your Matrix account,
 including direct mentions. Messages still arrive, and the mentions inbox still

@@ -23,7 +23,7 @@ def screen_words(raw):
             for line in t.decode().splitlines() if len(s:=line.split("\t"))==12 and s[0]=="5"]
 
 
-def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False,room_search=False,alerts=False,permissions=False,ban=False,kick=False,report=False,client_web=None,mentions=False,peer_hs=None):
+def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False,room_search=False,alerts=False,permissions=False,ban=False,kick=False,report=False,client_web=None,mentions=False,peer_hs=None,spaces=False):
     paths=[]
     def observe(method,path):
         if room_search or method=="GET" and "/context/" in path:paths.append(unquote(path))
@@ -93,8 +93,9 @@ def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False,room_searc
                           lambda s:client.keyboard.type(s,delay=5),enter)
             return
         env=isolated_env(tmp,backend,"x11")
-        start_display(stack,tmp,env,"x11")
-        if alerts:
+        if spaces:start_display(stack,tmp,env,"x11",1820,980)
+        else:start_display(stack,tmp,env,"x11")
+        if alerts or spaces:
             from qa_room_alerts import NotificationDesktop
             desktop=NotificationDesktop(stack,tmp,env)
         native_life=stack.enter_context(ExitStack())
@@ -107,13 +108,29 @@ def test_replies(tmp,hs,root,backend,seed,http,port,*,reactions=False,room_searc
                          env=env,text=True,capture_output=True)
                 return r.stdout.strip() if r.returncode==0 else None
             wid=wait_for("native synced window",visible,30)
-            x("windowsize",wid,"1180","760","windowfocus",wid)
+            x("windowmove",wid,"0","0","windowsize",wid,"1180","760","windowfocus",wid)
             return wid
         win=launch()
         def words():
             return screen_words(sp.check_output(["import","-window",win,"png:-"],env=env,timeout=6))
         def click(pos):x("mousemove","--window",win,*map(str,pos),"click","1")
         def lines(words,label):return [(x,y) for v,x,y in words if v==label and x>280]
+        if spaces:
+            from qa_space_alerts import check_spaces,native_sender
+            def restart():
+                nonlocal win
+                native_life.close();win=launch()
+            me="@"+native["username"]+":test.invalid"
+            def space_click(xx,y):
+                click((xx,y));x("mousemove","--window",win,"650","440")
+            def foreground():
+                x("windowraise",win);desktop.focus(win)
+            def background():
+                x("windowraise",desktop.other,"mousemove","--window",desktop.other,"70","25")
+                desktop.focus(desktop.other)
+            check_spaces(hs,page,me,hdr,http,room,words,space_click,foreground,
+                background,restart,native_sender(tmp,hs,page,hdr,http),desktop,"Untethered")
+            return
         if mentions:
             from qa_mentions_inbox import check_inbox
             def restart():

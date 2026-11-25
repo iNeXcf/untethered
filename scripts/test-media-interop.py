@@ -135,6 +135,7 @@ def main():
     args.add_argument("--room-alerts",action="store_true",help="Verify per-room push rules and visible direct-mention notifications on a private Linux desktop")
     args.add_argument("--browser-alerts",action="store_true",help="Verify a real browser notification from a hidden Untethered tab in a muted encrypted room")
     args.add_argument("--account-dnd",action="store_true",help="Toggle account-wide DND between Linux and Chromium; check both desktops and their persistent Matrix settings")
+    args.add_argument("--space-alerts",choices=("native","web"),help="Verify nested Matrix space rules, room overrides, live membership and real popups")
     args.add_argument("--read-state",action="store_true",help="Verify private read markers, manual reminders and unread badges between two actual Linux and web devices")
     args.add_argument("--dnd-ring",action="store_true",help="Verify active and new Linux incoming ringtone suppression while accepting a real encrypted DM under DND")
     args.add_argument("--room-permissions",action="store_true",help="Restrict and restore room posting from Iced; check the member's actual Synapse send response")
@@ -173,7 +174,7 @@ def main():
     if args.native_dm and args.unsupported_dm:args.error("run --native-dm and --unsupported-dm separately")
     if args.multi_device_ring:args.incoming_dm=True
     if args.dnd_ring:args.incoming_dm=True
-    if args.account_dnd or args.read_state:args.browser_alerts=True
+    if args.account_dnd or args.read_state or args.space_alerts=="web":args.browser_alerts=True
     if args.desktop_dm or args.incoming_dm or args.voice_room: args.rtc_audio=True
     assert BACKEND.is_file(), "Run scripts/rust-client.sh once or set UNTETHERED_BACKEND"
     if args.federated_ban:
@@ -183,7 +184,7 @@ def main():
             federated_ban(Path(d),ROOT,BACKEND,seed,http,free_port,service)
         return
     dist = ROOT/"rust-client/web/dist"
-    chat_test=args.replies or args.reactions or args.room_search or args.room_alerts or args.room_permissions or args.room_ban or args.room_kick or args.message_report or args.mentions_inbox
+    chat_test=args.replies or args.reactions or args.room_search or args.room_alerts or args.room_permissions or args.room_ban or args.room_kick or args.message_report or args.mentions_inbox or args.space_alerts=="native"
     web_chat="web" in (args.message_report,args.mentions_inbox)
     if web_chat or args.file_limits=="web" or not any((args.file_limits,args.native_paste,args.portal_drop,args.kwin_element,args.rtc_membership,args.rtc_audio,chat_test,args.linux_upgrade)):
         assert (dist/"backend/gomuks-worker.js").is_file(), "Run scripts/rust-web.sh first"
@@ -233,7 +234,7 @@ federation_domain_whitelist: []
                 from qa_browser_alerts import check_browser_alerts
                 wp=free_port()
                 with service([sys.executable,"-m","http.server",str(wp),"--bind","127.0.0.1","--directory",str(dist)],tmp):
-                    check_browser_alerts(tmp,hs,f"http://127.0.0.1:{wp}",BACKEND,seed,http,dnd=args.account_dnd,reading=args.read_state)
+                    check_browser_alerts(tmp,hs,f"http://127.0.0.1:{wp}",BACKEND,seed,http,dnd=args.account_dnd,reading=args.read_state,spaces=args.space_alerts=="web")
                 return
             if args.linux_upgrade:
                 from qa_linux_upgrade import check_upgrade
@@ -246,7 +247,7 @@ federation_domain_whitelist: []
                     with service([sys.executable,"-m","http.server",str(wp),"--bind","127.0.0.1","--directory",str(dist)],tmp):
                         test_replies(tmp,hs,ROOT,BACKEND,seed,http,gateway_port,report=args.message_report,mentions=args.mentions_inbox,client_web=f"http://127.0.0.1:{wp}")
                     return
-                test_replies(tmp,hs,ROOT,BACKEND,seed,http,gateway_port,reactions=args.reactions,room_search=args.room_search,alerts=args.room_alerts,permissions=args.room_permissions,ban=args.room_ban,kick=args.room_kick,report=args.message_report,mentions=args.mentions_inbox)
+                test_replies(tmp,hs,ROOT,BACKEND,seed,http,gateway_port,reactions=args.reactions,room_search=args.room_search,alerts=args.room_alerts,permissions=args.room_permissions,ban=args.room_ban,kick=args.room_kick,report=args.message_report,mentions=args.mentions_inbox,spaces=args.space_alerts=="native")
                 return
             if args.rtc_audio:
                 audio_test(tmp,hs,server_name,rtc_service,ROOT,BACKEND,seed,http,service,desktop=args.desktop_dm or args.incoming_dm,incoming=args.incoming_dm,controls=args.call_controls,devices=args.call_devices,reconnect=args.call_reconnect,turn=args.call_turn,group=args.voice_room,share=args.window_share,camera=args.room_camera,ptt=args.room_ptt,layout=args.room_layout,multi_ring=args.multi_device_ring,dnd_ring=args.dnd_ring,native_dm=args.native_dm,unsupported_dm=args.unsupported_dm)

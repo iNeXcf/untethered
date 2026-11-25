@@ -8,6 +8,7 @@ use crate::{
 pub mod browser;
 #[cfg(target_os = "linux")]
 mod desktop;
+pub mod spaces;
 use iced::Task;
 use iced::time::Instant;
 use serde_json::{Value, json};
@@ -41,6 +42,7 @@ pub struct Change {
 }
 #[derive(Default)]
 pub struct Alerts {
+    pub spaces: spaces::Spaces,
     pub panel: bool,
     #[cfg(target_arch = "wasm32")]
     pub asking: bool,
@@ -69,6 +71,7 @@ impl Alerts {
     }
     fn rules(&mut self, data: &Value) {
         if data["clear_state"] == true {
+            self.spaces = Default::default();
             self.ready = false;
             self.set_dnd(None);
             self.rules.clear();
@@ -79,6 +82,7 @@ impl Alerts {
             return;
         };
         self.ready = true;
+        self.spaces.rules(rules.get("underride"));
         self.set_dnd(
             rules
                 .get("override")

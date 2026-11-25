@@ -90,3 +90,35 @@ the **Accept** and **Decline** controls must remain. A new call under DND
 must create zero ringtone streams. Accepting it opens one microphone,
 delivers 480 Hz to Element and 960 Hz back to Linux, and yields two GCM
 microphone tracks at the SFU.
+
+## Verify space alerts
+
+Build the native and web clients. In the [browser notification test environment](#verify-browser-tab-notifications),
+run `scripts/test-media-interop.py --space-alerts native` and `--space-alerts web`.
+Each test creates two disposable accounts: Element administers two nested
+Matrix spaces and sends Megolm messages; the receiving account controls its
+own alerts. The web run adds a separately signed-in, background Linux receiver
+alongside the hidden Chromium tab, with independent Dunst servers on separate
+X displays. Each enabled popup must be visible, counted on D-Bus and archived.
+
+| Configuration or change | Observation |
+|---|---|
+| **Garden → Space alerts → Mute ordinary** | Ordinary messages in direct and nested channels produce no popup; a direct mention and ordinary chat outside Garden each produce one. |
+| Explicit **All messages** on a direct child | One popup, despite Garden’s mute. Restarting Untethered preserves the space setting. |
+| **All messages** on nested space Beds | Beds’ nearer preference wins for its child. Enabling account DND still suppresses even a direct mention. |
+| Remove Beds’ last child; link it directly into Garden | It first returns to account defaults, then inherits Garden’s mute without restarting. |
+| **Inherit** on Garden | The remaining inherited rules are removed. The explicit room override and unrelated user-created rule are unchanged. |
+
+The fixture checks exact rule conditions, actions and enabled flags on Synapse,
+and verifies decrypted message bodies and notification decisions at the clients.
+Each recipient device must have exactly six `Notify` calls and six archived
+popups. Unit tests also cover cycles, equally close conflicting parents,
+unjoined spaces and a rejected rule update.
+
+**How this maps to Matrix:** the preference is private room account data on
+the space (`com.untethered.space_alerts.v1`). Untethered maintains a distinct
+`underride` rule matching each affected room ID, after higher-priority
+mention, explicit room and DND rules. It waits for initial sync to finish
+before removing stale rules. Existing rules work on the homeserver while
+Untethered is closed; changes to the space hierarchy are reconciled when an
+Untethered device syncs again.

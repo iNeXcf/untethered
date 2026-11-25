@@ -68,6 +68,12 @@ enum Msg {
     NotifyMode(String, notifications::Mode),
     #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
     SetDnd(bool),
+    #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
+    SpaceAlerts,
+    #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
+    SpaceMode(String, notifications::Mode),
+    #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
+    RetrySpaceRules,
     #[cfg(not(target_arch = "wasm32"))]
     WindowFocus(bool),
     #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
@@ -215,6 +221,10 @@ impl std::fmt::Debug for Msg {
 enum Request {
     #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
     NotifyRule(notifications::Change),
+    #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
+    SpacePref(String),
+    #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
+    SpaceRule(notifications::spaces::Write),
     #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
     Dnd(bool, u64),
     #[cfg(target_os = "linux")]
@@ -397,6 +407,11 @@ impl App {
     }
     fn visible(&self) -> Vec<(&String, &rooms::Room)> {
         let rooms = self.rooms();
+        let channels = if let Section::Space(space) = &self.section {
+            rooms.channels(space)
+        } else {
+            Default::default()
+        };
         let mut list: Vec<_> = rooms
             .list
             .iter()
@@ -405,10 +420,7 @@ impl App {
                     && match &self.section {
                         Section::All => true,
                         Section::Direct => r.dm,
-                        Section::Space(space) => rooms
-                            .children
-                            .get(space)
-                            .is_some_and(|kids| kids.contains(*id)),
+                        Section::Space(_) => channels.contains_key(id.as_str()),
                     }
             })
             .collect();
@@ -794,6 +806,10 @@ impl App {
                         #[cfg(any(target_os="linux",target_arch="wasm32"))]
                         Request::NotifyRule(_)=>"Could not save the room notification setting. Try again.",
                         #[cfg(any(target_os="linux",target_arch="wasm32"))]
+                        Request::SpacePref(_)=> "Could not save space alerts. Try again.",
+                        #[cfg(any(target_os="linux",target_arch="wasm32"))]
+                        Request::SpaceRule(w)=>{self.finish_space_rule(w,false);self.sync_space_rules();return}
+                        #[cfg(any(target_os="linux",target_arch="wasm32"))]
                         Request::Dnd(..)=>"Could not change Do Not Disturb. Check the connection and try again.",
                         #[cfg(target_os="linux")]
                         Request::RingState(i)=>{self.present_ring(i,&Value::Null);return}
@@ -842,6 +858,10 @@ impl App {
                 match p {
                     #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
                     Request::NotifyRule(c) => self.saved_notifications(c),
+                    #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
+                    Request::SpacePref(_) => {}
+                    #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
+                    Request::SpaceRule(w) => self.finish_space_rule(w, true),
                     #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
                     Request::Dnd(on, revision) => self.saved_dnd(on, revision),
                     #[cfg(target_os = "linux")]
@@ -941,8 +961,12 @@ impl App {
                     Request::Verify(_) => {}
                 }
             }
+            #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
+            "init_complete" => self.alerts.spaces.initialized = true,
             _ => {}
         }
+        #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
+        self.sync_space_rules();
     }
     fn update(&mut self, msg: Msg) -> Task<Msg> {
         let refresh_inline = match &msg {
@@ -970,6 +994,12 @@ impl App {
             Msg::NotifyMode(room, mode) => self.set_notifications(room, mode),
             #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
             Msg::SetDnd(on) => self.change_dnd(on),
+            #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
+            Msg::SpaceAlerts => self.alerts.spaces.panel = !self.alerts.spaces.panel,
+            #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
+            Msg::SpaceMode(space, m) => self.set_space_mode(space, m),
+            #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
+            Msg::RetrySpaceRules => self.retry_space_rules(),
             #[cfg(not(target_arch = "wasm32"))]
             Msg::WindowFocus(focused) => {
                 self.focused = focused;

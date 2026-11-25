@@ -19,9 +19,12 @@ pub fn short(id: &str) -> &str {
 pub struct Rooms {
     pub list: BTreeMap<String, Room>,
     pub children: BTreeMap<String, BTreeSet<String>>,
+    pub hierarchy_revision: u64,
 }
 #[derive(Default)]
 pub struct Room {
+    #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
+    pub space_alerts: crate::notifications::Mode,
     pub posting: crate::permissions::Posting,
     pub name: String,
     pub topic: String,
@@ -298,20 +301,59 @@ impl Room {
     }
 }
 impl Rooms {
+    /// Shortest path to each joined channel. A room may have several parents
+    /// and spaces can contain cycles; never traverse through unjoined spaces.
+    pub fn channels(&self, space: &str) -> BTreeMap<&str, usize> {
+        let mut channels = BTreeMap::new();
+        let Some((id, r)) = self.list.get_key_value(space) else {
+            return channels;
+        };
+        if !r.space {
+            return channels;
+        }
+        let mut visited = BTreeSet::from([id.as_str()]);
+        let mut todo = std::collections::VecDeque::from([(id.as_str(), 0)]);
+        while let Some((id, n)) = todo.pop_front() {
+            for child in self.children.get(id).into_iter().flatten() {
+                if !visited.insert(child.as_str()) {
+                    continue;
+                }
+                if let Some(r) = self.list.get(child) {
+                    if r.space {
+                        todo.push_back((child, n + 1));
+                    } else {
+                        channels.insert(child.as_str(), n + 1);
+                    }
+                }
+            }
+        }
+        channels
+    }
     pub fn sync(&mut self, d: &Value) {
         if d["clear_state"] == true {
             *self = Self::default();
         }
         for (space, edges) in pairs(&d["space_edges"]) {
-            self.children.insert(
-                space.clone(),
-                items(edges)
-                    .filter_map(|e| e["child_id"].as_str().map(str::to_owned))
-                    .collect(),
-            );
+            let next = items(edges)
+                .filter_map(|e| e["child_id"].as_str().map(str::to_owned))
+                .collect();
+            if self.children.get(space) != Some(&next) {
+                self.children.insert(space.clone(), next);
+                self.hierarchy_revision += 1;
+            }
         }
         for (id, delta) in pairs(&d["rooms"]) {
+            let new = !self.list.contains_key(id);
             let room = self.list.entry(id.clone()).or_default();
+            let was_space = room.space;
+            #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
+            if let Some(ad) = delta["account_data"].get(crate::notifications::spaces::PREF) {
+                let mode = crate::notifications::spaces::mode(&ad["content"]);
+                if room.space_alerts != mode {
+                    room.space_alerts = mode;
+                    self.hierarchy_revision += 1;
+                }
+            }
             let meta = &delta["meta"];
             room.read.sync(delta, id);
             if meta.is_object() {
@@ -339,6 +381,9 @@ impl Rooms {
                     || meta["unread_notifications"].as_u64().unwrap_or(0) > 0;
                 room.encrypted = meta["encryption_event"].is_object();
             }
+            if new || room.space != was_space {
+                self.hierarchy_revision += 1;
+            }
             if delta["reset"] == true {
                 room.history.clear();
                 room.event_rows.clear();
@@ -353,6 +398,31 @@ impl Rooms {
             for e in items(&delta["events"]) {
                 if e["room_id"].as_str().is_some_and(|room| room != id) {
                     continue;
+                }
+                // gomuks omits the map entry when the *last* edge is
+                // removed. A current unlink with no replacement snapshot
+                // must not leave stale inheritance until the next restart.
+                if let Some(key) = e["state_key"].as_str()
+                    && let Some(ty @ ("m.space.child" | "m.space.parent")) = e["type"].as_str()
+                    && e["rowid"]
+                        .as_i64()
+                        .is_some_and(|n| n > 0 && delta["state"][ty][key] == n)
+                    && (e["redacted_by"].is_string()
+                        || items(&e["content"]["via"]).next().is_none())
+                {
+                    let (parent, child) = if ty == "m.space.child" {
+                        (id.as_str(), key)
+                    } else {
+                        (key, id.as_str())
+                    };
+                    if d["space_edges"].get(parent).is_none()
+                        && self
+                            .children
+                            .get_mut(parent)
+                            .is_some_and(|kids| kids.remove(child))
+                    {
+                        self.hierarchy_revision += 1;
+                    }
                 }
                 if let Some(ty) = e["type"].as_str()
                     && e["state_key"] == ""
@@ -385,7 +455,9 @@ impl Rooms {
             }
         }
         for id in items(&d["left_rooms"]).filter_map(Value::as_str) {
-            self.list.remove(id);
+            if self.list.remove(id).is_some() {
+                self.hierarchy_revision += 1;
+            }
             self.children.remove(id);
         }
     }

@@ -15,7 +15,7 @@ from qa_native_paste import child,isolated_env,start_display,wait_for
 from qa_room_alerts import NotificationDesktop
 
 
-def check_browser_alerts(tmp,hs,web,backend,seed,http,*,dnd=False,reading=False):
+def check_browser_alerts(tmp,hs,web,backend,seed,http,*,dnd=False,reading=False,spaces=False):
     receiver,hdr=seed(tmp,hs)
     other=tmp/"sender";other.mkdir()
     sender,sh=seed(other,hs)
@@ -103,8 +103,10 @@ def check_browser_alerts(tmp,hs,web,backend,seed,http,*,dnd=False,reading=False)
             rules=http("GET",hs+"/_matrix/client/v3/pushrules/",headers=hdr).json()["global"]["room"]
             return any(r["rule_id"]==room and r["enabled"] and r["actions"]==[] for r in rules)
         if not reading:
-            click_word("alerts");click_word("mute","all")
-            wait_for("Matrix room muted by the browser",muted)
+            click_word("alerts")
+            if not spaces:
+                click_word("mute","all")
+                wait_for("Matrix room muted by the browser",muted)
         assert page.evaluate("Notification.permission")=="default"
         other_tab=ctx.new_page()
         other_tab.set_content("<title>Foreground control</title><p>Reading another tab</p>")
@@ -131,7 +133,7 @@ def check_browser_alerts(tmp,hs,web,backend,seed,http,*,dnd=False,reading=False)
             check_read_state(stack,tmp,hs,backend,room,me,hdr,http,page,peer,words)
             return
         assert desk.count()==0
-        if not dnd:send("Before permission",me,True,True)
+        if not dnd and not spaces:send("Before permission",me,True,True)
         page.bring_to_front()
         click_word("enable","browser")
         def screen_words():
@@ -149,6 +151,17 @@ def check_browser_alerts(tmp,hs,web,backend,seed,http,*,dnd=False,reading=False)
         print("Clicked Enable browser notifications and allowed the real Chromium site prompt on the disposable origin.",flush=True)
         hide()
         assert desk.count()==0
+        if spaces:
+            from qa_space_alerts import check_spaces,companion
+            second=companion(stack,tmp,backend)
+            def restart():
+                page.bring_to_front();page.reload()
+                page.wait_for_function("document.title.includes('media-proof')",timeout=45000)
+            def space_click(x,y):
+                page.mouse.click(x,y);page.mouse.move(650,440)
+            check_spaces(hs,peer,me,hdr,http,room,words,space_click,page.bring_to_front,hide,
+                         restart,lambda r,b,u,n:send(b,u,True,n,r),desk,"Chromium",second_device=second)
+            return
         if dnd:
             from qa_account_dnd import verify_dnd
             verify_dnd(stack,tmp,hs,backend,hdr,http,me,room,page,peer,words,click_word,send,hide,desk)

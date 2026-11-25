@@ -263,6 +263,15 @@
   in Element; turning sharing off kept later reads private. Both receivers
   displayed Element’s public receipt beneath the exact message.
 
+- **Inherited space alerts:** [Native Linux and Chromium tests](scripts/room-alerts.md#verify-space-alerts)
+  verified mute and all-message defaults for nested spaces, explicit channel
+  overrides, direct mentions, DND and an unaffected outside room. Moving a
+  room out of its last parent and adding it to a muted space updated the
+  actual Synapse rules. The browser run checked both a hidden tab and a second
+  Linux device on the same account: exactly six visible popups on each.
+  Clearing the space preference preserved the independent channel override
+  and unrelated custom rules.
+
 ## What parity means
 
 A small community should be able to move its everyday conversations here: find a server and its channels, talk in DMs, drop a screenshot, join friends in voice, share a screen, catch up on mentions, and moderate its space. Test those workflows side by side with Discord. A button that looks right but doesn't work with another Matrix client isn't parity.
