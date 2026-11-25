@@ -69,6 +69,19 @@ including encrypted messages, and survives restart. It updates while open;
 a room-wide ping or a message that only spells out your ID is not a direct
 mention. [Verified on Linux desktop and Chromium](scripts/mentions-inbox.md).
 
+**Read state:** Reading the bottom of a focused conversation clears its
+unread badge across your devices. A hidden browser tab, search results, or
+a timeline scrolled up into history won’t do that. The **New messages**
+divider shows where new messages begin when the read marker is loaded.
+Use **Mark unread** below the composer to leave a reminder; it stays until
+you choose **Mark read**, even after restart.
+
+Read receipts are private by default. To let other room members see your
+future reads, select **Account → Share receipts with room members**. Choose
+**Keep receipts private** to stop sharing. Other people’s public receipts
+appear as **Seen by** beneath the message. [Linux, Chromium and Element
+test](scripts/read-state.md).
+
 **Report a message:** Select **Report** beside someone else’s message, enter
 a reason, and choose **Submit report**. The report goes to your homeserver
 administrator. In an encrypted room, the administrator can read your reason;

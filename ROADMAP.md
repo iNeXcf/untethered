@@ -248,6 +248,15 @@
   an already audible ringtone and answered a new silent call, with 480/960 Hz
   received on the respective peers and both microphone tracks encrypted.
 
+- **Cross-device read state and receipts:** The [Linux/Chromium/Element test](scripts/read-state.md)
+  checked exact `m.fully_read` and private receipt event IDs in two encrypted
+  rooms. A hidden tab, an unfocused window, room search, and a scrolled-up
+  timeline left the marker unchanged. Marking the room unread on web survived
+  restarting both clients. Marking it read preserved the other room’s
+  highlight. Opting into public receipts made the next native read visible
+  in Element; turning sharing off kept later reads private. Both receivers
+  displayed Element’s public receipt beneath the exact message.
+
 ## What parity means
 
 A small community should be able to move its everyday conversations here: find a server and its channels, talk in DMs, drop a screenshot, join friends in voice, share a screen, catch up on mentions, and moderate its space. Test those workflows side by side with Discord. A button that looks right but doesn't work with another Matrix client isn't parity.

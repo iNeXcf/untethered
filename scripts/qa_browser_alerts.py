@@ -15,7 +15,7 @@ from qa_native_paste import child,isolated_env,start_display,wait_for
 from qa_room_alerts import NotificationDesktop
 
 
-def check_browser_alerts(tmp,hs,web,backend,seed,http,*,dnd=False):
+def check_browser_alerts(tmp,hs,web,backend,seed,http,*,dnd=False,reading=False):
     receiver,hdr=seed(tmp,hs)
     other=tmp/"sender";other.mkdir()
     sender,sh=seed(other,hs)
@@ -29,7 +29,7 @@ def check_browser_alerts(tmp,hs,web,backend,seed,http,*,dnd=False):
     with ExitStack() as stack:
         env=isolated_env(tmp,backend,"x11")
         start_display(stack,tmp,env,"x11",1520,1050)
-        desk=NotificationDesktop(stack,tmp,env)
+        desk=None if reading else NotificationDesktop(stack,tmp,env)
         element=stack.enter_context(element_server(hs))
         pw=stack.enter_context(sync_playwright())
         exe=os.environ.get("CHROMIUM") or shutil.which("chromium")
@@ -102,8 +102,9 @@ def check_browser_alerts(tmp,hs,web,backend,seed,http,*,dnd=False):
         def muted():
             rules=http("GET",hs+"/_matrix/client/v3/pushrules/",headers=hdr).json()["global"]["room"]
             return any(r["rule_id"]==room and r["enabled"] and r["actions"]==[] for r in rules)
-        click_word("alerts");click_word("mute","all")
-        wait_for("Matrix room muted by the browser",muted)
+        if not reading:
+            click_word("alerts");click_word("mute","all")
+            wait_for("Matrix room muted by the browser",muted)
         assert page.evaluate("Notification.permission")=="default"
         other_tab=ctx.new_page()
         other_tab.set_content("<title>Foreground control</title><p>Reading another tab</p>")
@@ -125,6 +126,10 @@ def check_browser_alerts(tmp,hs,web,backend,seed,http,*,dnd=False):
             assert seen["mentions"].get("user_ids",[])==([target] if target else [])
             return eid
         hide()
+        if reading:
+            from qa_read_state import check_read_state
+            check_read_state(stack,tmp,hs,backend,room,me,hdr,http,page,peer,words)
+            return
         assert desk.count()==0
         if not dnd:send("Before permission",me,True,True)
         page.bring_to_front()

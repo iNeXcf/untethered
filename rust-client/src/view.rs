@@ -542,7 +542,22 @@ impl App {
                     .size(15)
                     .width(Fill)
                     .color(if active || r.unread { TEXT } else { MUTED }),
-                text(if r.unread { "•" } else { "" }).color(TEXT)
+                text(if !r.unread {
+                    String::new()
+                } else if r.read.highlights > 0 {
+                    format!("@{}", r.read.highlights)
+                } else if r.read.messages > 0 {
+                    format!("{}", r.read.messages)
+                } else {
+                    "•".into()
+                })
+                .font(BOLD)
+                .size(13)
+                .color(if r.read.highlights > 0 {
+                    color!(0xffb6bc)
+                } else {
+                    TEXT
+                })
             ]
             .spacing(9)
             .align_y(Center);
@@ -1009,6 +1024,12 @@ impl App {
         } else {
             &sorted[..]
         };
+        let divider = if original.is_none() && r.unread {
+            r.read.divider(r)
+        } else {
+            None
+        };
+        let seen = r.read.seen(&self.matrix_id);
         for &cached in posts {
             let p = if original.is_some() {
                 cached
@@ -1040,6 +1061,20 @@ impl App {
                         .align_y(Center),
                     )
                     .padding([9, 0]),
+                );
+            }
+            if divider.is_some() && p.event_id.as_deref() == divider {
+                feed = feed.push(
+                    row![
+                        rule::horizontal(1),
+                        text("New messages")
+                            .size(12)
+                            .font(BOLD)
+                            .color(color!(0xffb6bc)),
+                        rule::horizontal(1)
+                    ]
+                    .spacing(8)
+                    .align_y(Center),
                 );
             }
             let name = r.display(&p.sender);
@@ -1246,6 +1281,30 @@ impl App {
                     .spacing(13),
                 );
             }
+            if self.logged_in
+                && let Some(id) = p.event_id.as_deref()
+                && let Some(names) = seen.get(id)
+            {
+                let mut readers = names.iter().copied().filter(|u| *u != p.sender);
+                let head: Vec<_> = readers.by_ref().take(3).map(|u| r.display(u)).collect();
+                if !head.is_empty() {
+                    let more = readers.count();
+                    let suffix = if more == 0 {
+                        String::new()
+                    } else {
+                        format!(" +{more}")
+                    };
+                    entry = entry.push(
+                        row![
+                            Space::new().width(36),
+                            text(format!("Seen by {}{suffix}", head.join(", ")))
+                                .size(12)
+                                .color(MUTED)
+                        ]
+                        .spacing(13),
+                    );
+                }
+            }
             let entry = container(entry).width(Fill);
             feed = feed.push(if let Some(id) = &p.event_id {
                 entry.id(iced::widget::Id::from(format!("post-{id}")))
@@ -1257,7 +1316,9 @@ impl App {
         let feed = if original.is_some() {
             feed
         } else {
-            feed.anchor_bottom()
+            feed.anchor_bottom().on_scroll(|v| {
+                Msg::ReadingScroll(self.selected.clone(), v.absolute_offset().y > 1.)
+            })
         };
         let mut viewport = Column::new();
         if let Some(c) = original {
@@ -1446,17 +1507,29 @@ impl App {
         } else {
             "Matrix room"
         };
+        let mut footer =
+            row![text(foot).size(11).color(DIM), Space::new().width(Fill)].align_y(Center);
+        if self.logged_in && self.verified {
+            let id = r.read.target().map(str::to_owned);
+            let available = self.connected && !self.writing_read(&self.selected) && id.is_some();
+            footer = footer.push(
+                button(text(if r.unread { "Mark read" } else { "Mark unread" }).size(12))
+                    .style(nav(false))
+                    .padding([1, 6])
+                    .on_press_maybe(available.then(|| {
+                        Msg::MarkRoom(self.selected.clone(), if r.unread { id } else { None })
+                    })),
+            );
+        }
         column![
             viewport.push(feed).height(Fill),
             container(
                 column![
                     tray,
                     composer,
-                    row![
-                        text(foot).size(11).color(DIM),
-                        Space::new().width(Fill),
-                        text("Shift + Enter for a new line").size(11).color(DIM)
-                    ]
+                    footer
+                        .push(text("Shift + Enter for a new line").size(11).color(DIM))
+                        .spacing(8)
                 ]
                 .spacing(5)
             )
@@ -1549,6 +1622,33 @@ impl App {
                         .on_press_maybe(self.connected.then_some(Msg::CheckCalls)),
                 )
                 .push(text(&self.rtc_status).size(13));
+            let public = self.read_sharing.public;
+            form = form.push(
+                column![
+                    text("Read receipts").font(BOLD),
+                    text(if public {
+                        "Room members can see what you’ve read."
+                    } else {
+                        "Read receipts are private to your account."
+                    })
+                    .size(13)
+                    .color(MUTED),
+                    button(
+                        text(if public {
+                            "Keep receipts private"
+                        } else {
+                            "Share receipts with room members"
+                        })
+                        .size(14)
+                    )
+                    .style(nav(public))
+                    .on_press_maybe(
+                        (self.connected && !self.changing_read_sharing())
+                            .then_some(Msg::ShareReads(!public))
+                    )
+                ]
+                .spacing(4),
+            );
             #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
             {
                 let dnd = self.alerts.dnd;

@@ -33,6 +33,7 @@ pub struct Room {
     #[cfg(target_os = "linux")]
     pub dm_peer: Option<String>,
     pub unread: bool,
+    pub read: crate::reading::State,
     pub encrypted: bool,
     pub has_metadata: bool,
     pub end: bool,
@@ -272,10 +273,12 @@ impl Room {
         }
     }
     pub fn page(&mut self, room: &str, data: &Value) {
+        self.read.receipts(data, room);
         let old = self.cursor;
         for e in items(&data["events"]).filter(|e| e["room_id"] == room) {
             if let Some(t) = e["timeline_rowid"].as_i64().filter(|&x| x != 0) {
                 self.cursor = Some(self.cursor.map_or(t, |v| v.min(t)));
+                self.read.position(t, e);
             }
             self.insert(e);
         }
@@ -310,6 +313,7 @@ impl Rooms {
         for (id, delta) in pairs(&d["rooms"]) {
             let room = self.list.entry(id.clone()).or_default();
             let meta = &delta["meta"];
+            room.read.sync(delta, id);
             if meta.is_object() {
                 room.has_metadata = true;
                 room.name = meta["name"]
@@ -329,8 +333,10 @@ impl Rooms {
                         .filter(|v| v.starts_with('@'))
                         .map(str::to_owned);
                 }
-                room.unread = meta["marked_unread"] == true
-                    || meta["unread_messages"].as_u64().unwrap_or(0) > 0;
+                room.unread = room.read.marked
+                    || room.read.messages > 0
+                    || room.read.highlights > 0
+                    || meta["unread_notifications"].as_u64().unwrap_or(0) > 0;
                 room.encrypted = meta["encryption_event"].is_object();
             }
             if delta["reset"] == true {

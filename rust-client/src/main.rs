@@ -25,6 +25,7 @@ mod paste;
 mod permissions;
 mod preview;
 mod reactions;
+mod reading;
 mod replies;
 mod reports;
 mod rooms;
@@ -67,7 +68,7 @@ enum Msg {
     NotifyMode(String, notifications::Mode),
     #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
     SetDnd(bool),
-    #[cfg(target_os = "linux")]
+    #[cfg(not(target_arch = "wasm32"))]
     WindowFocus(bool),
     #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
     DesktopDelivery(bool),
@@ -139,6 +140,11 @@ enum Msg {
     Stopped(String),
     Section(Section),
     Open(String),
+    CheckReading,
+    ReadingScroll(String, bool),
+    ShareReads(bool),
+    ReadVisible(String, String, String, bool),
+    MarkRoom(String, Option<String>),
     OpenMentions,
     MoreMentions,
     MentionHit(String, String),
@@ -233,8 +239,14 @@ enum Request {
     Report,
     Search(String, search::Page),
     Mentions(mentions::Page),
+    ReadState(String, Option<String>),
+    ShareReads(bool, u64),
 }
 struct App {
+    read_sharing: reading::Sharing,
+    scrolled_away: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    focused: bool,
     #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
     alerts: notifications::Alerts,
     #[cfg(target_os = "linux")]
@@ -314,6 +326,10 @@ impl App {
     }
     fn new(commands: Sender<backend::Command>) -> Self {
         Self {
+            read_sharing: Default::default(),
+            scrolled_away: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            focused: false,
             #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
             alerts: Default::default(),
             #[cfg(target_os = "linux")]
@@ -438,6 +454,7 @@ impl App {
             return;
         }
         self.close_original();
+        self.scrolled_away = false;
         self.reset_directory();
         self.leave_permission_panel();
         #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
@@ -611,6 +628,10 @@ impl App {
                 let user = rooms::string(&data["user_id"]);
                 if self.matrix_id != user || !self.verified || !self.logged_in {
                     self.close_mentions();
+                    self.read_sharing = Default::default();
+                    self.pending.retain(|_, p| {
+                        !matches!(p, Request::ShareReads(..) | Request::ReadState(..))
+                    });
                 }
                 self.matrix_id = user;
                 if was != self.logged_in {
@@ -668,6 +689,7 @@ impl App {
                         .retain(|_, p| !matches!(p, Request::Members(_) | Request::Page(_)));
                 }
                 self.live.sync(data);
+                self.read_sharing.sync(data);
                 if self.mentions.is_some()
                     && (items(&data["left_rooms"]).next().is_some()
                         || data["rooms"]
@@ -808,6 +830,8 @@ impl App {
                         Request::Reaction(op)=>{self.finish_reaction(op,&Value::Null);return}
                         Request::Search(room,kind)=>{self.fail_search(&room,kind);return}
                         Request::Mentions(_)=>{self.mentions_failed();return}
+                        Request::ReadState(room,event)=>{self.read_result(room,event,false);return}
+                        Request::ShareReads(..)=>"Could not save your read receipt preference. Try again.",
                     }
                     .into();
                     return;
@@ -853,6 +877,8 @@ impl App {
                     Request::Reaction(op) => self.finish_reaction(op, data),
                     Request::Search(room, kind) => self.search_response(room, kind, data),
                     Request::Mentions(kind) => self.mentions_page(kind, data),
+                    Request::ReadState(room, event) => self.read_result(room, event, true),
+                    Request::ShareReads(value, rev) => self.read_sharing.saved(value, rev),
                     Request::Edit(room, id) => {
                         self.finish_edit(f["request_id"].as_i64().unwrap(), &room, &id, data)
                     }
@@ -940,9 +966,10 @@ impl App {
             Msg::NotifyMode(room, mode) => self.set_notifications(room, mode),
             #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
             Msg::SetDnd(on) => self.change_dnd(on),
-            #[cfg(target_os = "linux")]
+            #[cfg(not(target_arch = "wasm32"))]
             Msg::WindowFocus(focused) => {
-                self.alerts.focused = focused;
+                self.focused = focused;
+                #[cfg(target_os = "linux")]
                 if !focused {
                     return self.update(Msg::TalkKey(false));
                 }
@@ -1428,6 +1455,19 @@ impl App {
                 self.open(id);
             }
             Msg::OpenMentions => self.open_mentions(),
+            Msg::CheckReading => return self.check_reading(),
+            Msg::ReadingScroll(room, away) if room == self.selected && self.original.is_none() => {
+                self.scrolled_away = away
+            }
+            Msg::ShareReads(value) => self.set_read_sharing(value),
+            Msg::ReadVisible(room, event, row, true)
+                if self.auto_target() == Some((event.as_str(), row.as_str()))
+                    && room == self.selected
+                    && self.reading_focused() =>
+            {
+                self.mark_room(room, Some(event));
+            }
+            Msg::MarkRoom(room, event) => self.mark_room(room, event),
             Msg::MoreMentions => {
                 if let Some(i) = &mut self.mentions {
                     i.shown = i.shown.saturating_add(50);
@@ -1778,8 +1818,11 @@ fn main() -> iced::Result {
             exit_on_close_request: false,
             ..Default::default()
         })
-        .subscription(|_| {
+        .subscription(|app| {
             iced::Subscription::batch([
+                if app.auto_target().is_some(){
+                    iced::time::every(std::time::Duration::from_millis(750)).map(|_|Msg::CheckReading)
+                }else{iced::Subscription::none()},
                 #[cfg(not(target_arch = "wasm32"))]
                 iced::event::listen_with(|event, _, _| match event {
                     // Right Ctrl is a non-repeating modifier. On X11 the first
@@ -1800,9 +1843,7 @@ fn main() -> iced::Result {
                     }) => {
                         Some(Msg::TalkKey(false))
                     }
-                    #[cfg(target_os="linux")]
                     iced::Event::Window(iced::window::Event::Unfocused)=>Some(Msg::WindowFocus(false)),
-                    #[cfg(target_os="linux")]
                     iced::Event::Window(iced::window::Event::Focused)=>Some(Msg::WindowFocus(true)),
                     iced::Event::Window(iced::window::Event::FileDropped(path)) => {
                         Some(Msg::DropPaths(vec![path]))

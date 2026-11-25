@@ -1,6 +1,6 @@
 //! Search the device's gomuks database. Hits are canonical messages, not edit
 //! events. Only explicit navigation from a hit may fetch network context.
-mod bookmark;
+pub(crate) mod bookmark;
 use crate::{
     App, Msg, Request, edits,
     rooms::{self, Room, items},

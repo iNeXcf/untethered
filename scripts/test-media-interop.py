@@ -134,6 +134,7 @@ def main():
     args.add_argument("--room-alerts",action="store_true",help="Verify per-room push rules and visible direct-mention notifications on a private Linux desktop")
     args.add_argument("--browser-alerts",action="store_true",help="Verify a real browser notification from a hidden Untethered tab in a muted encrypted room")
     args.add_argument("--account-dnd",action="store_true",help="Toggle account-wide DND between Linux and Chromium; check both desktops and their persistent Matrix settings")
+    args.add_argument("--read-state",action="store_true",help="Verify private read markers, manual reminders and unread badges between two actual Linux and web devices")
     args.add_argument("--dnd-ring",action="store_true",help="Verify active and new Linux incoming ringtone suppression while accepting a real encrypted DM under DND")
     args.add_argument("--room-permissions",action="store_true",help="Restrict and restore room posting from Iced; check the member's actual Synapse send response")
     args.add_argument("--room-ban",action="store_true",help="Ban, unban and reinvite a member from Untethered; verify Synapse join enforcement and encrypted delivery")
@@ -171,7 +172,7 @@ def main():
     if args.native_dm and args.unsupported_dm:args.error("run --native-dm and --unsupported-dm separately")
     if args.multi_device_ring:args.incoming_dm=True
     if args.dnd_ring:args.incoming_dm=True
-    if args.account_dnd:args.browser_alerts=True
+    if args.account_dnd or args.read_state:args.browser_alerts=True
     if args.desktop_dm or args.incoming_dm or args.voice_room: args.rtc_audio=True
     assert BACKEND.is_file(), "Run scripts/rust-client.sh once or set UNTETHERED_BACKEND"
     if args.federated_ban:
@@ -230,7 +231,7 @@ federation_domain_whitelist: []
                 from qa_browser_alerts import check_browser_alerts
                 wp=free_port()
                 with service([sys.executable,"-m","http.server",str(wp),"--bind","127.0.0.1","--directory",str(dist)],tmp):
-                    check_browser_alerts(tmp,hs,f"http://127.0.0.1:{wp}",BACKEND,seed,http,dnd=args.account_dnd)
+                    check_browser_alerts(tmp,hs,f"http://127.0.0.1:{wp}",BACKEND,seed,http,dnd=args.account_dnd,reading=args.read_state)
                 return
             if args.linux_upgrade:
                 from qa_linux_upgrade import check_upgrade

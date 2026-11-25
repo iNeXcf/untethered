@@ -42,8 +42,6 @@ pub struct Change {
 #[derive(Default)]
 pub struct Alerts {
     pub panel: bool,
-    #[cfg(target_os = "linux")]
-    pub focused: bool,
     #[cfg(target_arch = "wasm32")]
     pub asking: bool,
     pub ready: bool,
@@ -67,11 +65,7 @@ struct Notice {
 }
 impl Alerts {
     pub fn reset(&mut self) {
-        *self = Self {
-            #[cfg(target_os = "linux")]
-            focused: self.focused,
-            ..Default::default()
-        };
+        *self = Self::default();
     }
     fn rules(&mut self, data: &Value) {
         if data["clear_state"] == true {
@@ -376,14 +370,8 @@ impl App {
             return;
         }
         if let Some(room) = self.live.list.get(id) {
-            #[cfg(target_os = "linux")]
-            let focused = self.alerts.focused;
-            #[cfg(target_arch = "wasm32")]
-            let focused = web_sys::window()
-                .and_then(|w| w.document())
-                .is_some_and(|d| !d.hidden() && d.has_focus().unwrap_or(false));
             let reading = self.quiet_alerts()
-                || focused
+                || self.reading_focused()
                     && self.selected == id
                     && !self.account
                     && self.mentions.is_none()
