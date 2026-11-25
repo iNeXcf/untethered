@@ -15,7 +15,7 @@ from qa_native_paste import child,isolated_env,start_display,wait_for
 from qa_room_alerts import NotificationDesktop
 
 
-def check_browser_alerts(tmp,hs,web,backend,seed,http):
+def check_browser_alerts(tmp,hs,web,backend,seed,http,*,dnd=False):
     receiver,hdr=seed(tmp,hs)
     other=tmp/"sender";other.mkdir()
     sender,sh=seed(other,hs)
@@ -113,20 +113,20 @@ def check_browser_alerts(tmp,hs,web,backend,seed,http):
             except Exception:
                 print("Tab visibility/focus:",[p.evaluate("[document.visibilityState,document.hasFocus()]") for p in (page,other_tab)],flush=True);raise
             assert other_tab.evaluate("!document.hidden")
-        def send(body,target,hidden,expected):
+        def send(body,target,hidden,expected,in_room=room):
             eid=peer.evaluate("""async ([r,b,u])=>(await window.mxMatrixClientPeg.get().sendEvent(r,'m.room.message',{
-                body:b,msgtype:'m.text','m.mentions':u?{user_ids:[u]}:{}})).event_id""",[room,body,target])
-            wire=http("GET",api+"/event/"+quote(eid,safe=""),headers=hdr).json()
+                body:b,msgtype:'m.text','m.mentions':u?{user_ids:[u]}:{}})).event_id""",[in_room,body,target])
+            wire=http("GET",hs+"/_matrix/client/v3/rooms/"+quote(in_room,safe="")+"/event/"+quote(eid,safe=""),headers=hdr).json()
             assert wire["type"]=="m.room.encrypted" and wire["content"]["algorithm"]=="m.megolm.v1.aes-sha2"
             page.wait_for_function("id=>!!window.qaSeen[id]",arg=eid,polling=200,timeout=35000)
             seen=page.evaluate("id=>window.qaSeen[id]",eid)
             assert seen.get("live"),"expected incremental sync or fresh decryption"
-            assert (seen["body"],seen["room"],seen["sender"],seen["hidden"],seen["notify"])==(body,room,them,hidden,expected),seen
+            assert (seen["body"],seen["room"],seen["sender"],seen["hidden"],seen["notify"])==(body,in_room,them,hidden,expected),seen
             assert seen["mentions"].get("user_ids",[])==([target] if target else [])
             return eid
         hide()
         assert desk.count()==0
-        send("Before permission",me,True,True)
+        if not dnd:send("Before permission",me,True,True)
         page.bring_to_front()
         click_word("enable","browser")
         def screen_words():
@@ -144,6 +144,10 @@ def check_browser_alerts(tmp,hs,web,backend,seed,http):
         print("Clicked Enable browser notifications and allowed the real Chromium site prompt on the disposable origin.",flush=True)
         hide()
         assert desk.count()==0
+        if dnd:
+            from qa_account_dnd import verify_dnd
+            verify_dnd(stack,tmp,hs,backend,hdr,http,me,room,page,peer,words,click_word,send,hide,desk)
+            return
         send("Quiet orchard",None,True,False)
         send("Another recipient",them,True,False)
         mention=send("Browser beacon",me,True,True)

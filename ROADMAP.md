@@ -230,6 +230,15 @@
   The upgraded client also decrypted a fresh message after Element rotated
   its Megolm session. Neither sign-in nor recovery was repeated.
 
+- **Account-wide Do Not Disturb:** [Linux + Chromium acceptance](scripts/room-alerts.md#verify-account-wide-do-not-disturb)
+  enabled DND on Linux, restarted both receivers, then disabled it from
+  Chromium. Neither showed a popup for decrypted mentions or ordinary
+  chat during DND. Each showed the baseline and both restored notifications;
+  the mentions inbox retained the silenced mentions. The full Matrix rule
+  set matched its baseline after resuming. A separate Linux call test stopped
+  an already audible ringtone and answered a new silent call, with 480/960 Hz
+  received on the respective peers and both microphone tracks encrypted.
+
 ## What parity means
 
 A small community should be able to move its everyday conversations here: find a server and its channels, talk in DMs, drop a screenshot, join friends in voice, share a screen, catch up on mentions, and moderate its space. Test those workflows side by side with Discord. A button that looks right but doesn't work with another Matrix client isn't parity.

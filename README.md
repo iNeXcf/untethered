@@ -55,6 +55,13 @@ Matrix account. While Untethered is running, alerts go to the desktop
 notification service; the room you’re currently viewing in a focused
 window doesn’t also show a popup.
 
+**Do Not Disturb:** Click your account at the bottom of the sidebar and choose
+**Pause alerts**. It silences message notifications across your Matrix account,
+including direct mentions. Messages still arrive, and the mentions inbox still
+updates. On Linux you can answer or decline an incoming call without a ringtone.
+Choose **Resume alerts** on either Linux or web to restore the existing room
+settings. [Cross-device and call tests](scripts/room-alerts.md#verify-account-wide-do-not-disturb).
+
 **Mentions inbox:** Choose **Mentions** in the sidebar to see messages that
 address your Matrix ID across joined rooms. Select an entry to open that
 exact message in context. The inbox uses history readable on this device,

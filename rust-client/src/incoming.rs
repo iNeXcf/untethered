@@ -124,10 +124,18 @@ pub struct Inbox {
     pub ringing: Option<(Offer, Sender<()>)>,
     pub handled: Option<(String, &'static str)>,
     playback: Option<Receiver<()>>,
+    mute: Option<Sender<()>>,
     seen: BTreeMap<(String, String), u64>,
     checking: Option<Offer>,
     // Late decryption is eligible only for events observed in the live timeline.
     waiting: BTreeMap<String, u64>,
+}
+impl Inbox {
+    pub(super) fn silence_chime(&mut self) {
+        if let Some(mute) = self.mute.take() {
+            mute.close();
+        }
+    }
 }
 impl App {
     pub(super) fn clear_ring(&mut self) {
@@ -135,6 +143,7 @@ impl App {
             stop.close();
         }
         self.inbox.playback = None;
+        self.inbox.silence_chime();
         self.inbox.checking = None;
         self.inbox.handled = None;
     }
@@ -324,12 +333,19 @@ impl App {
         self.inbox.ringing = Some((i, stop));
     }
     pub(super) fn start_ringtone(&mut self) -> Task<Msg> {
+        let quiet = self.quiet_alerts();
         let (Some((i, _)), Some(recv)) = (&self.inbox.ringing, self.inbox.playback.take()) else {
             return Task::none();
         };
         let id = i.event.clone();
         let duration = Duration::from_millis(i.expires.saturating_sub(now()));
-        Task::perform(ringtone(duration, recv), move |()| {
+        let (mute, muted) = async_channel::bounded(1);
+        if quiet {
+            mute.close();
+        } else {
+            self.inbox.mute = Some(mute);
+        }
+        Task::perform(ringtone(duration, recv, muted), move |()| {
             Msg::RingExpired(id.clone())
         })
     }
@@ -361,7 +377,7 @@ impl App {
         }
     }
 }
-async fn ringtone(duration: Duration, stop: Receiver<()>) {
+async fn ringtone(duration: Duration, stop: Receiver<()>, muted: Receiver<()>) {
     let sound = async {
         let mut p = Command::new("pacat")
             .args([
@@ -403,8 +419,12 @@ async fn ringtone(duration: Duration, stop: Receiver<()>) {
     };
     let timeout = time::sleep(duration);
     tokio::pin!(timeout);
-    tokio::select! {biased;_=stop.recv()=>(),_= &mut timeout=>(),_=sound=>{
-        // If playback is unavailable the visual prompt still lasts until expiry.
+    // Drop the sound future (and its pacat process) as soon as DND starts,
+    // independently of the invite's accept/decline controls and expiry timer.
+    let playback = async {
+        tokio::select! {biased;_=muted.recv()=>(),_=sound=>()}
+    };
+    tokio::select! {biased;_=stop.recv()=>(),_= &mut timeout=>(),_=playback=>{
         tokio::select!{_=stop.recv()=>(),_=timeout=>()}
     }}
 }

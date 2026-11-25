@@ -81,7 +81,7 @@ rtc:
         yield secret
 
 
-def test(tmp, hs, name, jwt, root, backend, seed, http, service, *, desktop=False,incoming=False,controls=False,devices=False,reconnect=False,turn=False,group=False,share=False,camera=False,ptt=False,layout=False,multi_ring=False):
+def test(tmp, hs, name, jwt, root, backend, seed, http, service, *, desktop=False,incoming=False,controls=False,devices=False,reconnect=False,turn=False,group=False,share=False,camera=False,ptt=False,layout=False,multi_ring=False,dnd_ring=False):
     if group:
         from qa_voice_room import test_group
         with call_services(tmp,name,jwt,service) as secret:
@@ -140,7 +140,11 @@ def test(tmp, hs, name, jwt, root, backend, seed, http, service, *, desktop=Fals
             if multi_ring:
                 from qa_multi_device_ring import Sibling
                 sibling=Sibling(stack,tmp,root,backend,native,alice)
-            desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,incoming=incoming,controls=controls,devices=devices,network_ports=ports,relay_links=links,sibling=sibling)
+            def set_dnd(on):
+                endpoint=hs+"/_matrix/client/v3/pushrules/global/override/.m.rule.master/enabled"
+                http("PUT",endpoint,headers=hdr,json={"enabled":on})
+                assert http("GET",endpoint,headers=hdr).json()=={"enabled":on}
+            desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,incoming=incoming,controls=controls,devices=devices,network_ports=ports,relay_links=links,sibling=sibling,set_dnd=set_dnd if dnd_ring else None)
             return
         sockets=[]
         def watch_sfu(ws):

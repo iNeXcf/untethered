@@ -65,6 +65,8 @@ enum Msg {
     NotificationPanel,
     #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
     NotifyMode(String, notifications::Mode),
+    #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
+    SetDnd(bool),
     #[cfg(target_os = "linux")]
     WindowFocus(bool),
     #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
@@ -206,6 +208,8 @@ impl std::fmt::Debug for Msg {
 enum Request {
     #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
     NotifyRule(notifications::Change),
+    #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
+    Dnd(bool, u64),
     #[cfg(target_os = "linux")]
     RingState(incoming::Offer),
     #[cfg(target_os = "linux")]
@@ -764,6 +768,8 @@ impl App {
                     self.status = match p {
                         #[cfg(any(target_os="linux",target_arch="wasm32"))]
                         Request::NotifyRule(_)=>"Could not save the room notification setting. Try again.",
+                        #[cfg(any(target_os="linux",target_arch="wasm32"))]
+                        Request::Dnd(..)=>"Could not change Do Not Disturb. Check the connection and try again.",
                         #[cfg(target_os="linux")]
                         Request::RingState(i)=>{self.present_ring(i,&Value::Null);return}
                         #[cfg(target_os="linux")]
@@ -809,6 +815,8 @@ impl App {
                 match p {
                     #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
                     Request::NotifyRule(c) => self.saved_notifications(c),
+                    #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
+                    Request::Dnd(on, revision) => self.saved_dnd(on, revision),
                     #[cfg(target_os = "linux")]
                     Request::RingState(i) => self.present_ring(i, data),
                     #[cfg(target_os = "linux")]
@@ -930,6 +938,8 @@ impl App {
             Msg::NotificationPanel => self.alerts.panel = !self.alerts.panel,
             #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
             Msg::NotifyMode(room, mode) => self.set_notifications(room, mode),
+            #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
+            Msg::SetDnd(on) => self.change_dnd(on),
             #[cfg(target_os = "linux")]
             Msg::WindowFocus(focused) => {
                 self.alerts.focused = focused;

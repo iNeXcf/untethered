@@ -54,10 +54,14 @@ class NotificationDesktop:
     def popup(self,text,appname="Untethered",activate=False,on_visible=None):
         def visible():
             if self.run(self.ctl,"count","displayed")!="1":return False
+            win=self.run("xdotool","search","--onlyvisible","--name","^Dunst$")
+            if not win:return False
+            geom=dict(line.split("=",1) for line in self.run("xdotool","getwindowgeometry","--shell",win).splitlines())
+            x,y,w,h=(int(geom[k]) for k in ("X","Y","WIDTH","HEIGHT"))
             raw=sp.check_output(["import","-window","root","png:-"],env=self.env,timeout=5)
-            im=Image.open(io.BytesIO(raw));im=im.crop((im.width-560,0,im.width,260))
-            buf=io.BytesIO();im.resize((1120,520)).save(buf,"PNG")
-            ocr=sp.check_output(["tesseract","stdin","stdout","--psm","11"],input=buf.getvalue(),stderr=sp.DEVNULL).decode()
+            im=Image.open(io.BytesIO(raw)).crop((x,y,x+w,y+h))
+            buf=io.BytesIO();im.resize((2*w,2*h)).save(buf,"PNG")
+            ocr=sp.check_output(["tesseract","stdin","stdout","--psm","6"],input=buf.getvalue(),stderr=sp.DEVNULL).decode()
             return text.lower() in " ".join(ocr.lower().split())
         wait_for("visible Dunst popup: "+text,visible,15)
         if on_visible:on_visible()

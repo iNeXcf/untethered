@@ -587,18 +587,23 @@ impl App {
         } else {
             "Preview user"
         };
+        let account_label = if self.logged_in {
+            "Matrix account"
+        } else {
+            "Local preview"
+        };
+        #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
+        let account_label = if self.logged_in && self.alerts.dnd == Some(true) {
+            "Do Not Disturb"
+        } else {
+            account_label
+        };
         let user = button(
             row![
                 avatar(name, 31.),
                 column![
                     text(name).size(14).font(BOLD),
-                    text(if self.logged_in {
-                        "Matrix account"
-                    } else {
-                        "Local preview"
-                    })
-                    .size(11)
-                    .color(MUTED)
+                    text(account_label).size(11).color(MUTED)
                 ]
             ]
             .spacing(10)
@@ -1544,6 +1549,30 @@ impl App {
                         .on_press_maybe(self.connected.then_some(Msg::CheckCalls)),
                 )
                 .push(text(&self.rtc_status).size(13));
+            #[cfg(any(target_os = "linux", target_arch = "wasm32"))]
+            {
+                let dnd = self.alerts.dnd;
+                let label = if self.changing_dnd() {
+                    "Saving…"
+                } else {
+                    match dnd {
+                        Some(false) => "Pause alerts",
+                        Some(true) => "Resume alerts",
+                        None => "Unavailable",
+                    }
+                };
+                let control = button(text(label).size(14))
+                    .style(nav(dnd == Some(true)))
+                    .on_press_maybe(
+                        dnd.filter(|_| self.connected && !self.changing_dnd())
+                            .map(|on| Msg::SetDnd(!on)),
+                    );
+                form=form.push(column![
+                    row![text("Do Not Disturb").font(BOLD).width(Fill), control].align_y(Center),
+                    text("Pauses Matrix message notifications across your account and silences Untethered’s incoming ringtone. Calls can still be answered.")
+                        .size(13).color(MUTED)
+                ].spacing(4));
+            }
         }
         if (!self.logged_in || self.verified) && !self.status.is_empty() {
             form = form.push(text(&self.status).size(14).color(MUTED));

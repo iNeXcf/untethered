@@ -133,6 +133,8 @@ def main():
     args.add_argument("--room-search",action="store_true",help="Find an older edited reply in the local room cache and verify the exact reading position on return")
     args.add_argument("--room-alerts",action="store_true",help="Verify per-room push rules and visible direct-mention notifications on a private Linux desktop")
     args.add_argument("--browser-alerts",action="store_true",help="Verify a real browser notification from a hidden Untethered tab in a muted encrypted room")
+    args.add_argument("--account-dnd",action="store_true",help="Toggle account-wide DND between Linux and Chromium; check both desktops and their persistent Matrix settings")
+    args.add_argument("--dnd-ring",action="store_true",help="Verify active and new Linux incoming ringtone suppression while accepting a real encrypted DM under DND")
     args.add_argument("--room-permissions",action="store_true",help="Restrict and restore room posting from Iced; check the member's actual Synapse send response")
     args.add_argument("--room-ban",action="store_true",help="Ban, unban and reinvite a member from Untethered; verify Synapse join enforcement and encrypted delivery")
     args.add_argument("--room-kick",action="store_true",help="Kick a member from a public room; verify denied posting, invitation-free rejoin and encrypted delivery")
@@ -164,6 +166,8 @@ def main():
     if args.window_share or args.room_camera or args.room_ptt or args.room_layout: args.voice_room=True
     if args.call_controls or args.call_devices or args.call_reconnect or args.call_turn: args.desktop_dm=True
     if args.multi_device_ring:args.incoming_dm=True
+    if args.dnd_ring:args.incoming_dm=True
+    if args.account_dnd:args.browser_alerts=True
     if args.desktop_dm or args.incoming_dm or args.voice_room: args.rtc_audio=True
     assert BACKEND.is_file(), "Run scripts/rust-client.sh once or set UNTETHERED_BACKEND"
     if args.federated_ban:
@@ -221,7 +225,7 @@ federation_domain_whitelist: []
                 from qa_browser_alerts import check_browser_alerts
                 wp=free_port()
                 with service([sys.executable,"-m","http.server",str(wp),"--bind","127.0.0.1","--directory",str(dist)],tmp):
-                    check_browser_alerts(tmp,hs,f"http://127.0.0.1:{wp}",BACKEND,seed,http)
+                    check_browser_alerts(tmp,hs,f"http://127.0.0.1:{wp}",BACKEND,seed,http,dnd=args.account_dnd)
                 return
             if args.linux_upgrade:
                 from qa_linux_upgrade import check_upgrade
@@ -237,7 +241,7 @@ federation_domain_whitelist: []
                 test_replies(tmp,hs,ROOT,BACKEND,seed,http,gateway_port,reactions=args.reactions,room_search=args.room_search,alerts=args.room_alerts,permissions=args.room_permissions,ban=args.room_ban,kick=args.room_kick,report=args.message_report,mentions=args.mentions_inbox)
                 return
             if args.rtc_audio:
-                audio_test(tmp,hs,server_name,rtc_service,ROOT,BACKEND,seed,http,service,desktop=args.desktop_dm or args.incoming_dm,incoming=args.incoming_dm,controls=args.call_controls,devices=args.call_devices,reconnect=args.call_reconnect,turn=args.call_turn,group=args.voice_room,share=args.window_share,camera=args.room_camera,ptt=args.room_ptt,layout=args.room_layout,multi_ring=args.multi_device_ring)
+                audio_test(tmp,hs,server_name,rtc_service,ROOT,BACKEND,seed,http,service,desktop=args.desktop_dm or args.incoming_dm,incoming=args.incoming_dm,controls=args.call_controls,devices=args.call_devices,reconnect=args.call_reconnect,turn=args.call_turn,group=args.voice_room,share=args.window_share,camera=args.room_camera,ptt=args.room_ptt,layout=args.room_layout,multi_ring=args.multi_device_ring,dnd_ring=args.dnd_ring)
                 return
             if args.rtc_membership:
                 from qa_rtc_membership import test

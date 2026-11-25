@@ -58,3 +58,35 @@ Dunst’s history must identify Chromium as the sender. The fixture activates
 the popup, checks the tab regains focus, reloads, and sends another ordinary
 message in the background. Across all controls there must be exactly one
 `org.freedesktop.Notifications.Notify` call and one archived notification.
+
+## Verify account-wide Do Not Disturb
+
+With both frontends built and the same dependencies as above, run
+`--account-dnd` instead of `--browser-alerts`. Two devices of the same
+Matrix account run the native Linux and Chromium clients, each with its
+own X display, session bus and Dunst instance. Element uses a separate
+sender account. The Chromium tab is hidden and the native window unfocused
+when test messages arrive. The test reads the actual decrypted events from
+the native cache and browser worker, counts `Notify` calls, and reads the
+positive notifications on both screens and in both daemon histories.
+
+| Step | Result on each device |
+|---|---|
+| Direct mention in a room set to **Mute ordinary** | One baseline popup |
+| Linux **Account → Pause alerts** | No popup for a direct mention in the muted room or ordinary chat in the other encrypted room |
+| Restart the native client and reload Chromium | DND remains on. Another direct mention produces no popup. Both silenced mentions appear in the native inbox. |
+| Chromium **Account → Resume alerts** | A fresh direct mention and ordinary chat in the other room each produce one popup. Ordinary chat in the muted room still produces none. |
+
+Required total: **three** calls and three archived popups per receiver.
+The only change to Synapse’s `m.push_rules` is the `enabled` flag of the
+standard suppress-all `.m.rule.master` override. Resuming restores the
+entire prior rule set. Untethered leaves a customized master action alone.
+
+**Ringtones:** With the [Linux DM call test environment](../experiments/rtc-audio/README.md#replay-the-linux-desktop-dm-call),
+run `sh experiments/rtc-audio/run_element.sh --dnd-ring`. While a real
+Element call is ringing, another session enables DND. The private speaker
+must fall silent for at least 800 ms, the playback stream must close, and
+the **Accept** and **Decline** controls must remain. A new call under DND
+must create zero ringtone streams. Accepting it opens one microphone,
+delivers 480 Hz to Element and 960 Hz back to Linux, and yields two GCM
+microphone tracks at the SFU.

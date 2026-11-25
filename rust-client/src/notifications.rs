@@ -47,6 +47,9 @@ pub struct Alerts {
     #[cfg(target_arch = "wasm32")]
     pub asking: bool,
     pub ready: bool,
+    // None if the homeserver hasn't supplied an unmodified suppress-all master rule.
+    pub dnd: Option<bool>,
+    dnd_revision: u64,
     rules: BTreeMap<String, (Mode, bool)>,
     recent: VecDeque<String>,
     waiting: VecDeque<(String, String, Instant)>,
@@ -73,6 +76,7 @@ impl Alerts {
     fn rules(&mut self, data: &Value) {
         if data["clear_state"] == true {
             self.ready = false;
+            self.set_dnd(None);
             self.rules.clear();
             self.waiting.clear();
         }
@@ -81,6 +85,22 @@ impl Alerts {
             return;
         };
         self.ready = true;
+        self.set_dnd(
+            rules
+                .get("override")
+                .and_then(Value::as_array)
+                .and_then(|rs| {
+                    rs.iter().find(|r| {
+                        r["rule_id"] == MASTER
+                            && r["default"] == true
+                            && r["conditions"].as_array().is_some_and(Vec::is_empty)
+                            && r["actions"]
+                                .as_array()
+                                .is_some_and(|a| a.is_empty() || a.as_slice() == ["dont_notify"])
+                    })
+                })
+                .and_then(|r| r["enabled"].as_bool()),
+        );
         self.rules.clear();
         for r in rules
             .get("room")
@@ -108,6 +128,16 @@ impl Alerts {
             .get(room)
             .filter(|(_, on)| *on)
             .map_or(Mode::Default, |(mode, _)| *mode)
+    }
+    fn set_dnd(&mut self, value: Option<bool>) {
+        if self.dnd != value {
+            self.dnd_revision += 1;
+            self.dnd = value;
+        }
+        if value == Some(true) {
+            self.waiting.clear();
+            self.outgoing.clear();
+        }
     }
     fn observe(
         &mut self,
@@ -228,7 +258,51 @@ fn single_line(s: &str, limit: usize) -> String {
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect()
 }
+const MASTER: &str = ".m.rule.master";
 impl App {
+    pub fn changing_dnd(&self) -> bool {
+        self.pending.values().any(|r| matches!(r, Request::Dnd(..)))
+    }
+    pub fn quiet_alerts(&self) -> bool {
+        self.alerts.dnd == Some(true)
+            || self
+                .pending
+                .values()
+                .any(|r| matches!(r, Request::Dnd(true, _)))
+    }
+    pub fn change_dnd(&mut self, on: bool) {
+        if !self.connected
+            || !self.logged_in
+            || !self.verified
+            || self.alerts.dnd != Some(!on)
+            || self.changing_dnd()
+        {
+            return;
+        }
+        self.rpc(
+            "update_push_rule",
+            json!({"kind":"override","rule_id":MASTER,"action":if on{"enable"}else{"disable"}}),
+            Request::Dnd(on, self.alerts.dnd_revision),
+        );
+        if on && self.pending.contains_key(&self.seq) {
+            self.apply_quiet();
+        }
+    }
+    fn apply_quiet(&mut self) {
+        self.alerts.outgoing.clear();
+        self.alerts.waiting.clear();
+        #[cfg(target_os = "linux")]
+        self.inbox.silence_chime();
+    }
+    pub fn saved_dnd(&mut self, on: bool, revision: u64) {
+        // A later change synchronized from another device wins over a late RPC response.
+        if revision == self.alerts.dnd_revision {
+            self.alerts.set_dnd(Some(on));
+        }
+        if self.quiet_alerts() {
+            self.apply_quiet();
+        }
+    }
     pub fn notifications_pending(&self, room: &str) -> bool {
         self.pending
             .values()
@@ -282,6 +356,9 @@ impl App {
     }
     pub fn notifications_sync(&mut self, data: &Value) {
         self.alerts.rules(data);
+        if self.alerts.dnd == Some(true) {
+            self.apply_quiet();
+        }
         if data["clear_state"] == true
             || data["catchup"] == true
             || data["since"].as_str().is_none_or(str::is_empty)
@@ -305,19 +382,20 @@ impl App {
             let focused = web_sys::window()
                 .and_then(|w| w.document())
                 .is_some_and(|d| !d.hidden() && d.has_focus().unwrap_or(false));
-            let reading = focused
-                && self.selected == id
-                && !self.account
-                && self.mentions.is_none()
-                && self.search.is_none()
-                && self.original.is_none();
+            let reading = self.quiet_alerts()
+                || focused
+                    && self.selected == id
+                    && !self.account
+                    && self.mentions.is_none()
+                    && self.search.is_none()
+                    && self.original.is_none();
             self.alerts
                 .observe(id, room, &self.matrix_id, delta, late, reading);
         }
     }
     pub fn send_alerts(&mut self) -> Task<Msg> {
         let notices = std::mem::take(&mut self.alerts.outgoing);
-        if notices.is_empty() {
+        if notices.is_empty() || self.quiet_alerts() {
             return Task::none();
         }
         #[cfg(target_arch = "wasm32")]
@@ -358,6 +436,34 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn dnd_leaves_custom_master_actions_alone_and_does_not_override_newer_sync() {
+        let (tx, rx) = async_channel::bounded(2);
+        let mut app = App::new(tx);
+        app.logged_in = true;
+        app.verified = true;
+        app.connected = true;
+        let sync = |on, actions: Value| {
+            json!({"account_data":{"m.push_rules":{"content":{"global":{"override":[{
+            "rule_id":MASTER,"default":true,"conditions":[],"actions":actions,"enabled":on}]}}}}})
+        };
+        app.notifications_sync(&sync(false, json!(["notify"])));
+        app.change_dnd(true);
+        assert!(rx.is_empty() && app.alerts.dnd.is_none());
+        app.notifications_sync(&sync(false, json!([])));
+        app.change_dnd(true);
+        let id = rx.try_recv().unwrap().into_rpc()["request_id"].clone();
+        assert!(app.quiet_alerts());
+        app.notifications_sync(&sync(true, json!([])));
+        app.notifications_sync(&sync(false, json!([])));
+        app.frame(json!({"command":"response","request_id":id}));
+        assert_eq!(app.alerts.dnd, Some(false));
+        assert!(!app.quiet_alerts());
+        app.change_dnd(true);
+        let id = rx.try_recv().unwrap().into_rpc()["request_id"].clone();
+        app.frame(json!({"command":"error","request_id":id}));
+        assert!(!app.quiet_alerts() && !app.changing_dnd());
+    }
     #[test]
     fn only_live_candidates_notify_once_when_keys_arrive() {
         let (tx, _) = async_channel::bounded(4);
