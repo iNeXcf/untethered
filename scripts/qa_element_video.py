@@ -80,6 +80,10 @@ def verify(stack,tmp,root,backend,page,room,alice,bob,secret,incoming):
                 assert not readers()
                 toast.get_by_role("button",name="Join",exact=True).click()
             wait_for("two members",lambda:set(roster())=={alice,bob},25)
+            signals=page.evaluate("""r=>window.mxMatrixClientPeg.get().getRoom(r).getLiveTimeline().getEvents()
+                .filter(e=>e.getType()==='org.matrix.msc4075.rtc.notification' && e.getContent().notification_type==='ring')
+                .map(e=>[e.getSender(),e.getWireType(),e.getContent()['m.call.intent'],e.getId()])""",room)
+            assert len(signals)==1 and signals[0][:3]==[bob if incoming else alice,"m.room.encrypted","video"],signals
             w=wait_for("Element Call widget",widget)
             # Depending on the incoming-call settings Element can answer with camera off.
             if incoming:
@@ -117,7 +121,10 @@ def verify(stack,tmp,root,backend,page,room,alice,bob,secret,incoming):
             assert all(resumed[u,"MICROPHONE"]==before[u,"MICROPHONE"] for u in (alice,bob))
             desk.click("stop")
             wait_for("native camera closed",lambda:not readers() and not cam(alice),10)
-            wait_for("audio remains live",audio)
+            spectra=w.evaluate("window.qaAudioStats().then(s=>s.spectra)")
+            desk.windows.clear()
+            wait_for("fresh audio after stopping camera",lambda:audio() and w.evaluate(
+                "start=>window.qaAudioStats().then(s=>s.spectra-start>=10)",spectra))
             if incoming:desk.click("hang")
             else:w.get_by_role("button",name="End call",exact=True).click()
             wait_for("empty call roster and no SFU tracks",lambda:not roster() and not tracks(),25)
