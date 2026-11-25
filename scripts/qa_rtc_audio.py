@@ -81,7 +81,7 @@ rtc:
         yield secret
 
 
-def test(tmp, hs, name, jwt, root, backend, seed, http, service, *, desktop=False,incoming=False,controls=False,devices=False,reconnect=False,turn=False,group=False,share=False,camera=False,ptt=False,layout=False,multi_ring=False,dnd_ring=False,native_dm=False,unsupported_dm=False,dm_video=False):
+def test(tmp, hs, name, jwt, root, backend, seed, http, service, *, desktop=False,incoming=False,controls=False,devices=False,reconnect=False,turn=False,group=False,share=False,camera=False,ptt=False,layout=False,multi_ring=False,dnd_ring=False,native_dm=False,unsupported_dm=False,dm_video=False,element_video=False):
     if group:
         from qa_voice_room import test_group
         with call_services(tmp,name,jwt,service) as secret:
@@ -104,7 +104,7 @@ def test(tmp, hs, name, jwt, root, backend, seed, http, service, *, desktop=Fals
     power["events"]["org.matrix.msc3401.call.member"]=0
     power["events"]["org.matrix.msc4075.rtc.notification"]=0
     power["events"]["org.matrix.msc4143.rtc.slot"]=0
-    if incoming:
+    if incoming or element_video:
         power.setdefault("notifications",{})["room"]=0
     http("PUT",api+"/state/m.room.power_levels",headers=hdr,json=power)
     if controls:
@@ -128,7 +128,8 @@ def test(tmp, hs, name, jwt, root, backend, seed, http, service, *, desktop=Fals
     wav=tmp/"element-mic.wav"
     with wave.open(str(wav),"wb") as w:
         w.setparams((1,2,48000,0,"NONE","not compressed"))
-        w.writeframes(array.array("h",(round(8500*math.sin(i*math.tau*960/48000)) for i in range(48000))).tobytes())
+        hz=670 if element_video else 960
+        w.writeframes(array.array("h",(round(8500*math.sin(i*math.tau*hz/48000)) for i in range(48000))).tobytes())
     with call_services(tmp,name,jwt,service,turn) as secret, ExitStack() as stack:
         web=stack.enter_context(element_server(hs,server_name=name,rtc_service=jwt))
         links=None
@@ -141,13 +142,22 @@ def test(tmp, hs, name, jwt, root, backend, seed, http, service, *, desktop=Fals
         leaf=x509.load_pem_x509_certificate((tmp/"tls.crt").read_bytes())
         spki=leaf.public_key().public_bytes(serialization.Encoding.DER,serialization.PublicFormat.SubjectPublicKeyInfo)
         pin=base64.b64encode(hashlib.sha256(spki).digest()).decode()
-        browser=pw.chromium.launch(executable_path=chrome,args=["--use-fake-device-for-media-stream",
+        video_flags=[]
+        if element_video:
+            from qa_element_video import y4m
+            camera_file=tmp/"element-camera.y4m";y4m(camera_file)
+            video_flags=["--use-file-for-fake-video-capture="+str(camera_file)]
+        browser=pw.chromium.launch(executable_path=chrome,args=[*video_flags,"--use-fake-device-for-media-stream",
             "--ignore-certificate-errors-spki-list="+pin,"--use-fake-ui-for-media-stream","--mute-audio",
             "--use-file-for-fake-audio-capture="+str(wav),"--autoplay-policy=no-user-gesture-required"])
         stack.callback(browser.close)
         ctx=browser.new_context(permissions=["microphone","camera"])
         ctx.add_init_script(path=root/"scripts/qa_rtc_pcm.js")
         page=login_element(ctx,web,peer,room)
+        if element_video:
+            from qa_element_video import verify
+            verify(stack,tmp,root,backend,page,room,alice,bob,secret,incoming)
+            return
         if desktop:
             from qa_desktop_dm import desktop_call
             ports=[urlsplit(hs).port,urlsplit(jwt).port,urlsplit("https://"+name).port,18820] if reconnect else None

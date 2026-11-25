@@ -75,6 +75,31 @@ live. Hanging up releases both capture processes and all tracks. This test
 covers native Linux peers with portal cameras, not a physical webcam or
 Element video interoperability.
 
+### Verify video with Element
+
+Use the Linux DM video test environment plus the extracted Element Web
+distribution (`ELEMENT_WEB_DIR`). Run each direction with fresh devices:
+
+```sh
+sh experiments/rtc-audio/run_element.sh --element-video
+sh experiments/rtc-audio/run_element.sh --element-video --incoming-dm
+```
+
+Untethered uses a Camera-portal-authorized PipeWire source on a private KWin
+desktop. Element Web 1.12.35 runs its bundled Element Call widget in Chromium
+with a different Y4M camera pattern. Each test checks the rendered remote
+image on **both** screens, not a local preview or a published-track flag.
+In both directions, two source patterns appeared at 982 pixels wide in
+Element and 498 pixels wide in Untethered. LiveKit reported GCM on both
+cameras and both microphones. Element measured the native 410 Hz mic on its
+inbound audio track and Linux measured the 670 Hz return tone at its speaker.
+
+Turning off the Element camera must remove its stale picture in Untethered
+and show **No incoming video** while the native camera stays on. Turning it
+back on must deliver fresh video with the original microphones. Stopping the
+native camera must release its capture process, and hangup must empty the
+MatrixRTC roster and release the media tracks.
+
 ### Verify three-person voice rooms
 
 Build the Linux desktop and use the same desktop test requirements above:

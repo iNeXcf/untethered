@@ -197,6 +197,11 @@ your own live preview beside them. Click the small tile to swap views.
 **Stop camera** keeps the conversation going; **Hang up** releases capture.
 [Two-way Linux video test](experiments/rtc-audio/README.md#verify-dm-video).
 
+Video calls also work with **Element Web** in either caller direction.
+When the other person turns off their camera, Untethered clears their last
+frame and shows **No incoming video**. Turning the camera back on restores
+the picture without redialing. [Element interoperability test](experiments/rtc-audio/README.md#verify-video-with-element).
+
 If two Linux devices are signed into the same account, both can ring.
 Answer or decline on either one: the other stops ringing and shows what
 happened in the DM. Only the device that answers opens its microphone.

@@ -123,6 +123,12 @@
   at 498×280, alongside the local preview. Swapping focus kept the GCM track
   IDs unchanged. Stopping one camera preserved the other video and both
   audio paths; hanging up released both readers and all publications.
+- **Linux ↔ Element DM video:** [Both caller directions](experiments/rtc-audio/README.md#verify-video-with-element)
+  exchanged two changing remote camera patterns (982 px wide in Element,
+  498 px in Untethered) and 410/670 Hz audio with four GCM publications.
+  Turning off Element’s camera cleared the remote image in the native UI;
+  turning it back on restored video without redial. The call roster and all
+  publications cleared on hangup. These runs used synthetic cameras.
 - **Three-person Linux voice rooms:** **Join voice** and **Leave voice** use
   the encrypted room's MatrixRTC slot without DM notifications. In the
   [three-account desktop test](experiments/rtc-audio/README.md#verify-three-person-voice-rooms)

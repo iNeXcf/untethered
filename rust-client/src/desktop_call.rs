@@ -122,6 +122,7 @@ pub struct ActiveCall {
     pub room: String,
     pub label: String,
     pub group: bool,
+    pub video_peer: Option<String>,
     pub cancel: Sender<()>,
     pub audio: watch::Sender<AudioMode>,
     pub id: uuid::Uuid,
@@ -149,6 +150,12 @@ impl crate::App {
     pub(super) fn start_voice(&mut self, room: String, target: Target) {
         self.inbox.handled = None;
         let group = matches!(target, Target::Channel);
+        let video_peer = match &target {
+            Target::Dm {
+                video: true, peer, ..
+            } => Some(peer.clone()),
+            _ => None,
+        };
         let label = match &target {
             Target::Channel => "Joining voice…",
             Target::Dm {
@@ -197,6 +204,7 @@ impl crate::App {
                 room,
                 label: label.into(),
                 group,
+                video_peer,
                 cancel,
                 audio,
                 id: uuid::Uuid::new_v4(),
@@ -790,6 +798,7 @@ async fn call(
             for pubn in p.track_publications().into_values() {
                 if pubn.source() != TrackSource::Camera
                     || pubn.encryption_type() != EncryptionType::Gcm
+                    || pubn.is_muted()
                 {
                     continue;
                 }

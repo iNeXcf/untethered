@@ -26,7 +26,7 @@
         const lost = state => ["disconnected","failed","closed"].includes(state);
         pc.addEventListener("connectionstatechange", () => { if (lost(pc.connectionState)) losses++; });
         pc.addEventListener("iceconnectionstatechange", () => { if (lost(pc.iceConnectionState)) losses++; });
-        const pcm = {spectra:0, last480:0, got480:false, run480:0, run730:0, quiet:0, hits730:0, got730:false, measured730:0};
+        const pcm = {spectra:0, last480:0, got480:false, run410:0, run480:0, run730:0, quiet:0, hits730:0, got730:false, measured730:0};
         window.qaAudioStats = async () => {
             const reports = Array.from((await receiver.getStats()).values());
             const rtp = reports.find(r=>r.type==="inbound-rtp" && r.kind==="audio");
@@ -47,6 +47,7 @@
             const hz = peak * ctx.sampleRate / fft.fftSize;
             const heard = target => bins[peak] > -60 && Math.abs(hz-target) < 23;
             pcm.spectra++;
+            pcm.run410 = heard(410) ? pcm.run410+1 : 0;
             good480 = heard(480) ? good480+1 : 0;
             pcm.run480 = good480;
             pcm.quiet = bins[peak] < -65 ? pcm.quiet+1 : 0;

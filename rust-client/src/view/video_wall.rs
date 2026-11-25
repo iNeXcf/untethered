@@ -39,6 +39,33 @@ fn tile(feed: Feed, room: &Room, id: uuid::Uuid, height: f32, selectable: bool) 
 
 pub(super) fn view(call: &ActiveCall, room: &Room) -> Option<El<'static>> {
     let (focus, mut feeds) = call.previews.snapshot();
+    if let Some(peer) = &call.video_peer
+        && call.label == "Connected"
+        && !feeds.iter().any(|f| !f.user.is_empty())
+        && focus.is_none()
+    {
+        let placeholder = container(
+            column![
+                text(room.display(peer).to_owned())
+                    .size(20)
+                    .font(BOLD)
+                    .color(TEXT),
+                text("No incoming video").size(14).color(MUTED)
+            ]
+            .spacing(6)
+            .align_x(Center),
+        )
+        .width(Fill)
+        .height(280)
+        .center_x(Fill)
+        .center_y(280)
+        .style(|_| surface(RAIL, 6.));
+        let mut stage = row![placeholder].spacing(6);
+        if let Some(local) = feeds.pop() {
+            stage = stage.push(container(tile(local, room, call.id, 86., true)).width(166));
+        }
+        return Some(container(stage).width(Fill).padding([5, 12]).into());
+    }
     if feeds.is_empty() {
         return None;
     }
@@ -56,6 +83,7 @@ pub(super) fn view(call: &ActiveCall, room: &Room) -> Option<El<'static>> {
             .position(|f| focus.as_ref() == Some(&f.sid))
             .or_else(|| feeds.iter().position(|f| !f.user.is_empty()))
             .unwrap_or(0);
+        let back = focus.is_some() && feeds.len() == 1;
         let mut stage = row![tile(feeds.remove(selected), room, id, 280., false)].spacing(6);
         if !feeds.is_empty() {
             stage = stage.push(
@@ -65,7 +93,17 @@ pub(super) fn view(call: &ActiveCall, room: &Room) -> Option<El<'static>> {
                 .width(166),
             );
         }
-        return Some(container(stage).width(Fill).padding([5, 12]).into());
+        let mut panel = Column::new().spacing(4);
+        if back {
+            panel = panel
+                .push(button(text("Back to call").size(13)).on_press(Msg::FocusVideo(id, None)));
+        }
+        return Some(
+            container(panel.push(stage))
+                .width(Fill)
+                .padding([5, 12])
+                .into(),
+        );
     }
     let wall = if let Some(i) = feeds.iter().position(|f| Some(&f.sid) == focus.as_ref()) {
         let mut stage = row![tile(feeds.remove(i), room, id, 280., false)].spacing(6);
