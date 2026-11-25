@@ -81,7 +81,7 @@ rtc:
         yield secret
 
 
-def test(tmp, hs, name, jwt, root, backend, seed, http, service, *, desktop=False,incoming=False,controls=False,devices=False,reconnect=False,turn=False,group=False,share=False,camera=False,ptt=False,layout=False):
+def test(tmp, hs, name, jwt, root, backend, seed, http, service, *, desktop=False,incoming=False,controls=False,devices=False,reconnect=False,turn=False,group=False,share=False,camera=False,ptt=False,layout=False,multi_ring=False):
     if group:
         from qa_voice_room import test_group
         with call_services(tmp,name,jwt,service) as secret:
@@ -136,7 +136,11 @@ def test(tmp, hs, name, jwt, root, backend, seed, http, service, *, desktop=Fals
         if desktop:
             from qa_desktop_dm import desktop_call
             ports=[urlsplit(hs).port,urlsplit(jwt).port,urlsplit("https://"+name).port,18820] if reconnect else None
-            desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,incoming=incoming,controls=controls,devices=devices,network_ports=ports,relay_links=links)
+            sibling=None
+            if multi_ring:
+                from qa_multi_device_ring import Sibling
+                sibling=Sibling(stack,tmp,root,backend,native,alice)
+            desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,incoming=incoming,controls=controls,devices=devices,network_ports=ports,relay_links=links,sibling=sibling)
             return
         sockets=[]
         def watch_sfu(ws):

@@ -143,6 +143,7 @@ def main():
     args.add_argument("--rtc-audio",action="store_true",help="Verify encrypted Rust ↔ Element Call tones using real LiveKit and Matrix OpenID authorization")
     args.add_argument("--desktop-dm",action="store_true",help="Drive the Iced DM call controls and Element's incoming call prompt with isolated audio")
     args.add_argument("--incoming-dm",action="store_true",help="Ring the Iced desktop twice from Element, decline then accept and hang up")
+    args.add_argument("--multi-device-ring",action="store_true",help="Ring two independently verified Linux devices on one Matrix account; decline on one, answer on the other")
     args.add_argument("--call-controls",action="store_true",help="Measure Linux mute/deafen and track continuity during a live encrypted call with Element")
     args.add_argument("--call-devices",action="store_true",help="Switch two microphones and two speakers using the Linux call bar during a live encrypted call with Element")
     args.add_argument("--call-reconnect",action="store_true",help="Cut the Linux desktop's private network link during an encrypted Element call, then verify automatic two-way recovery")
@@ -162,6 +163,7 @@ def main():
         raise SystemExit("--room-ptt uses private X displays; run the KWin video fixtures separately")
     if args.window_share or args.room_camera or args.room_ptt or args.room_layout: args.voice_room=True
     if args.call_controls or args.call_devices or args.call_reconnect or args.call_turn: args.desktop_dm=True
+    if args.multi_device_ring:args.incoming_dm=True
     if args.desktop_dm or args.incoming_dm or args.voice_room: args.rtc_audio=True
     assert BACKEND.is_file(), "Run scripts/rust-client.sh once or set UNTETHERED_BACKEND"
     if args.federated_ban:
@@ -235,7 +237,7 @@ federation_domain_whitelist: []
                 test_replies(tmp,hs,ROOT,BACKEND,seed,http,gateway_port,reactions=args.reactions,room_search=args.room_search,alerts=args.room_alerts,permissions=args.room_permissions,ban=args.room_ban,kick=args.room_kick,report=args.message_report,mentions=args.mentions_inbox)
                 return
             if args.rtc_audio:
-                audio_test(tmp,hs,server_name,rtc_service,ROOT,BACKEND,seed,http,service,desktop=args.desktop_dm or args.incoming_dm,incoming=args.incoming_dm,controls=args.call_controls,devices=args.call_devices,reconnect=args.call_reconnect,turn=args.call_turn,group=args.voice_room,share=args.window_share,camera=args.room_camera,ptt=args.room_ptt,layout=args.room_layout)
+                audio_test(tmp,hs,server_name,rtc_service,ROOT,BACKEND,seed,http,service,desktop=args.desktop_dm or args.incoming_dm,incoming=args.incoming_dm,controls=args.call_controls,devices=args.call_devices,reconnect=args.call_reconnect,turn=args.call_turn,group=args.voice_room,share=args.window_share,camera=args.room_camera,ptt=args.room_ptt,layout=args.room_layout,multi_ring=args.multi_device_ring)
                 return
             if args.rtc_membership:
                 from qa_rtc_membership import test

@@ -68,6 +68,12 @@
   480 Hz to Element and played Element’s 960 Hz. LiveKit reported GCM on
   both audio tracks. Hanging up in Element cleared both devices and released
   desktop audio.
+- **Answered on another device:** [Two-device Linux DM test](experiments/rtc-audio/README.md#verify-answering-on-another-device)
+  rang two verified devices of the same account from Element. Declining on
+  one silenced the other. On the next call, answering on the first cleared
+  the second device’s prompt and ringtone within 1.5 s, with 87.3 s left on
+  the invitation and zero microphone opens on that device. Only Element and
+  the answering device published GCM tracks; both decoded the other’s audio.
 - **Mute and deafen:** `run_element.sh --call-controls` exercised the Linux
   call bar during a live encrypted Element DM, including after switching to
   another room. Muting stopped capture and silenced the desktop's 480 Hz at

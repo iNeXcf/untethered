@@ -423,6 +423,27 @@ impl App {
     }
     #[cfg(target_os = "linux")]
     fn incoming_banner(&self) -> Option<El<'_>> {
+        if let Some((room, note)) = &self.inbox.handled
+            && *room == self.selected
+            && self.mentions.is_none()
+            && self.inbox.ringing.is_none()
+        {
+            return Some(
+                container(
+                    row![
+                        text(*note).width(Fill).size(14),
+                        button(text("Dismiss").size(13))
+                            .style(nav(false))
+                            .on_press(Msg::DismissCallNotice)
+                    ]
+                    .align_y(Center),
+                )
+                .width(Fill)
+                .padding([6, 12])
+                .style(|_| surface(TRAY, 4.))
+                .into(),
+            );
+        }
         let (i, _) = self.inbox.ringing.as_ref()?;
         Some(
             container(

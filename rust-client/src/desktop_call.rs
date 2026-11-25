@@ -144,6 +144,7 @@ pub struct Controls {
 }
 impl crate::App {
     pub(super) fn start_voice(&mut self, room: String, target: Target) {
+        self.inbox.handled = None;
         let group = matches!(target, Target::Channel);
         let label = match &target {
             Target::Channel => "Joining voice…",

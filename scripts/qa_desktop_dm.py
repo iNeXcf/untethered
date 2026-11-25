@@ -48,7 +48,7 @@ def sfu_audio(secret):
     return result
 
 
-def desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,*,incoming=False,controls=False,devices=False,network_ports=None,relay_links=None):
+def desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,*,incoming=False,controls=False,devices=False,network_ports=None,relay_links=None,sibling=None):
     env=isolated_env(tmp,backend,"x11")
     start_display(stack,tmp,env,"x11",1280,900)
     sock=Path(env["XDG_RUNTIME_DIR"])/"qa-pulse"
@@ -151,7 +151,7 @@ def desktop_call(stack,tmp,page,room,root,backend,alice,bob,secret,*,incoming=Fa
             verify_turn(relay_links,widget,lambda:speakers[0],new_tone,native_log,roster,lambda:sfu_audio(secret),(alice,bob))
     try:
         if incoming:
-            reverse_call(stack,page,room,alice,bob,secret,find,click,roster,streams,chime,received,env,cmd,check_relay)
+            reverse_call(stack,page,room,alice,bob,secret,find,click,roster,streams,chime,received,env,cmd,check_relay,sibling)
             return
         ring_started=threading.Event()
         page.on("console",lambda m:ring_started.set() if "LegacyCallHandler.play(ringAudio): playing audio successfully" in m.text else None)
@@ -399,7 +399,7 @@ def audio_controls(widget,click,speaker,streams,secret,sockets,alice,bob,change_
     print("No reconnect: same Element receiver, SSRC and signaling sockets; both original GCM track and participant SIDs retained.",flush=True)
 
 
-def reverse_call(stack,page,room,alice,bob,secret,find,click,roster,streams,chime,received,env,cmd,check_relay):
+def reverse_call(stack,page,room,alice,bob,secret,find,click,roster,streams,chime,received,env,cmd,check_relay,sibling=None):
     from playwright.sync_api import Error as BrowserError
     # Count stream creations too: polling an empty list after Decline alone
     # would miss a microphone that briefly opened and was then closed.
@@ -420,6 +420,7 @@ def reverse_call(stack,page,room,alice,bob,secret,find,click,roster,streams,chim
             .map(e=>e.getId())""",room)
     def dial():
         before=set(ring_ids());chime.clear()
+        if sibling:ring_frames=sibling.ring_frames
         page.get_by_role("button",name="Voice call",exact=True).click(timeout=15000)
         def ringing():
             for f in page.frames:
@@ -435,9 +436,12 @@ def reverse_call(stack,page,room,alice,bob,secret,find,click,roster,streams,chim
         wait_for("Untethered incoming voice banner",lambda:find("Accept") and find("Decline"),12)
         assert chime.wait(4),"no 440/620 Hz ringtone on the desktop speaker"
         assert not streams("source-outputs") and capture_starts()==0
-        return ids.pop()
+        ring=ids.pop()
+        if sibling:sibling.ringing(ring,room,bob,ring_frames)
+        return ring
     ring=dial()
-    click("Decline")
+    if sibling:sibling.tap("decline")
+    else:click("Decline")
     def declined():
         return page.evaluate("""([room,id,sender])=>window.mxMatrixClientPeg.get().getRoom(room).getLiveTimeline().getEvents()
             .filter(e=>e.getType()==="org.matrix.msc4310.rtc.decline"&&e.getSender()===sender&&e.getRelation()?.event_id===id)
@@ -445,21 +449,37 @@ def reverse_call(stack,page,room,alice,bob,secret,find,click,roster,streams,chim
     wait_for("Element received correlated encrypted decline",lambda:declined()==["m.room.encrypted"],12)
     wait_for("caller stopped after decline",lambda:roster()==[],15)
     assert not find("Accept") and not streams("source-outputs") and not streams("sink-inputs") and capture_starts()==0
+    if sibling:
+        wait_for("first desktop saw sibling's decline",lambda:find("declined") and find("another"))
+        sibling.quiet()
+        print(f"{sibling.other_id} declined {ring}; {sibling.main_id} showed 'declined on another device'.",flush=True)
     print("First Element call: audible 440/620 Hz desktop ring; Decline received for that invite; 0 microphone streams created.",flush=True)
     page.goto(page.url.split("#")[0]+"#/room/"+room)
-    assert dial()!=ring
+    second=dial()
+    assert second!=ring
+    started=time.monotonic()
     click("Accept")
     wait_for("Element and Untethered joined the answered call",lambda:set(roster())=={alice,bob},20)
+    if sibling:sibling.answered(started,peer=page,room=room,ring=second)
     widget=next(f for f in page.frames if urlsplit(f.url).path.startswith("/widgets/element-call/"))
     wait_for("Element receives accepted caller's desktop audio",lambda:widget.evaluate("window.qaAudioStats?.().then(s=>s.got480) ?? false"),25)
     assert received.wait(6)
     assert len(streams("source-outputs"))==1 and capture_starts()==1
     tracks=sfu_audio(secret)
     assert len(tracks)==2 and all(v==["GCM"] for v in tracks.values()) and {p.rsplit(":",1)[0] for p in tracks}=={alice,bob},tracks
+    if sibling:
+        assert set(tracks)=={alice+":"+sibling.main_id,bob+":"+page.evaluate("window.mxMatrixClientPeg.get().getDeviceId()")}
+        sibling.quiet()
     print("Second Element call: Accept opened 1 microphone; Element decoded 480 Hz, desktop played 960 Hz; both tracks GCM.",flush=True)
     check_relay(widget)
     widget.get_by_role("button",name="End call",exact=True).click(timeout=8000)
     wait_for("both devices left after Element hung up",lambda:roster()==[],20)
     wait_for("desktop audio closed",lambda:not streams("source-outputs") and not streams("sink-inputs"))
     assert not find("Accept") and find("Voice")
+    if sibling:
+        sibling.quiet()
+        assert len(ring_ids())==2
+        declines=page.evaluate("""room=>window.mxMatrixClientPeg.get().getRoom(room).getLiveTimeline().getEvents()
+            .filter(e=>e.getType()==='org.matrix.msc4310.rtc.decline').map(e=>e.getRelation()?.event_id)""",room)
+        assert declines==[ring],declines
     print("Element hung up: both devices left, 0 desktop capture/playback streams.",flush=True)

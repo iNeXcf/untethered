@@ -122,8 +122,9 @@ impl Offer {
 #[derive(Default)]
 pub struct Inbox {
     pub ringing: Option<(Offer, Sender<()>)>,
+    pub handled: Option<(String, &'static str)>,
     playback: Option<Receiver<()>>,
-    seen: BTreeMap<String, u64>,
+    seen: BTreeMap<(String, String), u64>,
     checking: Option<Offer>,
     // Late decryption is eligible only for events observed in the live timeline.
     waiting: BTreeMap<String, u64>,
@@ -135,6 +136,7 @@ impl App {
         }
         self.inbox.playback = None;
         self.inbox.checking = None;
+        self.inbox.handled = None;
     }
     pub(super) fn ring_events(&mut self, room: &str, delta: &Value, late: bool) {
         let at = now();
@@ -157,6 +159,55 @@ impl App {
             }
             return;
         };
+        // A sync can deliver the caller's leave together with our other
+        // device's response. Resolve the invite before processing that leave:
+        // event-array order is not a reliable way to decide who answered.
+        let pending = self
+            .inbox
+            .ringing
+            .as_ref()
+            .map(|(i, _)| i)
+            .or(self.inbox.checking.as_ref())
+            .filter(|i| i.room == room);
+        let mut outcome = None;
+        for e in items(&delta["events"]).filter(|e| {
+            e["room_id"] == room
+                && e["sender"] == self.matrix_id
+                && !e["redacted_by"].is_string()
+                && crate::rooms::server_confirmed(e)
+        }) {
+            let (ty, c) = decoded(e);
+            if ty == DECLINE
+                && c["m.relates_to"]["rel_type"] == "m.reference"
+                && let Some(id) = c["m.relates_to"]["event_id"]
+                    .as_str()
+                    .filter(|s| s.starts_with('$'))
+                && let Some(ts) = e["timestamp"].as_u64()
+                && ts.saturating_add(90_000) > at
+            {
+                // A second device may decrypt the decline *before* the ring.
+                // Don't later announce an invite that the user already dismissed.
+                self.inbox
+                    .seen
+                    .insert((room.into(), id.into()), at + 90_000);
+                if pending.is_some_and(|i| i.event == id) {
+                    outcome = Some("Call declined on another device.");
+                }
+            } else if pending.is_some()
+                && active_member(e)
+                && e["state_key"].as_str().is_some_and(|k| {
+                    e["rowid"]
+                        .as_i64()
+                        .is_some_and(|row| row > 0 && delta["state"][EVENT_TYPE][k] == row)
+                })
+            {
+                outcome = Some("Call answered on another device.");
+            }
+        }
+        if let Some(outcome) = outcome {
+            self.clear_ring();
+            self.inbox.handled = Some((room.into(), outcome));
+        }
         for e in items(&delta["events"]) {
             let Some(id) = e["event_id"].as_str() else {
                 continue;
@@ -175,19 +226,15 @@ impl App {
                     .is_some_and(|k| delta["state"][EVENT_TYPE][k] == e["rowid"]);
                 if (e["type"] == EVENT_TYPE
                     && same_member
-                    && ((e["sender"] == peer
-                        && i.caller_session
-                            .as_ref()
-                            .map_or(!active_member(e), |(key, _)| e["state_key"] == *key)
-                        && !i.matches_member(e))
-                        || (e["sender"] == self.matrix_id && active_member(e))))
+                    && e["sender"] == peer
+                    && i.caller_session
+                        .as_ref()
+                        .map_or(!active_member(e), |(key, _)| e["state_key"] == *key)
+                    && !i.matches_member(e))
                     || (e["type"] == "m.room.member"
                         && e["state_key"] == peer
                         && e["content"]["membership"] != "join"
                         && delta["state"]["m.room.member"][&peer] == e["rowid"])
-                    || (ty == DECLINE
-                        && e["sender"] == self.matrix_id
-                        && c["m.relates_to"]["event_id"] == i.event)
                     || (ty == "m.room.redaction"
                         && [c.get("redacts"), e.get("relates_to")]
                             .into_iter()
@@ -221,14 +268,15 @@ impl App {
             {
                 self.inbox.waiting.insert(id.into(), at + 90_000);
             }
-            if self.inbox.seen.contains_key(id)
+            let key = (room.into(), id.into());
+            if self.inbox.seen.contains_key(&key)
                 || self.inbox.ringing.is_some()
                 || self.inbox.checking.is_some()
             {
                 continue;
             }
             if let Some(i) = Offer::parse(e, room, &peer, &self.matrix_id, at) {
-                self.inbox.seen.insert(id.into(), i.expires);
+                self.inbox.seen.insert(key, i.expires);
                 self.inbox.checking = Some(i.clone());
                 self.rpc(
                     "get_room_state",
@@ -272,6 +320,7 @@ impl App {
         }
         let (stop, recv) = async_channel::bounded::<()>(1);
         self.inbox.playback = Some(recv);
+        self.inbox.handled = None;
         self.inbox.ringing = Some((i, stop));
     }
     pub(super) fn start_ringtone(&mut self) -> Task<Msg> {
@@ -400,6 +449,58 @@ mod tests {
         assert!(direct.valid_state(&s, ME));
         s[3]["event_id"] = json!("$new-session");
         assert!(!direct.valid_state(&s, ME));
+    }
+    #[test]
+    fn sibling_decline_can_decrypt_before_the_invite_and_is_scoped_to_its_room_and_reference() {
+        let (tx, rx) = async_channel::bounded(8);
+        let mut a = App::new(tx);
+        a.connected = true;
+        a.verified = true;
+        a.matrix_id = ME.into();
+        for room in [ROOM, "!other"] {
+            a.live.list.insert(
+                room.into(),
+                crate::rooms::Room {
+                    encrypted: true,
+                    dm_peer: Some(PEER.into()),
+                    ..Default::default()
+                },
+            );
+        }
+        let t = now();
+        let mut invite = ring(t);
+        invite["decrypted"]["m.mentions"] = json!({"user_ids":[ME]});
+        let mut opaque = invite.clone();
+        opaque.as_object_mut().unwrap().remove("decrypted_type");
+        opaque.as_object_mut().unwrap().remove("decrypted");
+        let arrive = json!({"events":[opaque],"timeline":[{"event_rowid":4}]});
+        let clear = json!({"events":[invite]});
+        a.ring_events(ROOM, &arrive, false);
+        let decline = json!({"event_id":"$decline","room_id":ROOM,"sender":ME,"type":"m.room.encrypted","timestamp":t,
+            "decrypted_type":DECLINE,"decrypted":{"m.relates_to":{"rel_type":"m.reference","event_id":"$ring"}}});
+        a.ring_events(ROOM, &json!({"events":[decline]}), true);
+        a.ring_events(ROOM, &clear, true);
+        assert!(rx.is_empty() && a.inbox.checking.is_none() && a.inbox.ringing.is_none());
+
+        let mut other = invite;
+        other["room_id"] = "!other".into();
+        a.ring_events(
+            "!other",
+            &json!({"events":[other],"timeline":[{"event_rowid":4}]}),
+            false,
+        );
+        let pending = a.inbox.checking.clone().unwrap();
+        let mut wrong = decline;
+        wrong["room_id"] = "!other".into();
+        wrong["decrypted"]["m.relates_to"]["rel_type"] = "m.annotation".into();
+        a.ring_events("!other", &json!({"events":[wrong]}), true);
+        assert!(a.inbox.checking.is_some());
+        wrong["decrypted"]["m.relates_to"]["rel_type"] = "m.reference".into();
+        a.ring_events("!other", &json!({"events":[wrong]}), true);
+        a.present_ring(pending, &json!(members(t)));
+        assert!(
+            a.inbox.checking.is_none() && a.inbox.ringing.is_none() && a.inbox.playback.is_none()
+        );
     }
     #[test]
     fn caller_cancelling_stops_only_its_own_ring_and_replay_does_not_restart_it() {

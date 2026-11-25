@@ -153,6 +153,11 @@ shows the caller, **Accept**, and **Decline**. Declining notifies Element
 without opening your microphone. Accepting joins the existing encrypted call.
 Either participant can hang up.
 
+If two Linux devices are signed into the same account, both can ring.
+Answer or decline on either one: the other stops ringing and shows what
+happened in the DM. Only the device that answers opens its microphone.
+[Two-device call test](experiments/rtc-audio/README.md#verify-answering-on-another-device).
+
 The call bar stays with the active DM while you browse other rooms. **Mute**
 releases your microphone and leaves the other person audible. **Deafen**
 silences playback and also mutes your microphone. **Undeafen** restores

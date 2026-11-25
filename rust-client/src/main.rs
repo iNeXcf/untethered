@@ -130,6 +130,8 @@ enum Msg {
     #[cfg(target_os = "linux")]
     DecideRing(String, bool),
     #[cfg(target_os = "linux")]
+    DismissCallNotice,
+    #[cfg(target_os = "linux")]
     RingExpired(String),
     Frame(Value),
     Stopped(String),
@@ -705,6 +707,7 @@ impl App {
                         .ringing
                         .as_ref()
                         .is_some_and(|(i, _)| i.room == left)
+                        || self.inbox.handled.as_ref().is_some_and(|(r, _)| r == left)
                     {
                         self.clear_ring()
                     }
@@ -1040,6 +1043,8 @@ impl App {
             }
             #[cfg(target_os = "linux")]
             Msg::DecideRing(id, accept) => self.decide_ring(&id, accept),
+            #[cfg(target_os = "linux")]
+            Msg::DismissCallNotice => self.inbox.handled = None,
             #[cfg(target_os = "linux")]
             Msg::RingExpired(id) => {
                 if self

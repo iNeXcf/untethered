@@ -31,6 +31,33 @@ was created, even transiently. On the second, Iced **Accept** must open one
 microphone; both distinct tones and both GCM publications are checked again.
 Hanging up from Element must empty its roster and release both desktop streams.
 
+### Verify answering on another device
+
+Run `sh experiments/rtc-audio/run_element.sh --multi-device-ring` with the
+same environment as `--incoming-dm`. The recipient has two independent
+Linux devices on the same Matrix account. The second signs in and verifies
+in its own Iced window. Each uses a separate X display, gomuks profile and
+PulseAudio server. Element makes two encrypted DM calls.
+
+* Both desktops must show **Accept**/**Decline** and play the 440/620 Hz
+  ringtone. Decline the first call on the second desktop. Element must
+  receive exactly one encrypted decline referencing that invite; the first
+  desktop must stop ringing and show **Call declined on another device**.
+* Accept the second call on the first desktop. Its partner must show
+  **Call answered on another device**, remove the controls, close the
+  ringtone stream and produce at least 600 ms of silence before the
+  invite expires. An audio-server event subscription checks that it never
+  opened a microphone, even briefly. Element’s membership list and the
+  LiveKit GCM publication identities must include only the caller and the
+  answering device; the test also measures decrypted 480/960 Hz audio and
+  checks that hangup releases the streams.
+
+Recorded Linux run: `DETZYHHXKF` and `MDHRJJGYTA` were distinct verified
+devices of one recipient. The second device declined the first invite;
+the first answered the next. Silence, closed playback and the outcome on
+the non-answering device were verified 1.5 s after the click, with 87.3 s
+remaining on the invite. No second decline appeared when that call ended.
+
 ### Verify three-person voice rooms
 
 Build the Linux desktop and use the same desktop test requirements above:
