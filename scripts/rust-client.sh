@@ -17,4 +17,7 @@ if [[ -z "${UNTETHERED_BACKEND:-}" ]]; then
     fi
     export UNTETHERED_BACKEND="$backend"
 fi
+if [[ $(uname -s) == Linux ]]; then
+    cargo build --locked -j "${UNTETHERED_BUILD_JOBS:-3}" --manifest-path rust-client/Cargo.toml --bin untethered-cameras
+fi
 exec cargo run --locked -j "${UNTETHERED_BUILD_JOBS:-3}" --manifest-path rust-client/Cargo.toml -- "$@"

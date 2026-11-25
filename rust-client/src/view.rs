@@ -279,6 +279,19 @@ impl App {
                     .size(15)
                     .font(BOLD)
             )
+            .style(|_, s| button::Style {
+                background: Some(
+                    (if s == button::Status::Hovered {
+                        color!(0x993447)
+                    } else {
+                        color!(0x732939)
+                    })
+                    .into()
+                ),
+                text_color: TEXT,
+                border: Border::default().rounded(5),
+                ..Default::default()
+            })
             .on_press_maybe(active.then_some(Msg::EndCall))
         ]
         .spacing(8)
@@ -416,6 +429,40 @@ impl App {
                     .align_y(Center)
                     .spacing(8),
             );
+            let mut cams = row![text("Camera").width(90).size(14)]
+                .align_y(Center)
+                .spacing(8);
+            if !call.cameras.is_empty() {
+                let id = call.id;
+                cams = cams.push(
+                    pick_list(
+                        call.cameras.as_slice(),
+                        Some(mode.camera.clone()),
+                        move |choice| Msg::SelectCamera(id, choice),
+                    )
+                    .width(Fill)
+                    .text_size(14)
+                    .padding([5, 9]),
+                );
+            }
+            cams = cams.push(
+                button(
+                    text(if call.camera_listing {
+                        "Looking…"
+                    } else if call.cameras.is_empty() {
+                        "List cameras"
+                    } else {
+                        "Refresh cameras"
+                    })
+                    .size(14),
+                )
+                .style(nav(false))
+                .on_press_maybe((active && !call.camera_listing).then_some(Msg::ListCameras)),
+            );
+            bar = bar.push(cams);
+            if let Some(note) = call.camera_note {
+                bar = bar.push(text(note).size(13));
+            }
         }
         Some(
             container(bar)

@@ -81,7 +81,7 @@ rtc:
         yield secret
 
 
-def test(tmp, hs, name, jwt, root, backend, seed, http, service, *, desktop=False,incoming=False,controls=False,devices=False,reconnect=False,turn=False,group=False,share=False,camera=False,ptt=False,layout=False,multi_ring=False,dnd_ring=False,native_dm=False,unsupported_dm=False,dm_video=False,element_video=False):
+def test(tmp, hs, name, jwt, root, backend, seed, http, service, *, desktop=False,incoming=False,controls=False,devices=False,reconnect=False,turn=False,group=False,share=False,camera=False,ptt=False,layout=False,multi_ring=False,dnd_ring=False,native_dm=False,unsupported_dm=False,dm_video=False,element_video=False,switch_camera=False):
     if group:
         from qa_voice_room import test_group
         with call_services(tmp,name,jwt,service) as secret:
@@ -156,7 +156,7 @@ def test(tmp, hs, name, jwt, root, backend, seed, http, service, *, desktop=Fals
         page=login_element(ctx,web,peer,room)
         if element_video:
             from qa_element_video import verify
-            verify(stack,tmp,root,backend,page,room,alice,bob,secret,incoming)
+            verify(stack,tmp,root,backend,page,room,alice,bob,secret,incoming,switch_camera)
             return
         if desktop:
             from qa_desktop_dm import desktop_call

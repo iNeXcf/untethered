@@ -100,6 +100,32 @@ back on must deliver fresh video with the original microphones. Stopping the
 native camera must release its capture process, and hangup must empty the
 MatrixRTC roster and release the media tracks.
 
+### Verify live camera switching
+
+Build both Linux binaries (`cargo build --locked --manifest-path rust-client/Cargo.toml`)
+and run the following in the Element video test environment:
+
+```sh
+sh experiments/rtc-audio/run_element.sh --switch-camera
+sh experiments/rtc-audio/run_element.sh --switch-camera --incoming-dm
+```
+
+The desktop enumerates camera nodes using a
+small companion process with a portal-granted FD, independently of
+libwebrtc’s private PipeWire symbols. The packaged helper lives alongside
+gomuks under `/usr/lib/untethered`; the dev launcher builds it automatically.
+
+The fixture adds a second virtual camera after the first has begun
+publishing. During one encrypted call, it selects **Cobalt**, then **Amber**
+in the actual Devices picker. At both selections the private PipeWire graph
+must show only the selected camera linked, Element's remote tile and
+Untethered's self-preview must both show the new changing pattern, and the
+same four GCM camera/microphone publication IDs must remain active. Withdrawing
+the selected Cobalt source must remove only that camera publication and leave
+no capture link. Selecting Amber while off must not start capture until
+**Start camera**; the same call then resumes video with both microphones
+still carrying audio. These are virtual-camera measurements, not hardware QA.
+
 ### Verify three-person voice rooms
 
 Build the Linux desktop and use the same desktop test requirements above:

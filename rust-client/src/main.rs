@@ -129,6 +129,15 @@ enum Msg {
     #[cfg(target_os = "linux")]
     AudioDevices,
     #[cfg(target_os = "linux")]
+    ListCameras,
+    #[cfg(target_os = "linux")]
+    CamerasListed(
+        uuid::Uuid,
+        Result<Vec<desktop_call::CameraChoice>, &'static str>,
+    ),
+    #[cfg(target_os = "linux")]
+    SelectCamera(uuid::Uuid, desktop_call::CameraChoice),
+    #[cfg(target_os = "linux")]
     ToggleMixer,
     #[cfg(target_os = "linux")]
     PeerVolume(uuid::Uuid, String, u8),
@@ -1280,6 +1289,55 @@ impl App {
                     && user != self.matrix_id
                 {
                     call.audio.send_if_modified(|s| s.set_volume(user, percent));
+                }
+            }
+            #[cfg(target_os = "linux")]
+            Msg::ListCameras => {
+                if let Some(c) = &mut self.call
+                    && c.picker
+                    && !c.camera_listing
+                    && !c.cancel.is_closed()
+                {
+                    c.camera_listing = true;
+                    c.camera_note = None;
+                    let cancel = c.cancel.clone();
+                    let id = c.id;
+                    return Task::perform(
+                        async move {
+                            tokio::select! {biased;_=cancel.closed()=>Err("Call ended."),r=desktop_call::list_cameras()=>r}
+                        },
+                        move |r| Msg::CamerasListed(id, r),
+                    );
+                }
+            }
+            #[cfg(target_os = "linux")]
+            Msg::CamerasListed(id, list) => {
+                if let Some(c) = &mut self.call
+                    && c.id == id
+                {
+                    c.camera_listing = false;
+                    match list {
+                        Ok(v) => {
+                            c.camera_note =
+                                (v.len() == 1).then_some("No selectable cameras reported.");
+                            c.cameras = v;
+                        }
+                        Err(why) => {
+                            c.cameras.clear();
+                            c.camera_note = Some(why);
+                        }
+                    }
+                }
+            }
+            #[cfg(target_os = "linux")]
+            Msg::SelectCamera(id, choice) => {
+                if let Some(c) = &self.call
+                    && c.id == id
+                    && c.picker
+                    && !c.cancel.is_closed()
+                    && c.cameras.contains(&choice)
+                {
+                    c.audio.send_modify(|s| s.camera = choice);
                 }
             }
             #[cfg(target_os = "linux")]

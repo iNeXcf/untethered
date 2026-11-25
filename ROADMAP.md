@@ -129,6 +129,12 @@
   Turning off Element’s camera cleared the remote image in the native UI;
   turning it back on restored video without redial. The call roster and all
   publications cleared on hangup. These runs used synthetic cameras.
+- **Live Linux camera switching:** [Camera picker test](experiments/rtc-audio/README.md#verify-live-camera-switching)
+  switched two portal-authorized camera sources during an encrypted DM with
+  Element. Both the self-preview and remote picture changed; both camera and
+  microphone publication IDs stayed unchanged. Removing the selected virtual
+  source stopped only its video. No fallback camera opened, and selecting and
+  starting the remaining source restored video without a redial.
 - **Three-person Linux voice rooms:** **Join voice** and **Leave voice** use
   the encrypted room's MatrixRTC slot without DM notifications. In the
   [three-account desktop test](experiments/rtc-audio/README.md#verify-three-person-voice-rooms)

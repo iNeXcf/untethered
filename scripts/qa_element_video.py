@@ -28,7 +28,7 @@ def y4m(path):
             for _ in range(20):f.write(b"FRAME\n"+planes)
 
 
-def verify(stack,tmp,root,backend,page,room,alice,bob,secret,incoming):
+def verify(stack,tmp,root,backend,page,room,alice,bob,secret,incoming,switch_camera=False):
     env=isolated_env(tmp,backend,"wayland")
     sock=tmp/"video-pulse"
     env.update(PULSE_SERVER="unix:"+str(sock),PULSE_SOURCE="Mic0.monitor",PULSE_SINK="Out0")
@@ -38,7 +38,7 @@ def verify(stack,tmp,root,backend,page,room,alice,bob,secret,incoming):
     wait_for("private audio",lambda:sock.is_socket() and "Out0" in sp.run(["pactl","list","short","sinks"],env=env,capture_output=True,text=True).stdout)
     kde=KWin(stack,tmp,root,backend,env=env,screencast=True)
     desk=Desktop(stack,root,env,0,kde,room="media-proof")
-    show=camera_source(stack,kde,NATIVE)
+    show=camera_source(stack,kde,NATIVE,description="Amber")
     def readers():return kde.command("pgrep","-P",str(kde.native.pid),"-x","gst-launch-1.0",check=False).stdout.strip()
     def tracks():
         return {(p["identity"].rsplit(":",1)[0],t["source"]):(t["sid"],t.get("encryption"),t.get("muted",False))
@@ -48,6 +48,7 @@ def verify(stack,tmp,root,backend,page,room,alice,bob,secret,incoming):
     def roster():return page.evaluate("""r=>{const c=window.mxMatrixClientPeg.get();return c.matrixRTC
         .getRoomSession(c.getRoom(r)).memberships.map(m=>m.userId)}""",room)
     def native_box(pair):return pattern_box(kde.capture().crop((283,82,1179,761)),pair)
+    def self_box(pair):return pattern_box(kde.capture().crop((995,280,1179,680)),pair)
     def browser_box(pair):
         # Small overlaid labels/controls can occlude the edges of a tile.
         for v in widget().locator("video").all():
@@ -104,7 +105,15 @@ def verify(stack,tmp,root,backend,page,room,alice,bob,secret,incoming):
                 print(f"Pattern {i+1}: Element rendered {left[2]-left[0]} px wide, Untethered {right[2]-right[0]} px wide.",flush=True)
             assert tracks()==before
             def audio():return desk.hears({670}) and w.evaluate("window.qaAudioStats?.().then(s=>s.run410>=10)??false")
+            def fresh_audio():
+                spectra=w.evaluate("window.qaAudioStats().then(s=>s.spectra)")
+                desk.windows.clear()
+                wait_for("fresh decoded audio in both directions",lambda:audio() and w.evaluate(
+                    "start=>window.qaAudioStats().then(s=>s.spectra-start>=10)",spectra))
             wait_for("fresh two-way decoded audio with cameras on",audio,15)
+            if switch_camera:
+                from qa_switch_camera import verify_switch
+                verify_switch(stack,desk,browser_box,self_box,fresh_audio,tracks,before,show,NATIVE,alice)
             camera_button(w).click(timeout=7000)
             wait_for("Element camera off",lambda:not cam(bob),10)
             wait_for("Element's old video cleared in Iced",lambda:all(not native_box(p) for p in BROWSER),12)
@@ -121,10 +130,7 @@ def verify(stack,tmp,root,backend,page,room,alice,bob,secret,incoming):
             assert all(resumed[u,"MICROPHONE"]==before[u,"MICROPHONE"] for u in (alice,bob))
             desk.click("stop")
             wait_for("native camera closed",lambda:not readers() and not cam(alice),10)
-            spectra=w.evaluate("window.qaAudioStats().then(s=>s.spectra)")
-            desk.windows.clear()
-            wait_for("fresh audio after stopping camera",lambda:audio() and w.evaluate(
-                "start=>window.qaAudioStats().then(s=>s.spectra-start>=10)",spectra))
+            fresh_audio()
             if incoming:desk.click("hang")
             else:w.get_by_role("button",name="End call",exact=True).click()
             wait_for("empty call roster and no SFU tracks",lambda:not roster() and not tracks(),25)

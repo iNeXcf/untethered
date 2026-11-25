@@ -217,6 +217,13 @@ independently. Each starts on **System default**. Switching affects only this
 call, keeps its encrypted tracks connected, and preserves mute/deafen.
 **Refresh devices** updates the list after plugging in or removing a device.
 
+On Linux, choose **Devices → List cameras** to list sources allowed by your
+desktop Camera portal. Pick a camera before starting video, or switch while
+it’s on. A live switch updates your preview and the other participant’s
+picture without redialing. If the selected camera disappears, your video
+stops; choose another camera and press **Start camera** to resume.
+[Camera switching test with Element](experiments/rtc-audio/README.md#verify-live-camera-switching).
+
 During a brief network interruption, the Linux call bar shows **Reconnecting**
 and releases the audio devices. If both devices are still in the same Matrix
 call when connectivity returns, encrypted audio resumes automatically. Once
@@ -263,8 +270,8 @@ leaving voice. Capture requires a ScreenCast portal backend, PipeWire and
 GStreamer (`gst-launch-1.0`, `pipewiresrc`, and the base video plugins).
 The share carries window pixels; microphones remain separate encrypted tracks.
 
-**Start camera** uses the Linux Camera portal and the default camera on its
-PipeWire connection. Other participants see a **Camera** tile with your name.
+**Start camera** uses the Linux Camera portal and the camera selected under
+**Devices** (system default initially). Other participants see a **Camera** tile with your name.
 **Stop camera** releases capture and removes the tile while voice continues.
 Camera and window sharing have independent controls and encrypted tracks.
 

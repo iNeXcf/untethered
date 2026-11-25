@@ -320,12 +320,19 @@ pub(super) async fn joined(
         }) {
             let _ = events.send(json!({"command":"voice_redraw"})).await;
         }
-        let requests = mode.borrow_and_update().video;
+        let (requests, route) = {
+            let m = mode.borrow_and_update();
+            (m.video, m.camera.clone())
+        };
         share
-            .select(requests[VideoInput::Window as usize], lk)
+            .select(
+                requests[VideoInput::Window as usize],
+                lk,
+                CameraChoice::default(),
+            )
             .await?;
         camera
-            .select(requests[VideoInput::Camera as usize], lk)
+            .select(requests[VideoInput::Camera as usize], lk, route)
             .await?;
         tokio::select! {
             changed=mode.changed()=>{changed.map_err(|_|ENDED)?;}

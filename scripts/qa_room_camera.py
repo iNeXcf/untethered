@@ -15,11 +15,14 @@ def present(kde):
         "org.freedesktop.portal.Desktop","/org/freedesktop/portal/desktop","org.freedesktop.portal.Camera","IsCameraPresent").stdout.strip()=="b true"
 
 
-def camera_source(stack,kde,palettes):
+def camera_source(stack,kde,palettes,*,name="qa-room-camera",description="TestCamera"):
     frames=[(bytes(a)*160+bytes(b)*160)*180 for a,b in palettes]
+    # The producer's own clock drives these frames. Drop stale frames while
+    # no reader is connected, including when switching away and back.
     source=sp.Popen(["gst-launch-1.0","-q","fdsrc","do-timestamp=true","!","rawvideoparse","format=rgb","width=320","height=180","framerate=12/1",
-        "!","videoconvert","!","video/x-raw,format=I420","!","pipewiresink","mode=provide",
-        "stream-properties=props,media.class=Video/Source,media.role=Camera,node.name=qa-room-camera,node.description=TestCamera"],
+        "!","videoconvert","!","video/x-raw,format=I420","!","queue","leaky=downstream","max-size-buffers=1",
+        "!","pipewiresink","mode=provide","sync=false","use-bufferpool=false",
+        f"stream-properties=props,media.class=Video/Source,media.role=Camera,node.name={name},node.description={description}"],
         env=kde.env,stdin=sp.PIPE,bufsize=0,stdout=sp.DEVNULL)
     def stop():
         source.terminate();source.wait(timeout=5)

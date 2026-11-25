@@ -258,38 +258,22 @@ async fn authorize_camera(portal: &Camera<'_>) -> Result<()> {
     Ok(())
 }
 pub(super) struct Capture {
+    route: CameraChoice,
     lease: Option<Lease>,
     child: Child,
     pipe: ChildStdout,
     pixels: Vec<u8>,
 }
 impl Capture {
-    async fn open(input: VideoInput) -> Result<Self> {
+    async fn open(input: VideoInput, route: CameraChoice) -> Result<Self> {
         let (fd, node, lease) = match input {
             VideoInput::Window => {
                 let (fd, node, lease) = Self::window().await?;
                 (fd, Some(node), Some(lease))
             }
-            VideoInput::Camera => {
-                let portal = Camera::new()
-                    .await
-                    .map_err(|_| "Camera portal unavailable.")?;
-                if !portal
-                    .is_present()
-                    .await
-                    .map_err(|_| "Could not check for a camera.")?
-                {
-                    return Err("No camera available.");
-                }
-                authorize_camera(&portal).await?;
-                let fd = portal
-                    .open_pipe_wire_remote()
-                    .await
-                    .map_err(|_| "Could not open the camera connection.")?;
-                (fd, None, None)
-            }
+            VideoInput::Camera => (camera_remote().await?, None, None),
         };
-        Self::reader(fd, node, lease).await
+        Self::reader(fd, node, lease, route).await
     }
     async fn window() -> Result<(OwnedFd, u32, Lease)> {
         let proxy = Screencast::new()
@@ -334,13 +318,20 @@ impl Capture {
             .map_err(|_| "Could not open the selected PipeWire stream.")?;
         Ok((fd, stream.pipe_wire_node_id(), lease))
     }
-    async fn reader(fd: OwnedFd, node: Option<u32>, lease: Option<Lease>) -> Result<Self> {
+    async fn reader(
+        fd: OwnedFd,
+        node: Option<u32>,
+        lease: Option<Lease>,
+        route: CameraChoice,
+    ) -> Result<Self> {
         // Stdio maps the already-authorized FD to descriptor 0 in the child;
         // no inheritance of arbitrary FDs, temporary recording or shell needed.
         let mut pipeline = Command::new("gst-launch-1.0");
         pipeline.args(["-q", "pipewiresrc", "fd=0"]);
         if let Some(node) = node {
             pipeline.args([format!("path={node}"), "keepalive-time=300".into()]);
+        } else if let CameraChoice::Source { serial, .. } = &route {
+            pipeline.args([format!("target-object={serial}"),"stream-properties=props,media.role=Camera,node.dont-fallback=true,node.dont-reconnect=true,node.name=untethered-camera-capture".into()]);
         } else {
             // Autoconnect on the camera-only portal remote; the media session
             // manager chooses the camera. Never fall back to a host device.
@@ -384,6 +375,7 @@ impl Capture {
             .map_err(|_| "Video capture timed out.")?
             .map_err(|_| "Could not read video from the selected source.")?;
         Ok(Self {
+            route,
             lease,
             child,
             pipe,
@@ -399,18 +391,42 @@ impl Capture {
         preview: Option<Tile>,
     ) -> Result<()> {
         // Stop capture independently of room-state and key-distribution RPCs.
-        let result = tokio::select! {
-            biased;
-            _=mode.wait_for(|m|input.request(m)!=Some(id))=>Ok(()),
-            f=self.pump(src,preview)=>f,
-        };
-        let _ = self.child.kill().await;
-        if let Some(lease) = &mut self.lease {
-            lease.close().await;
+        loop {
+            let route = self.route.clone();
+            let result = tokio::select! {
+                biased;
+                _=mode.wait_for(|m|input.request(m)!=Some(id) || input==VideoInput::Camera && m.camera!=route)=>None,
+                f=self.pump(src.clone(),preview.as_ref())=>Some(f),
+            };
+            let _ = self.child.kill().await;
+            if let Some(lease) = &mut self.lease {
+                lease.close().await;
+            }
+            if let Some(result) = result {
+                return if matches!(route, CameraChoice::Source { .. }) && result.is_err() {
+                    Err("Selected camera stopped. Choose a camera in Devices and start it again.")
+                } else {
+                    result
+                };
+            }
+            // Keep the publication and cryptor. Close the old camera before
+            // opening the new source; cancellation wins even inside the picker.
+            loop {
+                if input != VideoInput::Camera
+                    || input.request(&mode.borrow()) != Some(id)
+                    || mode.has_changed().is_err()
+                {
+                    return Ok(());
+                }
+                let next = mode.borrow_and_update().camera.clone();
+                tokio::select! {biased;
+                    r=mode.wait_for(|m|input.request(m)!=Some(id) || m.camera!=next)=>{if r.is_err(){return Ok(())}}
+                    cap=Self::open(input,next.clone())=>{self=cap?;break;}
+                }
+            }
         }
-        result
     }
-    async fn pump(&mut self, src: NativeVideoSource, preview: Option<Tile>) -> Result<()> {
+    async fn pump(&mut self, src: NativeVideoSource, preview: Option<&Tile>) -> Result<()> {
         let lease = &self.lease;
         let closed = async {
             if let Some(lease) = lease
@@ -432,7 +448,7 @@ impl Capture {
             y.copy_from_slice(&self.pixels[..Y]);
             u.copy_from_slice(&self.pixels[Y..Y + Y / 4]);
             v.copy_from_slice(&self.pixels[Y + Y / 4..]);
-            if let Some(tile) = &preview
+            if let Some(tile) = preview
                 && last.is_none_or(|at: Instant| at.elapsed() >= Duration::from_millis(100))
             {
                 use livekit::webrtc::video_frame::native::VideoFrameBufferExt;
@@ -459,6 +475,23 @@ impl Capture {
         }
     }
 }
+pub(super) async fn camera_remote() -> Result<OwnedFd> {
+    let portal = Camera::new()
+        .await
+        .map_err(|_| "Camera portal unavailable.")?;
+    if !portal
+        .is_present()
+        .await
+        .map_err(|_| "Could not check for a camera.")?
+    {
+        return Err("No camera available.");
+    }
+    authorize_camera(&portal).await?;
+    portal
+        .open_pipe_wire_remote()
+        .await
+        .map_err(|_| "Could not open the camera connection.")
+}
 
 pub(super) struct Publisher {
     pub(super) local_preview: Option<Previews>,
@@ -483,14 +516,19 @@ impl Publisher {
             published: None,
         }
     }
-    pub(super) async fn select(&mut self, request: Option<Uuid>, lk: &Room) -> Result<()> {
+    pub(super) async fn select(
+        &mut self,
+        request: Option<Uuid>,
+        lk: &Room,
+        route: CameraChoice,
+    ) -> Result<()> {
         if self.request == request {
             return Ok(());
         }
         self.stop(lk).await?;
         self.request = request;
         if request.is_some() {
-            self.picker.spawn(Capture::open(self.input));
+            self.picker.spawn(Capture::open(self.input, route));
         }
         Ok(())
     }

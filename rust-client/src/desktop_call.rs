@@ -34,8 +34,10 @@ use tokio_tungstenite::{
 use untethered_iced::rtc_keys::{self, EVENT as KEY, SenderKey};
 use untethered_iced::rtc_membership::{EVENT_TYPE, Membership};
 use url::Url;
+mod cameras;
 mod channel;
 mod room_video;
+pub(crate) use cameras::{CameraChoice, list_cameras};
 pub(super) use room_video::{Feed, Previews, VideoInput};
 
 pub enum Target {
@@ -78,6 +80,7 @@ pub struct AudioMode {
     pub(super) talk: TalkGate,
     pub mic: Route,
     pub speaker: Route,
+    pub camera: CameraChoice,
     // Receiver-local gain, keyed by Matrix user rather than a device/track
     // SID. Replacement microphones inherit the same setting for this call.
     volumes: std::collections::BTreeMap<String, u8>,
@@ -127,6 +130,9 @@ pub struct ActiveCall {
     pub audio: watch::Sender<AudioMode>,
     pub id: uuid::Uuid,
     pub devices: Catalog,
+    pub cameras: Vec<CameraChoice>,
+    pub camera_listing: bool,
+    pub camera_note: Option<&'static str>,
     pub picker: bool,
     pub mixer: bool,
     pub loading: bool,
@@ -209,6 +215,9 @@ impl crate::App {
                 audio,
                 id: uuid::Uuid::new_v4(),
                 devices: Catalog::default(),
+                cameras: vec![],
+                camera_listing: false,
+                camera_note: None,
                 picker: false,
                 mixer: false,
                 loading: false,
@@ -780,7 +789,13 @@ async fn call(
     let trace_ice = std::env::var("UNTETHERED_QA_ICE_STATS").as_deref() == Ok("1");
     loop {
         install(w, &provider, peer_device, &peer.member, peer_id)?;
-        let requested = mode.borrow_and_update().video[VideoInput::Camera as usize];
+        let (requested, route) = {
+            let state = mode.borrow_and_update();
+            (
+                state.video[VideoInput::Camera as usize],
+                state.camera.clone(),
+            )
+        };
         camera
             .select(
                 if recovering.is_none() {
@@ -789,6 +804,7 @@ async fn call(
                     None
                 },
                 lk,
+                route,
             )
             .await?;
         let mut live = std::collections::BTreeSet::new();
