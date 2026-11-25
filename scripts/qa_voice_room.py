@@ -29,7 +29,7 @@ BINS = [[cmath.exp(-1j * math.tau * hz * n / 12000) for n in range(1200)] for hz
 
 
 class Desktop:
-    def __init__(self,stack,root,env,i,kde=None):
+    def __init__(self,stack,root,env,i,kde=None,*,prefix=(),room="Atrium",log=None):
         self.env=env
         self.i=i
         self.kde=kde
@@ -65,11 +65,11 @@ class Desktop:
         # Limit per-client rendering/codec parallelism in this three-GUI fixture.
         cores=sorted(os.sched_getaffinity(0))[:4]
         binary=root/"rust-client/target/debug/untethered-iced"
-        self.client=stack.enter_context(child(["taskset","-c",",".join(map(str,cores)),binary],env))
+        self.client=stack.enter_context(child([*prefix,"taskset","-c",",".join(map(str,cores)),binary],env,stderr=log))
         def ready():
             assert self.client.poll() is None,f"client {i+1} exited"
-            return self.cmd("xdotool","search","--onlyvisible","--name","Untethered.*Atrium",check=False).strip()
-        self.win=wait_for(f"client {i+1} synced Atrium",ready,35).splitlines()[0]
+            return self.cmd("xdotool","search","--onlyvisible","--name","Untethered.*"+re.escape(room),check=False).strip()
+        self.win=wait_for(f"client {i+1} synced {room}",ready,35).splitlines()[0]
         self.cmd("xdotool","windowmove",self.win,"0","0")
         self.cmd("xdotool","windowsize",self.win,"1180","760")
 

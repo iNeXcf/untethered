@@ -144,6 +144,8 @@ def main():
     args.add_argument("--federated-ban",action="store_true",help="Test the member ban flow through a second Synapse homeserver in a private loopback namespace")
     args.add_argument("--rtc-audio",action="store_true",help="Verify encrypted Rust ↔ Element Call tones using real LiveKit and Matrix OpenID authorization")
     args.add_argument("--desktop-dm",action="store_true",help="Drive the Iced DM call controls and Element's incoming call prompt with isolated audio")
+    args.add_argument("--native-dm",action="store_true",help="Call in both directions between two Linux desktops behind separate TURN-only networks")
+    args.add_argument("--unsupported-dm",action="store_true",help="Check the Linux call controls when Synapse advertises no MatrixRTC service")
     args.add_argument("--incoming-dm",action="store_true",help="Ring the Iced desktop twice from Element, decline then accept and hang up")
     args.add_argument("--multi-device-ring",action="store_true",help="Ring two independently verified Linux devices on one Matrix account; decline on one, answer on the other")
     args.add_argument("--call-controls",action="store_true",help="Measure Linux mute/deafen and track continuity during a live encrypted call with Element")
@@ -165,6 +167,8 @@ def main():
         raise SystemExit("--room-ptt uses private X displays; run the KWin video fixtures separately")
     if args.window_share or args.room_camera or args.room_ptt or args.room_layout: args.voice_room=True
     if args.call_controls or args.call_devices or args.call_reconnect or args.call_turn: args.desktop_dm=True
+    if args.native_dm or args.unsupported_dm:args.desktop_dm=True
+    if args.native_dm and args.unsupported_dm:args.error("run --native-dm and --unsupported-dm separately")
     if args.multi_device_ring:args.incoming_dm=True
     if args.dnd_ring:args.incoming_dm=True
     if args.account_dnd:args.browser_alerts=True
@@ -189,6 +193,7 @@ def main():
         if args.rtc_audio:
             from qa_rtc_audio import configure, test as audio_test
             server_name,extra_listeners,extra_settings,rtc_service=configure(tmp,free_port)
+            if args.unsupported_dm:extra_settings=extra_settings.split("extra_well_known_client_content:")[0]
         if chat_test or args.browser_alerts:
             extra_settings="rc_message: {per_second: 1000, burst_count: 1000}\n"
         subprocess.run([sys.executable, "-m", "synapse.app.homeserver", "-c", "hs.yaml", "--generate-config",
@@ -241,7 +246,7 @@ federation_domain_whitelist: []
                 test_replies(tmp,hs,ROOT,BACKEND,seed,http,gateway_port,reactions=args.reactions,room_search=args.room_search,alerts=args.room_alerts,permissions=args.room_permissions,ban=args.room_ban,kick=args.room_kick,report=args.message_report,mentions=args.mentions_inbox)
                 return
             if args.rtc_audio:
-                audio_test(tmp,hs,server_name,rtc_service,ROOT,BACKEND,seed,http,service,desktop=args.desktop_dm or args.incoming_dm,incoming=args.incoming_dm,controls=args.call_controls,devices=args.call_devices,reconnect=args.call_reconnect,turn=args.call_turn,group=args.voice_room,share=args.window_share,camera=args.room_camera,ptt=args.room_ptt,layout=args.room_layout,multi_ring=args.multi_device_ring,dnd_ring=args.dnd_ring)
+                audio_test(tmp,hs,server_name,rtc_service,ROOT,BACKEND,seed,http,service,desktop=args.desktop_dm or args.incoming_dm,incoming=args.incoming_dm,controls=args.call_controls,devices=args.call_devices,reconnect=args.call_reconnect,turn=args.call_turn,group=args.voice_room,share=args.window_share,camera=args.room_camera,ptt=args.room_ptt,layout=args.room_layout,multi_ring=args.multi_device_ring,dnd_ring=args.dnd_ring,native_dm=args.native_dm,unsupported_dm=args.unsupported_dm)
                 return
             if args.rtc_membership:
                 from qa_rtc_membership import test

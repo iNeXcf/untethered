@@ -213,6 +213,54 @@ are short-outage checks; they do not exercise TURN or resume an expired call.
 
 ### Verify TURN-only calls
 
+#### Two native Linux desktops
+
+Build `rust-client` in debug mode so that selected ICE statistics are available.
+With `PYTHON`, `LIVEKIT_SERVER` and `LK_JWT_SERVICE` as below, run:
+
+```sh
+sh experiments/rtc-audio/run_element.sh --native-dm
+sh experiments/rtc-audio/run_element.sh --unsupported-dm
+```
+
+The first fixture uses two disposable accounts, one Iced window per private
+X display, and a different network namespace for each client and its gomuks
+engine. Only Matrix/SFU signaling and coturn UDP are reachable. Independent
+virtual speaker monitors distinguish the two injected microphone tones from
+one another and from silence in successive 100 ms windows.
+
+* Cancel before answer, decline on the other device, and let a third ring
+  expire unattended. The recipient must decrypt each ring referencing the
+  caller’s actual membership event. All three attempts together must open
+  zero microphone streams and leave no active membership.
+* Call and accept in both directions. Require the two expected GCM microphone
+  publications, decoded speech tones at both speakers, and selected relay/UDP
+  pairs on the actual inbound and outbound audio transports of **both** clients.
+* Switch rooms, mute and deafen during the first call. Cut just the relay
+  flow: both outputs must fall silent. Restore it: both must receive *new*
+  tones without changing track IDs. For the reverse call, interrupt the
+  caller’s entire network link. Check **Reconnecting**, automatic return
+  of fresh audio, and no second invitation. Each hangup must release the
+  devices, dismiss the call controls and clear both Matrix memberships.
+
+`--unsupported-dm` runs against Synapse without an advertised MatrixRTC
+transport or a running SFU. Clicking **Voice call** must report the
+unsupported server and return the caller to the DM, without an invitation,
+slot, membership, capture or playback. It does not require LiveKit or Element.
+
+Recorded run, 2026-11-25: the two native devices were `TOQYBQFIQH` and
+`OWWFXUYZKU`. The canceled, declined and unanswered attempts had **zero
+microphone starts**; the caller displayed **No answer** 45.3 s after
+the encrypted invitation’s sender timestamp (advertised lifetime 45 s).
+On the first answered call each firewall blocked direct SFU media packets
+(22 and 217); both speakers recovered fresh 830/530 Hz on the original GCM
+tracks after TURN was restored. On the reverse call, after the caller's
+6.5-second link outage, both speakers reproduced those fresh tones within
+7.6 s of link restoration, without redial. Matrix history on both devices
+contained five distinct encrypted invitations and one matching decline.
+
+#### Linux desktop and Element
+
 With the debug Linux desktop build and desktop test environment above, install
 `coturn`, `nftables`, iproute2 and `nsenter`. Run the GUI tests one at a time:
 

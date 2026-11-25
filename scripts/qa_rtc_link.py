@@ -66,18 +66,18 @@ add rule ip qa_rtc post oifname "{nic}" ip saddr 127.0.0.1 snat to {local}
 
 def desktop_network(stack, ports):
     link=client_link(stack,ports,"desktop")
-    @contextmanager
-    def outage():
-        # Remove connectivity in *both* directions (all protocols). Reset the
-        # desktop's established SFU TCP socket as on a lost access network;
-        # do not wait for the kernel's potentially minutes-long TCP timeout.
-        endpoint=["dst","127.0.0.1","dport","=" ,":18820"]
-        assert link.inside("ss","-Htn","state","established",*endpoint).stdout.strip()
-        sp.run(["ip","link","set",link.server_if,"down"],check=True)
-        try:
-            assert link.inside("ss","-HKtn","state","established",*endpoint).stdout.strip()
-            yield
-        finally:
-            sp.run(["ip","link","set",link.server_if,"up"],check=True)
+    return link.prefix,lambda:outage(link)
 
-    return link.prefix,outage
+
+@contextmanager
+def outage(link):
+    # Remove connectivity in both directions and reset the SFU socket, as on
+    # a lost access network. Don't wait for the kernel TCP timeout.
+    endpoint=["dst","127.0.0.1","dport","=",":18820"]
+    assert link.inside("ss","-Htn","state","established",*endpoint).stdout.strip()
+    sp.run(["ip","link","set",link.server_if,"down"],check=True)
+    try:
+        assert link.inside("ss","-HKtn","state","established",*endpoint).stdout.strip()
+        yield
+    finally:
+        sp.run(["ip","link","set",link.server_if,"up"],check=True)

@@ -102,6 +102,15 @@
   used GCM. Blocking just coturn silenced both ends; restoring it delivered
   a new 730 Hz desktop tone to Element and the 960 Hz return tone to Linux.
   TURN/TCP and TURN/TLS were not exercised.
+- **Linux Untethered ↔ Untethered DM calls:** [Two-desktop test](experiments/rtc-audio/README.md#two-native-linux-desktops)
+  verified both caller directions across separate TURN-only networks. Cancel,
+  decline and no-answer opened zero microphones. The caller displayed **No
+  answer** at 45.3 s for a 45-second invite. Both answered calls carried
+  distinct decoded audio on GCM tracks; the first kept working while changing
+  rooms, muting and deafening. After a full link interruption on the reverse
+  call, fresh audio returned on both speakers in 7.6 s without another ring.
+  Hangup released all streams and memberships. On a homeserver without RTC
+  discovery the caller saw an explicit error and sent no invite or membership.
 - **Three-person Linux voice rooms:** **Join voice** and **Leave voice** use
   the encrypted room's MatrixRTC slot without DM notifications. In the
   [three-account desktop test](experiments/rtc-audio/README.md#verify-three-person-voice-rooms)

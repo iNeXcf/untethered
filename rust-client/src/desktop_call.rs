@@ -14,6 +14,7 @@ use livekit::{
 };
 use serde_json::{Value, json};
 use std::{
+    collections::VecDeque,
     net::SocketAddr,
     process::Stdio,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -49,6 +50,7 @@ type Result<T> = std::result::Result<T, &'static str>;
 const SLOT: &str = "org.matrix.msc4143.rtc.slot";
 const RING: &str = "org.matrix.msc4075.rtc.notification";
 const SLOT_ID: &str = "m.call#ROOM";
+const RING_LIFETIME: Duration = Duration::from_secs(45);
 const ENDED: &str = "Call ended.";
 const SECOND: Duration = Duration::from_secs(1);
 const LEASE: Duration = Duration::from_secs(16);
@@ -215,7 +217,7 @@ struct Wire<'a> {
     seq: u64,
     keys: Vec<(Instant, Value)>,
     roster_dirty: bool,
-    decline_for: Option<String>,
+    declines: VecDeque<String>,
 }
 impl Wire<'_> {
     async fn frame(&mut self) -> Result<Value> {
@@ -247,20 +249,9 @@ impl Wire<'_> {
                                 self.keys.push((Instant::now(), e.clone()));
                             }
                         }
-                        for e in crate::rooms::items(&f["data"]["rooms"][self.room]["events"]) {
-                            if self.dm_peer.is_some_and(|peer| e["sender"] == peer)
-                                && (e["type"] == "org.matrix.msc4310.rtc.decline"
-                                    || e["decrypted_type"] == "org.matrix.msc4310.rtc.decline")
-                            {
-                                let c = if e["decrypted"].is_object() {
-                                    &e["decrypted"]
-                                } else {
-                                    &e["content"]
-                                };
-                                self.decline_for =
-                                    c["m.relates_to"]["event_id"].as_str().map(str::to_owned);
-                            }
-                        }
+                    }
+                    if let Some(peer) = self.dm_peer {
+                        collect_declines(&mut self.declines, &f, self.room, peer);
                     }
                     return Ok(f);
                 }
@@ -319,6 +310,35 @@ impl Wire<'_> {
         )
         .await?;
         Ok(())
+    }
+}
+// Room keys may arrive after the invite response's timeline sync. Use both
+// gomuks event paths, and require an encrypted, peer-authored reference.
+fn collect_declines(targets: &mut VecDeque<String>, frame: &Value, room: &str, peer: &str) {
+    let delta = match frame["command"].as_str() {
+        Some("sync_complete") => &frame["data"]["rooms"][room],
+        Some("events_decrypted") if frame["data"]["room_id"] == room => &frame["data"],
+        _ => return,
+    };
+    for e in crate::rooms::items(&delta["events"]) {
+        let rel = &e["decrypted"]["m.relates_to"];
+        if e["room_id"] == room
+            && e["sender"] == peer
+            && e["type"] == "m.room.encrypted"
+            && e["decrypted_type"] == "org.matrix.msc4310.rtc.decline"
+            && crate::rooms::server_confirmed(e)
+            && !e["redacted_by"].is_string()
+            && rel["rel_type"] == "m.reference"
+            && let Some(id) = rel["event_id"]
+                .as_str()
+                .filter(|id| id.starts_with('$') && id.len() > 1)
+            && !targets.iter().any(|t| t == id)
+        {
+            if targets.len() == 64 {
+                targets.pop_front();
+            }
+            targets.push_back(id.into());
+        }
     }
 }
 impl untethered_iced::rtc_membership::Signal for &mut Wire<'_> {
@@ -536,7 +556,7 @@ pub async fn run(
         seq: 0,
         keys: vec![],
         roster_dirty: true,
-        decline_for: None,
+        declines: VecDeque::new(),
     };
     let s =
         tokio::select! {biased; _=cancel.recv()=>return Ok(ENDED),s=prepare(&mut w,incoming)=>s?};
@@ -590,6 +610,12 @@ async fn call(
     mode: watch::Receiver<AudioMode>,
 ) -> Result<&'static str> {
     let dm_peer = w.dm_peer.ok_or("Missing DM recipient.")?;
+    // Encryption, sending the invite and waiting for its acknowledgement can
+    // take seconds. They are part of the advertised ring lifetime.
+    let deadline = Instant::now()
+        + incoming.map_or(RING_LIFETIME, |i| {
+            Duration::from_millis(i.expires.saturating_sub(now())).min(RING_LIFETIME)
+        });
     let notification = if incoming.is_none() {
         let n = w
             .rpc(
@@ -597,7 +623,7 @@ async fn call(
                 json!({"room_id":w.room,"type":RING,"synchronous":true,"content":{
         "slot_id":SLOT_ID,"notification_type":"ring","m.mentions":{"user_ids":[dm_peer]},
         "m.relates_to":{"rel_type":"m.reference","event_id":m.event_id},
-        "m.call.intent":"audio","sender_ts":now(),"lifetime":45_000,"msc4354_sticky_key":SLOT_ID}}),
+        "m.call.intent":"audio","sender_ts":now(),"lifetime":RING_LIFETIME.as_millis() as u64,"msc4354_sticky_key":SLOT_ID}}),
             )
             .await?;
         status(events, w.room, "Ringing").await;
@@ -608,7 +634,7 @@ async fn call(
     let lease_started = Instant::now();
     let mut heartbeat = time::interval(SECOND * 4);
     let mut poll = time::interval(SECOND);
-    let answer=time::timeout(SECOND*45,async {
+    let answer=time::timeout_at(deadline,async {
         loop {
             tokio::select!{
                 _=heartbeat.tick()=>m.heartbeat(&mut *w).await.map_err(|_|"Lost call membership.")?,
@@ -623,9 +649,17 @@ async fn call(
                     if incoming.is_some(){return Err("The caller has left.")}
                 }
             }
-            if w.decline_for.as_deref().is_some_and(|id|notification["event_id"]==id){return Err("Call declined.")}
+            if w.declines.iter().any(|id|notification["event_id"]==*id){return Err("Call declined.")}
         }
-    }).await.map_err(|_|"No answer.")??;
+    }).await;
+    let answer = match answer {
+        Ok(result) => result?,
+        Err(_) => {
+            // Tell the caller now, independently of server-side leave cleanup.
+            status(events, w.room, "No answer.").await;
+            return Err("No answer.");
+        }
+    };
     status(events, w.room, "Connecting").await;
     let peer = &answer;
     let peer_device = peer.device.as_str();
@@ -662,7 +696,7 @@ async fn call(
             tokio::select!{r=w.frame()=>{r?;},_=heartbeat.tick()=>m.heartbeat(&mut *w).await.map_err(|_|"Lost call membership.")?}
         }
         Ok::<(),&'static str>(())
-    }).await.map_err(|_|"Element did not provide an encrypted audio key.")??;
+    }).await.map_err(|_|"The other device did not provide an encrypted audio key.")??;
     if !provider.set_key(&my_id.clone().into(), 0, key.bytes.to_vec()) {
         return Err("Failed to install local key.");
     }
@@ -1139,6 +1173,23 @@ fn playback_pcm(samples: &[i16], gain: u8, bytes: &mut Vec<u8>) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn late_decrypted_declines_keep_matching_references_but_ignore_wrong_peer_room_or_relation() {
+        let mut targets = VecDeque::new();
+        let event = |eid: &str, u: &str, rel: &str| {
+            json!({"room_id":"!dm","event_id":eid,"sender":u,
+            "type":"m.room.encrypted","decrypted_type":"org.matrix.msc4310.rtc.decline",
+            "decrypted":{"m.relates_to":{"rel_type":rel,"event_id":eid}}})
+        };
+        let late = json!({"command":"events_decrypted","data":{"room_id":"!dm","events":[
+            event("$ours","@alice","m.reference"),event("$old","@alice","m.reference"),
+            event("$wrong","@bob","m.reference"),event("$bad","@alice","m.annotation")]}});
+        collect_declines(&mut targets, &late, "!different", "@alice");
+        assert!(targets.is_empty());
+        collect_declines(&mut targets, &late, "!dm", "@alice");
+        collect_declines(&mut targets, &late, "!dm", "@alice");
+        assert_eq!(targets.into_iter().collect::<Vec<_>>(), ["$ours", "$old"]);
+    }
     #[test]
     fn boosted_playback_clips_peaks_without_inverting_them() {
         let mut bytes = Vec::new();

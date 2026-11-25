@@ -183,6 +183,11 @@ membership has expired, starting another call requires a new **Voice call**.
 If direct media is blocked, both clients can use the TURN relay advertised by
 LiveKit. The [relay-only test](experiments/rtc-audio/README.md#verify-turn-only-calls)
 verified encrypted audio with either Untethered or Element initiating.
+The [two-desktop test](experiments/rtc-audio/README.md#two-native-linux-desktops)
+also verified calling in both directions between Linux Untethered clients.
+An unanswered invitation times out after 45 seconds without opening either
+microphone. A server without a supported call transport shows an error
+before anyone is rung.
 
 The [desktop call tests](experiments/rtc-audio/README.md) drive both clients'
 actual call controls and measure audio through isolated Linux devices.

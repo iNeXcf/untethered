@@ -60,7 +60,7 @@ allowed-peer-ip=192.0.2.2
 """)
 
 
-def relay_clients(stack,tmp,ports):
+def relay_links(stack,ports):
     links={role:client_link(stack,ports,role) for role in ("desktop","element")}
     for link in links.values():
         allowed=", ".join(str(int(p)) for p in ports)
@@ -85,6 +85,11 @@ add rule inet relaytest in meta l4proto tcp ct state established accept
 add rule inet relaytest in ip saddr {TURN_IP} udp sport {TURN_PORT} jump gate
 add rule inet relaytest in ip saddr {TURN_IP} udp sport {TURN_PORT} counter name turn_rx accept
 """)
+    return links
+
+
+def relay_clients(stack,tmp,ports):
+    links=relay_links(stack,ports)
     exe=tmp/"element-chromium"
     exe.write_text("#!/bin/sh\nexec "+shlex.join([*links["element"].prefix,shutil.which("chromium")])+' "$@"\n')
     exe.chmod(0o700)

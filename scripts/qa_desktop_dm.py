@@ -19,7 +19,7 @@ import requests
 from qa_native_paste import child, isolated_env, start_display, wait_for
 
 
-def sfu_participants(secret):
+def sfu_participants(secret,*,allow_empty=False):
     def query(method,params,grant):
         def b64(v):
             return base64.urlsafe_b64encode(v).rstrip(b"=")
@@ -30,7 +30,8 @@ def sfu_participants(secret):
                         headers={"Authorization":"Bearer "+token.decode()},json=params,timeout=5)
         r.raise_for_status()
         return r.json()
-    rooms=query("ListRooms",{},{"roomList":True})["rooms"]
+    rooms=query("ListRooms",{},{"roomList":True}).get("rooms",[])
+    if not rooms and allow_empty:return []
     assert len(rooms)==1
     name=rooms[0]["name"]
     peers=query("ListParticipants",{"room":name},{"roomAdmin":True,"room":name})["participants"]
